@@ -1,7 +1,6 @@
-const CACHE_NAME = 'linea-v1';
+const CACHE_NAME = 'linea-v4';
 const STATIC_ASSETS = [
   '/',
-  '/style.css',
   '/design.css',
   '/main.js',
   '/manifest.json',
@@ -11,7 +10,7 @@ const STATIC_ASSETS = [
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(STATIC_ASSETS);
+      return cache.addAll(STATIC_ASSETS.map((url) => new Request(url, { cache: 'reload' })));
     }).then(() => self.skipWaiting())
   );
 });

@@ -1,0 +1,826 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#122527">
+  <meta name="description" content="Разработка и поддержка с прозрачными часами: заявки, оценка трудозатрат, переписка, SLA и акты в одном кабинете.">
+  <title>Линия · Разработка и поддержка с прозрачными часами</title>
+  <link rel="icon" type="image/svg+xml" href="/icon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --nav: #122527;
+      --nav-2: #18322f;
+      --nav-line: #2a4446;
+      --mint: #6bd4b5;
+      --mint-soft: #a9d8c5;
+      --accent: #137b69;
+      --accent-ink: #0f6b5a;
+      --accent-soft: #e5f4ef;
+      --ink: #18282b;
+      --ink-2: #3b5250;
+      --muted: #5f7672;
+      --line: #e2eae7;
+      --bg: #f4f7f5;
+      --late: #a3211a;
+      --late-bg: #fdecea;
+      --soon: #7f5410;
+      --soon-bg: #fbf0dc;
+      --info: #245f9c;
+      --info-bg: #e8f1fb;
+      --ease: cubic-bezier(.2, .8, .2, 1);
+      --spring: cubic-bezier(.34, 1.56, .64, 1);
+      font-family: 'Manrope', -apple-system, 'Segoe UI', sans-serif;
+      color: var(--ink);
+      font-variant-numeric: tabular-nums;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; background: var(--bg); color: var(--ink); -webkit-font-smoothing: antialiased; overflow-x: hidden; }
+    a { color: inherit; }
+    button { font: inherit; cursor: pointer; }
+    :focus-visible { outline: 3px solid #7ed9c0; outline-offset: 3px; }
+    .wrap { width: 100%; max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+    .ico { flex: none; }
+    .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+    /* Кнопки */
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+      min-height: 48px; padding: 0 22px; border: 1px solid transparent; border-radius: 12px;
+      font-size: 15px; font-weight: 800; text-decoration: none; white-space: nowrap;
+      transition: transform .2s var(--ease), box-shadow .2s ease, background-color .2s ease, border-color .2s ease;
+    }
+    .btn:active { transform: scale(.97); }
+    .btn .ico { transition: transform .25s var(--ease); }
+    .btn:hover .ico { transform: translateX(3px); }
+    .btn-mint { background: var(--mint); color: #0c3a31; }
+    .btn-mint:hover { box-shadow: 0 10px 30px rgba(107, 212, 181, .35); transform: translateY(-2px); }
+    .btn-ghost { border-color: #3f665e; color: #e5f4ef; background: transparent; }
+    .btn-ghost:hover { background: rgba(255, 255, 255, .06); border-color: var(--mint-soft); }
+    .btn-dark { background: var(--ink); color: #fff; }
+    .btn-dark:hover { transform: translateY(-2px); box-shadow: 0 10px 30px rgba(24, 40, 43, .25); }
+    .btn-line { border-color: #c9d7d2; color: var(--ink); background: #fff; }
+    .btn-line:hover { border-color: var(--accent); }
+
+    /* Шапка */
+    .header {
+      position: fixed; inset: 0 0 auto; z-index: 50;
+      transition: background-color .3s ease, box-shadow .3s ease, backdrop-filter .3s ease;
+    }
+    .header.scrolled { background: rgba(18, 37, 39, .88); backdrop-filter: blur(12px); box-shadow: 0 1px 0 var(--nav-line); }
+    .header-row { display: flex; align-items: center; gap: 32px; height: 72px; }
+    .logo { display: flex; align-items: center; gap: 10px; color: #fff; text-decoration: none; }
+    .logo-mark { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; background: var(--accent); color: #fff; font-weight: 800; font-size: 17px; }
+    .logo-name { font-size: 21px; font-weight: 800; letter-spacing: -.05em; }
+    .logo-name b { color: var(--mint); }
+    .menu { display: flex; gap: 26px; margin-right: auto; }
+    .menu a { color: #cad9d6; font-size: 14px; font-weight: 600; text-decoration: none; position: relative; }
+    .menu a::after { content: ''; position: absolute; left: 0; right: 0; bottom: -6px; height: 2px; border-radius: 2px; background: var(--mint); transform: scaleX(0); transform-origin: left; transition: transform .25s var(--ease); }
+    .menu a:hover { color: #fff; }
+    .menu a:hover::after { transform: scaleX(1); }
+    .header-actions { display: flex; gap: 10px; }
+    .header .btn { min-height: 40px; padding: 0 16px; font-size: 14px; }
+
+    /* Первый экран */
+    .hero {
+      position: relative; overflow: hidden; padding: 140px 0 110px;
+      background: var(--nav); color: #cad9d6;
+    }
+    .hero::before {
+      content: ''; position: absolute; inset: 0;
+      background-image: linear-gradient(rgba(255, 255, 255, .04) 1px, transparent 1px), linear-gradient(90deg, rgba(255, 255, 255, .04) 1px, transparent 1px);
+      background-size: 56px 56px;
+      mask-image: radial-gradient(ellipse 70% 60% at 70% 40%, #000 30%, transparent 75%);
+      -webkit-mask-image: radial-gradient(ellipse 70% 60% at 70% 40%, #000 30%, transparent 75%);
+    }
+    .hero-glow { position: absolute; width: 520px; height: 520px; right: -80px; top: 40px; border-radius: 50%; background: radial-gradient(circle, rgba(107, 212, 181, .18), transparent 65%); pointer-events: none; animation: drift 12s ease-in-out infinite alternate; }
+    @keyframes drift { to { transform: translate(-60px, 40px) scale(1.1); } }
+    .hero-grid { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 56px; align-items: center; }
+    .eyebrow { display: inline-flex; align-items: center; gap: 10px; padding: 6px 12px 6px 8px; border: 1px solid var(--nav-line); border-radius: 99px; color: var(--mint-soft); font-size: 13px; font-weight: 700; }
+    .eyebrow i { width: 8px; height: 8px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 0 0 rgba(107, 212, 181, .6); animation: ping 2s ease-out infinite; }
+    @keyframes ping { 0% { box-shadow: 0 0 0 0 rgba(107, 212, 181, .6); } 100% { box-shadow: 0 0 0 10px rgba(107, 212, 181, 0); } }
+    .hero h1 { margin: 22px 0 20px; color: #fff; font-size: clamp(38px, 5.4vw, 64px); font-weight: 800; letter-spacing: -.05em; line-height: 1.04; }
+    .hero h1 .word { display: inline-block; opacity: 0; transform: translateY(24px); animation: word .7s var(--ease) forwards; }
+    @keyframes word { to { opacity: 1; transform: none; } }
+    .hero h1 em { font-style: normal; color: var(--mint); }
+    .hero .lead { max-width: 520px; margin: 0 0 32px; font-size: 18px; line-height: 1.6; color: #b5ccc7; }
+    .hero-cta { display: flex; flex-wrap: wrap; gap: 12px; }
+    .hero-note { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 30px; font-size: 13.5px; color: #8fb0aa; }
+    .hero-note span { display: inline-flex; align-items: center; gap: 8px; }
+    .hero-note .ico { color: var(--mint); }
+    .fade-up { opacity: 0; transform: translateY(16px); animation: word .8s var(--ease) forwards; }
+
+    /* Живой макет */
+    .stage { position: relative; perspective: 1400px; }
+    .mock {
+      position: relative; border-radius: 18px; background: #fff; color: var(--ink);
+      box-shadow: 0 40px 100px rgba(0, 0, 0, .45), 0 0 0 1px rgba(255, 255, 255, .06);
+      transform: rotateX(var(--rx, 6deg)) rotateY(var(--ry, -10deg));
+      transition: transform .6s var(--ease);
+      overflow: hidden;
+    }
+    .mock-bar { display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 16px; border-bottom: 1px solid var(--line); background: #f7faf9; }
+    .mock-bar i { width: 10px; height: 10px; border-radius: 50%; background: #d5e0dc; }
+    .mock-bar span { margin-left: 10px; color: var(--muted); font-size: 12px; font-weight: 600; }
+    .mock-body { padding: 18px; }
+    .mock-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 14px; }
+    .mock-head strong { font-size: 18px; letter-spacing: -.03em; }
+    .mock-head small { color: var(--muted); font-size: 12px; }
+    .mrow { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px; border-radius: 12px; transition: background-color .35s ease, box-shadow .35s ease; }
+    .mrow + .mrow { margin-top: 4px; }
+    .mrow.hot { background: #f1f8f5; box-shadow: inset 3px 0 0 var(--accent); }
+    .mico { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 9px; background: #eef3f1; color: var(--ink-2); }
+    .mtext strong { display: block; font-size: 13.5px; }
+    .mtext small { color: var(--muted); font-size: 12px; }
+    .badge { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 99px; font-size: 12px; font-weight: 700; white-space: nowrap; transition: background-color .4s ease, color .4s ease; }
+    .badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .badge.new { background: var(--info-bg); color: var(--info); }
+    .badge.work { background: var(--accent-soft); color: var(--accent-ink); }
+    .badge.wait { background: var(--soon-bg); color: var(--soon); }
+    .badge.done { background: #eef3f1; color: #46605b; }
+    .sla { display: inline-flex; align-items: center; gap: 5px; margin-top: 6px; padding: 2px 8px; border-radius: 6px; background: var(--soon-bg); color: var(--soon); font-size: 11.5px; font-weight: 700; }
+    .mock-hours { margin-top: 14px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; }
+    .mock-hours div:first-child { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--muted); margin-bottom: 8px; }
+    .mock-hours strong { color: var(--ink); }
+    .meter { height: 8px; border-radius: 4px; background: #edf2f0; overflow: hidden; }
+    .meter span { display: block; height: 100%; border-radius: 4px; background: var(--accent); width: 0; transition: width 1.2s var(--ease); }
+    .estimate-pop {
+      position: absolute; left: 50%; top: 92px; width: 280px; padding: 16px; border-radius: 14px;
+      background: #fff; box-shadow: 0 24px 60px rgba(18, 37, 39, .28), 0 0 0 1px var(--line);
+      opacity: 0; transform: translate(-30%, 10px) scale(.96); pointer-events: none;
+      transition: opacity .35s ease, transform .45s var(--spring);
+    }
+    .estimate-pop.show { opacity: 1; transform: translate(-30%, 0) scale(1); }
+    .estimate-pop small { color: var(--accent-ink); font-size: 11px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+    .estimate-pop strong { display: block; margin: 6px 0 4px; font-size: 22px; letter-spacing: -.03em; }
+    .estimate-pop p { margin: 0 0 12px; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+    .estimate-pop .row { display: flex; gap: 8px; }
+    .estimate-pop .row span { flex: 1; display: grid; place-items: center; height: 34px; border-radius: 9px; border: 1px solid var(--line); font-size: 12.5px; font-weight: 700; transition: transform .15s ease, background-color .2s ease; }
+    .estimate-pop .row span.ok { border-color: var(--accent); background: var(--accent); color: #fff; }
+    .estimate-pop .row span.ok.press { transform: scale(.94); background: var(--accent-ink); }
+    .cursor { position: absolute; left: 0; top: 0; z-index: 3; width: 22px; height: 22px; opacity: 0; transition: transform 1s var(--ease), opacity .3s ease; pointer-events: none; filter: drop-shadow(0 4px 8px rgba(0, 0, 0, .3)); }
+    .cursor.show { opacity: 1; }
+    .mock-toast {
+      position: absolute; right: 16px; bottom: 16px; display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-radius: 12px;
+      background: var(--ink); color: #fff; font-size: 13px; font-weight: 600;
+      opacity: 0; transform: translateY(12px) scale(.96); transition: opacity .3s ease, transform .4s var(--spring);
+    }
+    .mock-toast.show { opacity: 1; transform: none; }
+    .mock-toast .ico { color: var(--mint); }
+    .float-chip {
+      position: absolute; display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 12px;
+      background: #fff; color: var(--ink); font-size: 13px; font-weight: 700; box-shadow: 0 18px 40px rgba(0, 0, 0, .3);
+      animation: float 6s ease-in-out infinite;
+    }
+    .float-chip.a { left: -28px; bottom: 54px; }
+    .float-chip.b { right: -18px; top: -18px; animation-delay: -3s; }
+    .float-chip .ico { color: var(--accent); }
+    @keyframes float { 50% { transform: translateY(-10px); } }
+
+    /* Бегущая строка */
+    .ticker { padding: 22px 0; border-bottom: 1px solid var(--line); background: #fff; overflow: hidden; }
+    .ticker-track { display: flex; gap: 40px; width: max-content; animation: marquee 32s linear infinite; }
+    .ticker:hover .ticker-track { animation-play-state: paused; }
+    .ticker-track span { display: inline-flex; align-items: center; gap: 10px; color: var(--ink-2); font-size: 16px; font-weight: 700; white-space: nowrap; }
+    .ticker-track .ico { color: var(--accent); }
+    @keyframes marquee { to { transform: translateX(-50%); } }
+
+    /* Секции */
+    section.block { padding: 110px 0; }
+    .kicker { color: var(--accent-ink); font-size: 12px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+    .title { max-width: 720px; margin: 14px 0 16px; font-size: clamp(30px, 3.6vw, 46px); font-weight: 800; letter-spacing: -.045em; line-height: 1.1; }
+    .subtitle { max-width: 620px; margin: 0; color: var(--muted); font-size: 17px; line-height: 1.6; }
+    .reveal { opacity: 0; transform: translateY(28px); transition: opacity .8s var(--ease), transform .8s var(--ease); transition-delay: var(--d, 0s); }
+    .reveal.in { opacity: 1; transform: none; }
+
+    /* Как это работает */
+    .steps-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 64px; margin-top: 56px; }
+    .steps { position: relative; display: grid; gap: 14px; padding-left: 36px; }
+    .rail { position: absolute; left: 13px; top: 18px; bottom: 18px; width: 2px; background: var(--line); border-radius: 2px; }
+    .rail span { display: block; width: 100%; height: 0; background: var(--accent); border-radius: 2px; transition: height .5s var(--ease); }
+    .step { position: relative; padding: 24px 26px; border: 1px solid var(--line); border-radius: 16px; background: #fff; transition: border-color .3s ease, box-shadow .3s ease, transform .3s var(--ease); }
+    .step::before { content: attr(data-n); position: absolute; left: -36px; top: 22px; display: grid; place-items: center; width: 28px; height: 28px; border: 2px solid #d5e0dc; border-radius: 50%; background: var(--bg); color: var(--muted); font-size: 12px; font-weight: 800; transition: all .3s ease; }
+    .step.active { border-color: #b9dccf; box-shadow: 0 0 0 4px #eaf6f1; transform: translateX(4px); }
+    .step.active::before, .step.passed::before { border-color: var(--accent); background: var(--accent); color: #fff; }
+    .step h3 { margin: 0 0 6px; font-size: 19px; letter-spacing: -.02em; }
+    .step p { margin: 0; color: var(--muted); font-size: 15px; line-height: 1.6; }
+    .step-visual { position: sticky; top: 120px; align-self: start; }
+    .screen { position: relative; min-height: 380px; padding: 26px; border-radius: 20px; background: var(--nav); box-shadow: 0 30px 80px rgba(18, 37, 39, .25); overflow: hidden; }
+    .scene { position: absolute; inset: 26px; opacity: 0; transform: translateY(16px) scale(.98); transition: opacity .45s ease, transform .55s var(--ease); pointer-events: none; }
+    .scene.active { opacity: 1; transform: none; }
+    .card { padding: 18px; border-radius: 14px; background: #fff; }
+    .card + .card { margin-top: 12px; }
+    .card small { display: block; color: var(--muted); font-size: 12px; }
+    .card strong { display: block; font-size: 15px; }
+    .scene-label { margin-bottom: 14px; color: var(--mint-soft); font-size: 12px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+    .field-mock { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; color: var(--ink); font-size: 13.5px; }
+    .bubble { max-width: 85%; padding: 10px 13px; border-radius: 12px 12px 12px 4px; background: #f1f4f3; font-size: 13.5px; line-height: 1.5; }
+    .bubble.me { margin-left: auto; border-radius: 12px 12px 4px 12px; background: var(--accent-soft); }
+    .bubble + .bubble { margin-top: 8px; }
+    .two-btn { display: flex; gap: 8px; margin-top: 14px; }
+    .two-btn span { flex: 1; display: grid; place-items: center; height: 38px; border-radius: 10px; border: 1px solid var(--line); font-size: 13px; font-weight: 700; }
+    .two-btn span:first-child { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .doc { display: flex; align-items: center; gap: 12px; }
+    .doc i { display: grid; place-items: center; width: 42px; height: 36px; border-radius: 9px; background: #efeaf8; color: #5b3f99; font-size: 10.5px; font-weight: 800; font-style: normal; }
+
+    /* Возможности */
+    .bento { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 16px; margin-top: 56px; }
+    .tile { position: relative; display: flex; flex-direction: column; gap: 10px; min-height: 270px; padding: 26px; border: 1px solid var(--line); border-radius: 20px; background: #fff; overflow: hidden; transition: transform .35s var(--ease), box-shadow .35s ease, border-color .35s ease; }
+    .tile:hover { transform: translateY(-4px); box-shadow: 0 24px 60px rgba(18, 37, 39, .1); border-color: #c9ddd6; }
+    .tile h3 { margin: 0; font-size: 20px; letter-spacing: -.025em; }
+    .tile p { margin: 0; max-width: 420px; color: var(--muted); font-size: 14.5px; line-height: 1.6; }
+    .tile .demo { margin-top: auto; padding-top: 18px; }
+    .t-sla { grid-column: span 3; }
+    .t-chat { grid-column: span 3; }
+    .t-msg, .t-dep, .t-roles { grid-column: span 2; }
+    .t-an { grid-column: span 4; }
+    .t-kb { grid-column: span 2; }
+    .tile.dark { background: var(--nav); border-color: var(--nav); color: #fff; }
+    .tile.dark p { color: #b5ccc7; }
+    .slarow { display: grid; grid-template-columns: 110px minmax(0, 1fr) 64px; gap: 12px; align-items: center; font-size: 13px; }
+    .slarow + .slarow { margin-top: 12px; }
+    .slarow b { text-align: right; font-weight: 700; }
+    .slarow .meter span.late { background: #c62a20; }
+    .slarow .meter span.soon { background: #d99a2b; }
+    .typing { justify-self: start; width: fit-content; display: inline-flex; gap: 4px; padding: 12px 14px; border-radius: 12px 12px 12px 4px; background: #f1f4f3; }
+    .typing i { width: 6px; height: 6px; border-radius: 50%; background: #93a8a3; animation: typing 1.2s infinite ease-in-out; }
+    .typing i:nth-child(2) { animation-delay: .15s; }
+    .typing i:nth-child(3) { animation-delay: .3s; }
+    @keyframes typing { 0%, 60%, 100% { transform: translateY(0); opacity: .5; } 30% { transform: translateY(-4px); opacity: 1; } }
+    .chat-demo { display: grid; gap: 8px; }
+    .chat-demo .bubble { opacity: 0; transform: translateY(8px); transition: opacity .4s ease, transform .5s var(--spring); }
+    .chat-demo .bubble.show { opacity: 1; transform: none; }
+    .msgr { display: flex; align-items: center; gap: 10px; }
+    .msgr span { display: inline-flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 12px; background: #fff; color: var(--ink); font-weight: 800; font-size: 14px; }
+    .msgr .wire { flex: 1; height: 2px; background: repeating-linear-gradient(90deg, var(--mint) 0 8px, transparent 8px 14px); background-size: 28px 2px; animation: wire 1s linear infinite; }
+    @keyframes wire { to { background-position: 28px 0; } }
+    .big-num { font-size: 52px; font-weight: 800; letter-spacing: -.05em; line-height: 1; color: var(--accent-ink); }
+    .bars { display: flex; align-items: flex-end; gap: 10px; height: 120px; }
+    .bars span { flex: 1; border-radius: 6px 6px 2px 2px; background: var(--accent); transform: scaleY(0); transform-origin: bottom; transition: transform 1s var(--ease); }
+    .bars span.low { background: #d99a2b; }
+    .in .bars span { transform: scaleY(1); }
+    .bars-labels { display: flex; gap: 10px; margin-top: 8px; color: var(--muted); font-size: 11px; }
+    .bars-labels span { flex: 1; text-align: center; }
+    .roles { display: grid; gap: 8px; }
+    .roles div { display: flex; align-items: center; gap: 10px; font-size: 13.5px; }
+    .av { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: #dbe9e4; color: #1d4d44; font-size: 11px; font-weight: 800; }
+    .roles em { margin-left: auto; font-style: normal; color: var(--muted); font-size: 12.5px; }
+    .kb-search { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border: 1px solid var(--line); border-radius: 12px; font-size: 14px; }
+    .kb-search .caret { width: 2px; height: 18px; background: var(--accent); animation: caret 1s steps(1) infinite; }
+    @keyframes caret { 50% { opacity: 0; } }
+    .kb-hit { margin-top: 10px; padding: 12px 14px; border-radius: 12px; background: var(--accent-soft); font-size: 13.5px; opacity: 0; transform: translateY(6px); transition: opacity .4s ease, transform .4s var(--ease); }
+    .kb-hit.show { opacity: 1; transform: none; }
+    .kb-hit small { display: block; color: var(--accent-ink); font-size: 11.5px; font-weight: 700; }
+
+    /* Калькулятор */
+    .calc { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 0; margin-top: 56px; border-radius: 24px; overflow: hidden; box-shadow: 0 30px 80px rgba(18, 37, 39, .12); }
+    .calc-left { padding: 40px; background: #fff; }
+    .calc-right { display: flex; flex-direction: column; justify-content: space-between; gap: 28px; padding: 40px; background: var(--nav); color: #cad9d6; }
+    .presets { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 30px; }
+    .presets button { height: 40px; padding: 0 16px; border: 1px solid #d5e0dc; border-radius: 99px; background: #fff; color: var(--ink-2); font-size: 14px; font-weight: 700; transition: all .2s var(--ease); }
+    .presets button:hover { border-color: var(--accent); }
+    .presets button[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: #fff; }
+    .range-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 14px; }
+    .range-head label { font-size: 14px; font-weight: 700; color: var(--ink-2); }
+    .range-head output { font-size: 28px; font-weight: 800; letter-spacing: -.04em; }
+    input[type=range] { width: 100%; height: 28px; margin: 0; background: transparent; -webkit-appearance: none; appearance: none; }
+    input[type=range]::-webkit-slider-runnable-track { height: 8px; border-radius: 4px; background: linear-gradient(90deg, var(--accent) var(--p, 20%), #e2eae7 var(--p, 20%)); }
+    input[type=range]::-moz-range-track { height: 8px; border-radius: 4px; background: linear-gradient(90deg, var(--accent) var(--p, 20%), #e2eae7 var(--p, 20%)); }
+    input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 26px; height: 26px; margin-top: -9px; border: 4px solid #fff; border-radius: 50%; background: var(--accent); box-shadow: 0 4px 12px rgba(18, 37, 39, .3); transition: transform .15s ease; }
+    input[type=range]::-moz-range-thumb { width: 18px; height: 18px; border: 4px solid #fff; border-radius: 50%; background: var(--accent); box-shadow: 0 4px 12px rgba(18, 37, 39, .3); }
+    input[type=range]:active::-webkit-slider-thumb { transform: scale(1.15); }
+    .calc-list { display: grid; gap: 12px; margin: 30px 0 0; padding: 0; list-style: none; }
+    .calc-list li { display: flex; gap: 10px; color: var(--ink-2); font-size: 14.5px; line-height: 1.5; }
+    .calc-list .ico { color: var(--accent); margin-top: 2px; }
+    .price { color: #fff; font-size: clamp(40px, 5vw, 60px); font-weight: 800; letter-spacing: -.05em; line-height: 1; }
+    .price-note { margin-top: 10px; color: #8fb0aa; font-size: 14px; }
+    .calc-right .btn { width: 100%; }
+
+    /* Вопросы */
+    .faq { display: grid; gap: 12px; max-width: 860px; margin-top: 48px; }
+    .qa { border: 1px solid var(--line); border-radius: 16px; background: #fff; transition: border-color .25s ease, box-shadow .25s ease; }
+    .qa.open { border-color: #b9dccf; box-shadow: 0 12px 32px rgba(18, 37, 39, .06); }
+    .qa button { display: flex; align-items: center; justify-content: space-between; gap: 16px; width: 100%; padding: 22px 24px; border: 0; background: none; color: var(--ink); font-size: 17px; font-weight: 700; text-align: left; }
+    .qa .plus { position: relative; flex: none; width: 28px; height: 28px; border-radius: 50%; background: var(--accent-soft); transition: transform .35s var(--ease), background-color .25s ease; }
+    .qa .plus::before, .qa .plus::after { content: ''; position: absolute; left: 50%; top: 50%; width: 12px; height: 2px; border-radius: 2px; background: var(--accent-ink); transform: translate(-50%, -50%); }
+    .qa .plus::after { transform: translate(-50%, -50%) rotate(90deg); transition: transform .35s var(--ease); }
+    .qa.open .plus { transform: rotate(180deg); background: var(--accent); }
+    .qa.open .plus::before, .qa.open .plus::after { background: #fff; }
+    .qa.open .plus::after { transform: translate(-50%, -50%) rotate(0deg); }
+    .answer { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .4s var(--ease); }
+    .qa.open .answer { grid-template-rows: 1fr; }
+    .answer > div { overflow: hidden; }
+    .answer p { margin: 0; padding: 0 24px 22px; color: var(--muted); font-size: 15.5px; line-height: 1.65; }
+
+    /* Финальный призыв */
+    .final { position: relative; padding: 110px 0; background: var(--nav); color: #cad9d6; overflow: hidden; text-align: center; }
+    .final::before { content: ''; position: absolute; inset: -40% -10% auto; height: 120%; background: radial-gradient(ellipse at center, rgba(107, 212, 181, .16), transparent 60%); pointer-events: none; }
+    .final h2 { position: relative; max-width: 820px; margin: 0 auto 18px; color: #fff; font-size: clamp(34px, 4.6vw, 58px); font-weight: 800; letter-spacing: -.05em; line-height: 1.06; }
+    .final p { position: relative; max-width: 560px; margin: 0 auto 34px; font-size: 17px; line-height: 1.6; color: #b5ccc7; }
+    .final .hero-cta { position: relative; justify-content: center; }
+    footer { padding: 32px 0; background: #0d1d1f; color: #8fb0aa; font-size: 13.5px; }
+    .foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; }
+    .foot nav { display: flex; gap: 20px; }
+    .foot a { text-decoration: none; }
+    .foot a:hover { color: #fff; }
+
+    /* Адаптив */
+    @media (max-width: 1020px) {
+      .menu { display: none; }
+      .hero-grid, .steps-grid, .calc { grid-template-columns: minmax(0, 1fr); }
+      .stage { max-width: 620px; margin: 10px auto 0; }
+      .step-visual { display: none; }
+      .bento { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .t-sla, .t-chat, .t-msg, .t-dep, .t-roles, .t-an, .t-kb { grid-column: span 1; }
+      .t-an { grid-column: 1 / -1; }
+    }
+    @media (max-width: 640px) {
+      .wrap { padding: 0 16px; }
+      .header-actions { gap: 6px; }
+      .header .btn { padding: 0 12px; font-size: 13px; }
+      .hero { padding: 112px 0 80px; }
+      .hero .lead { font-size: 16px; }
+      .float-chip { display: none; }
+      .mock { transform: none !important; }
+      .estimate-pop { left: 16px; right: 16px; width: auto; transform: translateY(10px) scale(.96); }
+      .estimate-pop.show { transform: none; }
+      section.block { padding: 76px 0; }
+      .bento { grid-template-columns: minmax(0, 1fr); }
+      .t-an { grid-column: auto; }
+      .calc-left, .calc-right { padding: 26px; }
+      .hero-cta .btn { flex: 1; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; animation-delay: 0s !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+      .hero h1 .word, .fade-up, .reveal { opacity: 1; transform: none; }
+      .mock { transform: none; }
+    }
+  </style>
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+      <symbol id="i-ticket" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></symbol>
+      <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+      <symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></symbol>
+      <symbol id="i-wallet" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20M6 15h4"/></symbol>
+      <symbol id="i-code" viewBox="0 0 24 24"><path d="m16 18 6-6-6-6M8 6l-6 6 6 6"/></symbol>
+      <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol>
+      <symbol id="i-life" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="m5.6 5.6 3.6 3.6M14.8 14.8l3.6 3.6M18.4 5.6l-3.6 3.6M9.2 14.8l-3.6 3.6"/></symbol>
+      <symbol id="i-bulb" viewBox="0 0 24 24"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+      <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></symbol>
+      <symbol id="i-cursor" viewBox="0 0 24 24"><path d="M4 2l16 9-7 2-3 7z" fill="#fff" stroke="#18282b" stroke-width="1.5" stroke-linejoin="round"/></symbol>
+    </defs>
+  </svg>
+
+  <header class="header" id="header">
+    <div class="wrap header-row">
+      <a class="logo" href="#top" aria-label="Линия — на главную"><span class="logo-mark" aria-hidden="true">Л</span><span class="logo-name">Линия<b>.</b></span></a>
+      <nav class="menu" aria-label="Разделы страницы">
+        <a href="#how">Как это работает</a>
+        <a href="#features">Возможности</a>
+        <a href="#price">Стоимость</a>
+        <a href="#faq">Вопросы</a>
+      </nav>
+      <div class="header-actions">
+        <a class="btn btn-ghost" href="/">Войти</a>
+        <a class="btn btn-mint" href="/?register">Оставить заявку</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="hero-glow" aria-hidden="true"></div>
+      <div class="wrap hero-grid">
+        <div>
+          <span class="eyebrow fade-up" style="animation-delay:.05s"><i aria-hidden="true"></i>Разработка и поддержка по часам</span>
+          <h1 data-split>Каждый час работы — <em>под вашим контролем</em></h1>
+          <p class="lead fade-up" style="animation-delay:.55s">Заявки, оценка трудозатрат, переписка с командой и акты — в одном кабинете. Работа начинается только после того, как вы согласуете часы.</p>
+          <div class="hero-cta fade-up" style="animation-delay:.7s">
+            <a class="btn btn-mint" href="/?register">Создать кабинет <svg class="ico" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+            <a class="btn btn-ghost" href="#how">Как это работает</a>
+          </div>
+          <div class="hero-note fade-up" style="animation-delay:.85s">
+            <span><svg class="ico" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-check"/></svg>Оценка до начала работ</span>
+            <span><svg class="ico" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-check"/></svg>Сроки по SLA</span>
+            <span><svg class="ico" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-check"/></svg>Акты по выполненным задачам</span>
+          </div>
+        </div>
+
+        <div class="stage fade-up" style="animation-delay:.4s" id="stage" aria-hidden="true">
+          <div class="mock" id="mock">
+            <div class="mock-bar"><i></i><i></i><i></i><span>Кабинет заявок</span></div>
+            <div class="mock-body">
+              <div class="mock-head"><strong>Мои заявки</strong><small>ООО «Вектор»</small></div>
+              <div class="mrow" id="row-main">
+                <span class="mico"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-ticket"/></svg></span>
+                <span class="mtext"><strong>№24 · Интеграция с CRM</strong><small>Интеграция · создана сегодня</small><br><span class="sla" id="sla"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><use href="#i-clock"/></svg><span id="sla-text">Оценка через 1:59:42</span></span></span>
+                <span class="badge new" id="badge-main">Новая</span>
+              </div>
+              <div class="mrow">
+                <span class="mico"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-ticket"/></svg></span>
+                <span class="mtext"><strong>№22 · Исправить форму заявки</strong><small>Доработка · вчера</small></span>
+                <span class="badge work">В работе</span>
+              </div>
+              <div class="mrow">
+                <span class="mico"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-ticket"/></svg></span>
+                <span class="mtext"><strong>№19 · Перенос кабинета на домен</strong><small>Доработка · 25 сент.</small></span>
+                <span class="badge done">Выполнена</span>
+              </div>
+              <div class="mock-hours">
+                <div><span>Депозит часов</span><strong id="dep">12,5 ч</strong></div>
+                <div class="meter"><span id="dep-bar"></span></div>
+              </div>
+            </div>
+            <div class="estimate-pop" id="pop">
+              <small>Оценка трудозатрат</small>
+              <strong>2,5 часа</strong>
+              <p>Настроим вебхук из CRM и обратную синхронизацию статуса.</p>
+              <div class="row"><span class="ok" id="approve">Одобрить</span><span>Корректировка</span></div>
+            </div>
+            <div class="mock-toast" id="mtoast"><svg class="ico" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg>Оценка одобрена — работа началась</div>
+            <svg class="cursor" id="cursor" viewBox="0 0 24 24"><use href="#i-cursor"/></svg>
+          </div>
+          <div class="float-chip a"><svg class="ico" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-send"/></svg>Ответы приходят в Telegram</div>
+          <div class="float-chip b"><svg class="ico" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shield"/></svg>Без согласования — ни часа</div>
+        </div>
+      </div>
+    </section>
+
+    <div class="ticker" aria-label="Чем мы помогаем">
+      <div class="ticker-track" id="ticker">
+        <span><svg class="ico" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-code"/></svg>Доработка сайтов и сервисов</span>
+        <span><svg class="ico" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-link"/></svg>Интеграции и API</span>
+        <span><svg class="ico" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-life"/></svg>Техническая поддержка</span>
+        <span><svg class="ico" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-bulb"/></svg>Консультации</span>
+        <span><svg class="ico" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-clock"/></svg>Сроки по SLA</span>
+        <span><svg class="ico" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-wallet"/></svg>Депозит часов и акты</span>
+        <span><svg class="ico" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-send"/></svg>Telegram и MAX</span>
+      </div>
+    </div>
+
+    <section class="block" id="how">
+      <div class="wrap">
+        <span class="kicker reveal">Как это работает</span>
+        <h2 class="title reveal" style="--d:.08s">Пять шагов от задачи до акта</h2>
+        <p class="subtitle reveal" style="--d:.16s">На каждом этапе видно, что происходит с задачей, кто за неё отвечает и сколько часов на неё согласовано.</p>
+        <div class="steps-grid">
+          <div class="steps" id="steps">
+            <div class="rail" aria-hidden="true"><span id="rail"></span></div>
+            <article class="step reveal" data-n="1" data-scene="0"><h3>Вы описываете задачу</h3><p>Создайте заявку в кабинете, в общем чате или прямо из мессенджера. Можно приложить файлы и техническое задание.</p></article>
+            <article class="step reveal" data-n="2" data-scene="1"><h3>Команда оценивает часы</h3><p>Специалист разбирается в задаче и отправляет оценку трудозатрат с пояснением, что входит в работу.</p></article>
+            <article class="step reveal" data-n="3" data-scene="2"><h3>Вы согласуете оценку</h3><p>Одобрите её, отклоните или предложите свой вариант. Без вашего решения работа не начинается.</p></article>
+            <article class="step reveal" data-n="4" data-scene="3"><h3>Работа идёт по срокам</h3><p>Вы видите статус, ответственного и сроки SLA. Если понадобятся дополнительные часы, команда попросит их согласовать.</p></article>
+            <article class="step reveal" data-n="5" data-scene="4"><h3>Готово — и закрывающие документы</h3><p>Выполненные задачи собираются в акт, часы списываются с депозита. Счета и акты всегда под рукой.</p></article>
+          </div>
+          <div class="step-visual" aria-hidden="true">
+            <div class="screen">
+              <div class="scene active" data-scene="0">
+                <div class="scene-label">Новая заявка</div>
+                <div class="card"><small>Тип задачи</small><strong>Интеграция</strong><div class="field-mock">Связать CRM с кабинетом: сделки → заявки</div><div class="field-mock" style="color:var(--muted)">ТЗ_интеграция.pdf · 240 КБ</div><div class="two-btn"><span>Создать заявку</span></div></div>
+              </div>
+              <div class="scene" data-scene="1">
+                <div class="scene-label">Оценка трудозатрат</div>
+                <div class="card"><small>Плановые часы</small><strong style="font-size:30px;letter-spacing:-.04em">2,5 ч</strong><div class="field-mock">Настроим вебхук из CRM и обратную синхронизацию статуса.</div></div>
+                <div class="card"><small>Срок подготовки оценки</small><strong>осталось 1 ч 40 мин</strong><div class="meter" style="margin-top:10px"><span style="width:40%"></span></div></div>
+              </div>
+              <div class="scene" data-scene="2">
+                <div class="scene-label">Ваше решение</div>
+                <div class="card"><small>Оценка · версия 1</small><strong style="font-size:24px">2,5 часа</strong><div class="two-btn"><span>Одобрить</span><span>Корректировка</span></div></div>
+                <div class="card"><div class="bubble">Можно начать с двух главных полей?</div><div class="bubble me">Да, учтём в оценке.</div></div>
+              </div>
+              <div class="scene" data-scene="3">
+                <div class="scene-label">В работе</div>
+                <div class="card"><small>Ответственный</small><strong>Егор Смирнов · разработчик</strong></div>
+                <div class="card"><small>Трудозатраты</small><strong>1,5 из 2,5 ч</strong><div class="meter" style="margin-top:10px"><span style="width:60%"></span></div></div>
+                <div class="card"><small>Сдача</small><strong>через 6 ч</strong></div>
+              </div>
+              <div class="scene" data-scene="4">
+                <div class="scene-label">Документы</div>
+                <div class="card doc"><i>АКТ</i><div><strong>Акт за сентябрь</strong><small>14,5 ч · подписан</small></div></div>
+                <div class="card doc"><i style="background:#e8f1fb;color:#245f9c">СЧЁТ</i><div><strong>Пакет 20 часов</strong><small>оплачен · зачислен на депозит</small></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="block" id="features" style="background:#fff">
+      <div class="wrap">
+        <span class="kicker reveal">Возможности</span>
+        <h2 class="title reveal" style="--d:.08s">Всё, что нужно для спокойной работы с подрядчиком</h2>
+        <p class="subtitle reveal" style="--d:.16s">Никаких таблиц и потерянных писем: задачи, переписка, часы и документы живут в одном месте.</p>
+        <div class="bento">
+          <article class="tile t-sla reveal">
+            <h3>Сроки, которые видно</h3>
+            <p>У каждой заявки есть сроки ответа, оценки и сдачи. Если срок подходит, это заметно сразу.</p>
+            <div class="demo">
+              <div class="slarow"><span>Первый ответ</span><div class="meter"><span data-w="100"></span></div><b style="color:var(--accent-ink)">✓</b></div>
+              <div class="slarow"><span>Оценка</span><div class="meter"><span class="soon" data-w="72"></span></div><b style="color:var(--soon)">1 ч 40 м</b></div>
+              <div class="slarow"><span>Сдача</span><div class="meter"><span data-w="35"></span></div><b>2 дня</b></div>
+            </div>
+          </article>
+          <article class="tile t-chat reveal" style="--d:.08s">
+            <h3>Общий чат с командой</h3>
+            <p>Обсуждайте вопросы без привязки к заявке. Любое сообщение можно превратить в новую заявку одним кликом.</p>
+            <div class="demo chat-demo" id="chat-demo">
+              <div class="bubble">Подскажите, можно добавить выгрузку в 1С?</div>
+              <div class="bubble me">Да. Создали заявку №27 — оценим сегодня.</div>
+              <div class="typing" aria-hidden="true"><i></i><i></i><i></i></div>
+            </div>
+          </article>
+          <article class="tile t-msg dark reveal">
+            <h3>Telegram и MAX</h3>
+            <p>Создавайте заявки, отвечайте и согласуйте оценки прямо из мессенджера.</p>
+            <div class="demo msgr" aria-hidden="true"><span><svg width="16" height="16" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-send"/></svg>Telegram</span><i class="wire"></i><span>Кабинет</span></div>
+          </article>
+          <article class="tile t-dep reveal" style="--d:.08s">
+            <h3>Депозит часов</h3>
+            <p>Пополняйте пакет часов по счёту. Списание идёт только по актам за выполненные задачи.</p>
+            <div class="demo"><div class="big-num"><span data-count="20">0</span> ч</div><div class="meter" style="margin-top:14px"><span data-w="62"></span></div></div>
+          </article>
+          <article class="tile t-roles reveal" style="--d:.16s">
+            <h3>Вся компания в кабинете</h3>
+            <p>Пригласите коллег. Заявки можно открыть всей компании или оставить личными.</p>
+            <div class="demo roles">
+              <div><span class="av">ИЛ</span>Игорь Лебедев<em>Владелец</em></div>
+              <div><span class="av" style="background:#e8f1fb;color:#245f9c">ОП</span>Ольга Пак<em>Участник</em></div>
+              <div><span class="av" style="background:#fbf0dc;color:#7f5410">АС</span>Анна Сергеева<em>Наблюдатель</em></div>
+            </div>
+          </article>
+          <article class="tile t-an reveal">
+            <h3>Отчёты по качеству сервиса</h3>
+            <p>Соблюдение сроков, нагрузка команды и оценки качества — с выгрузкой в CSV.</p>
+            <div class="demo">
+              <div class="bars" aria-hidden="true"><span class="low" style="height:40%"></span><span style="height:62%;transition-delay:.05s"></span><span style="height:74%;transition-delay:.1s"></span><span class="low" style="height:50%;transition-delay:.15s"></span><span style="height:82%;transition-delay:.2s"></span><span style="height:90%;transition-delay:.25s"></span><span style="height:68%;transition-delay:.3s"></span><span style="height:86%;transition-delay:.35s"></span></div>
+              <div class="bars-labels" aria-hidden="true"><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span></div>
+            </div>
+          </article>
+          <article class="tile t-kb reveal" style="--d:.08s">
+            <h3>База знаний</h3>
+            <p>Ответы на частые вопросы подсказываются ещё до создания заявки.</p>
+            <div class="demo">
+              <div class="kb-search"><svg width="16" height="16" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" aria-hidden="true"><use href="#i-search"/></svg><span id="kb-typed"></span><span class="caret" aria-hidden="true"></span></div>
+              <div class="kb-hit" id="kb-hit"><small>Инструкции</small>Как передать доступы к API</div>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="block" id="price">
+      <div class="wrap">
+        <span class="kicker reveal">Стоимость</span>
+        <h2 class="title reveal" style="--d:.08s">Платите за часы, а не за обещания</h2>
+        <p class="subtitle reveal" style="--d:.16s">Выберите пакет часов — он зачислится на депозит после оплаты счёта. Неизрасходованные часы остаются на балансе.</p>
+        <div class="calc reveal" style="--d:.2s">
+          <div class="calc-left">
+            <div class="range-head"><label for="hours">Сколько часов нужно</label><output id="hours-out" for="hours">20 ч</output></div>
+            <input type="range" id="hours" min="1" max="100" step="1" value="20" aria-describedby="price-note">
+            <div class="presets" role="group" aria-label="Готовые пакеты">
+              <button type="button" data-h="5" aria-pressed="false">5 ч</button>
+              <button type="button" data-h="10" aria-pressed="false">10 ч</button>
+              <button type="button" data-h="20" aria-pressed="true">20 ч</button>
+              <button type="button" data-h="50" aria-pressed="false">50 ч</button>
+            </div>
+            <ul class="calc-list">
+              <li><svg class="ico" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-check"/></svg>Каждая задача оценивается до начала работ — вы решаете, тратить ли часы</li>
+              <li><svg class="ico" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-check"/></svg>Дополнительные часы — только по отдельному согласованию</li>
+              <li><svg class="ico" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-check"/></svg>Счета и акты формируются в кабинете</li>
+            </ul>
+          </div>
+          <div class="calc-right">
+            <div>
+              <span class="kicker" style="color:var(--mint-soft)">К оплате</span>
+              <div class="price" aria-live="polite"><span id="price-value">60 000</span> ₽</div>
+              <div class="price-note" id="price-note">по ставке <span id="rate">3 000</span> ₽ за час</div>
+            </div>
+            <a class="btn btn-mint" href="/?register">Начать работу <svg class="ico" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="block" id="faq" style="background:#fff">
+      <div class="wrap">
+        <span class="kicker reveal">Вопросы</span>
+        <h2 class="title reveal" style="--d:.08s">Частые вопросы</h2>
+        <div class="faq">
+          <div class="qa reveal"><button type="button" aria-expanded="false" aria-controls="a1" id="q1">Что будет, если на задачу понадобится больше часов?<span class="plus" aria-hidden="true"></span></button><div class="answer" id="a1" role="region" aria-labelledby="q1"><div><p>Специалист отправит запрос на дополнительные часы с объяснением причины. Вы одобрите или отклоните его в кабинете — без вашего решения сверх согласованного объёма работа не продолжится.</p></div></div></div>
+          <div class="qa reveal" style="--d:.05s"><button type="button" aria-expanded="false" aria-controls="a2" id="q2">Можно ли не согласиться с оценкой?<span class="plus" aria-hidden="true"></span></button><div class="answer" id="a2" role="region" aria-labelledby="q2"><div><p>Да. Оценку можно отклонить или запросить корректировку и предложить свой вариант в часах. Команда пересчитает трудозатраты и пришлёт новую версию.</p></div></div></div>
+          <div class="qa reveal" style="--d:.1s"><button type="button" aria-expanded="false" aria-controls="a3" id="q3">Кто из моей компании увидит заявки?<span class="plus" aria-hidden="true"></span></button><div class="answer" id="a3" role="region" aria-labelledby="q3"><div><p>При создании заявки вы выбираете видимость: для всей компании или только для себя. Участникам компании можно назначить роль владельца, участника или наблюдателя.</p></div></div></div>
+          <div class="qa reveal" style="--d:.15s"><button type="button" aria-expanded="false" aria-controls="a4" id="q4">Как оплачиваются часы?<span class="plus" aria-hidden="true"></span></button><div class="answer" id="a4" role="region" aria-labelledby="q4"><div><p>Вы выбираете пакет часов, кабинет формирует счёт. После оплаты часы зачисляются на депозит, а по выполненным задачам формируется акт и часы списываются с баланса.</p></div></div></div>
+          <div class="qa reveal" style="--d:.2s"><button type="button" aria-expanded="false" aria-controls="a5" id="q5">Можно работать без входа на сайт?<span class="plus" aria-hidden="true"></span></button><div class="answer" id="a5" role="region" aria-labelledby="q5"><div><p>Да, подключите бота в Telegram или MAX в разделе «Мессенджеры». В нём можно создавать заявки, отвечать в переписке и согласовывать оценки — всё синхронизируется с кабинетом.</p></div></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="final">
+      <div class="wrap">
+        <h2 class="reveal">Начните с первой заявки</h2>
+        <p class="reveal" style="--d:.08s">Опишите задачу — команда оценит её в часах, а решение останется за вами.</p>
+        <div class="hero-cta reveal" style="--d:.16s">
+          <a class="btn btn-mint" href="/?register">Создать кабинет <svg class="ico" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+          <a class="btn btn-ghost" href="/">У меня уже есть кабинет</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap foot">
+      <span>© 2026 Линия · Кабинет заявок</span>
+      <nav aria-label="Ссылки в подвале"><a href="#how">Как это работает</a><a href="#price">Стоимость</a><a href="/">Войти</a></nav>
+    </div>
+  </footer>
+
+  <script>
+    (() => {
+      const RATE = 3000;
+      const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const $ = s => document.querySelector(s);
+      const $$ = s => [...document.querySelectorAll(s)];
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      const fmt = n => Math.round(n).toLocaleString('ru-RU');
+
+      // Шапка
+      const header = $('#header');
+      const onScroll = () => header.classList.toggle('scrolled', scrollY > 20);
+      addEventListener('scroll', onScroll, { passive: true });
+      onScroll();
+
+      // Заголовок по словам
+      const h1 = $('[data-split]');
+      let delay = 0.12;
+      const splitNode = node => [...node.childNodes].map(child => {
+        if (child.nodeType === 3) return child.textContent.split(/(\s+)/).map(part => part.trim() ? `<span class="word" style="animation-delay:${(delay += 0.06).toFixed(2)}s">${part}</span>` : part).join('');
+        return `<${child.tagName.toLowerCase()}>${splitNode(child)}</${child.tagName.toLowerCase()}>`;
+      }).join('');
+      h1.setAttribute('aria-label', h1.textContent);
+      h1.innerHTML = `<span aria-hidden="true">${splitNode(h1)}</span>`;
+
+      // Бегущая строка: дублируем содержимое для бесшовного цикла
+      const ticker = $('#ticker');
+      ticker.innerHTML += ticker.innerHTML.replace(/<span>/g, '<span aria-hidden="true">');
+
+      // Появление при прокрутке
+      const counters = el => el.querySelectorAll('[data-count]').forEach(c => {
+        const target = Number(c.dataset.count);
+        if (reduce) { c.textContent = target; return; }
+        const start = performance.now();
+        const tick = now => { const p = Math.min(1, (now - start) / 1200); c.textContent = Math.round(target * (1 - Math.pow(1 - p, 3))); if (p < 1) requestAnimationFrame(tick); };
+        requestAnimationFrame(tick);
+      });
+      const meters = el => el.querySelectorAll('[data-w]').forEach((m, i) => setTimeout(() => { m.style.width = m.dataset.w + '%'; }, reduce ? 0 : 200 + i * 120));
+      const io = new IntersectionObserver(entries => entries.forEach(entry => {
+        if (!entry.isIntersecting) return;
+        entry.target.classList.add('in');
+        counters(entry.target);
+        meters(entry.target);
+        io.unobserve(entry.target);
+      }), { threshold: 0.18, rootMargin: '0px 0px -40px 0px' });
+      $$('.reveal').forEach(el => io.observe(el));
+
+      // Наклон макета за курсором
+      const stage = $('#stage'), mock = $('#mock');
+      if (!reduce && matchMedia('(pointer: fine)').matches) {
+        stage.addEventListener('mousemove', e => {
+          const r = stage.getBoundingClientRect();
+          const x = (e.clientX - r.left) / r.width - .5, y = (e.clientY - r.top) / r.height - .5;
+          mock.style.setProperty('--ry', `${-10 + x * 10}deg`);
+          mock.style.setProperty('--rx', `${6 - y * 8}deg`);
+        });
+        stage.addEventListener('mouseleave', () => { mock.style.removeProperty('--ry'); mock.style.removeProperty('--rx'); });
+      }
+
+      // Живой сценарий в макете
+      const pop = $('#pop'), cursor = $('#cursor'), approve = $('#approve'), badge = $('#badge-main'), row = $('#row-main'), toast = $('#mtoast'), sla = $('#sla'), slaText = $('#sla-text'), depBar = $('#dep-bar');
+      let seconds = 2 * 3600 - 18;
+      const slaTimer = setInterval(() => { if (!sla.hidden) { seconds -= 1; const h = Math.floor(seconds / 3600), m = Math.floor(seconds % 3600 / 60), s = seconds % 60; slaText.textContent = `Оценка через ${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`; } }, 1000);
+      const place = (el, x, y) => { el.style.transform = `translate(${x}px, ${y}px)`; };
+      const reset = () => {
+        pop.classList.remove('show'); toast.classList.remove('show'); cursor.classList.remove('show'); row.classList.remove('hot');
+        badge.className = 'badge new'; badge.textContent = 'Новая'; sla.hidden = false; depBar.style.width = '62%';
+        place(cursor, mock.clientWidth * .8, mock.clientHeight * .9);
+      };
+      const finalState = () => { badge.className = 'badge work'; badge.textContent = 'В работе'; sla.hidden = true; depBar.style.width = '62%'; };
+      async function loop() {
+        if (reduce) { finalState(); return; }
+        while (true) {
+          reset();
+          await sleep(1400);
+          row.classList.add('hot');
+          await sleep(900);
+          pop.classList.add('show');
+          await sleep(700);
+          cursor.classList.add('show');
+          const target = approve.getBoundingClientRect(), base = mock.getBoundingClientRect();
+          place(cursor, target.left - base.left + target.width / 2 - 4, target.top - base.top + target.height / 2 - 4);
+          await sleep(1200);
+          approve.classList.add('press');
+          await sleep(180);
+          approve.classList.remove('press');
+          await sleep(200);
+          pop.classList.remove('show');
+          cursor.classList.remove('show');
+          badge.className = 'badge work'; badge.textContent = 'В работе'; sla.hidden = true;
+          depBar.style.width = '42%';
+          await sleep(350);
+          toast.classList.add('show');
+          await sleep(2600);
+          toast.classList.remove('show');
+          await sleep(1400);
+        }
+      }
+      requestAnimationFrame(() => { depBar.style.width = '62%'; loop(); });
+      if (reduce) clearInterval(slaTimer);
+
+      // Шаги: активный шаг и прогресс-линия
+      const steps = $$('.step'), scenes = $$('.scene'), rail = $('#rail');
+      const setStep = index => {
+        steps.forEach((s, i) => { s.classList.toggle('active', i === index); s.classList.toggle('passed', i < index); });
+        scenes.forEach((s, i) => s.classList.toggle('active', i === index));
+      };
+      const stepsBox = $('#steps');
+      const onStepsScroll = () => {
+        const r = stepsBox.getBoundingClientRect();
+        const mid = innerHeight * .5;
+        const progress = Math.min(1, Math.max(0, (mid - r.top) / r.height));
+        rail.style.height = `${progress * 100}%`;
+        let current = 0;
+        steps.forEach((s, i) => { if (s.getBoundingClientRect().top < mid) current = i; });
+        setStep(current);
+      };
+      addEventListener('scroll', onStepsScroll, { passive: true });
+      onStepsScroll();
+
+      // Чат: сообщения по очереди
+      const chatDemo = $('#chat-demo');
+      const chatObs = new IntersectionObserver(([entry]) => {
+        if (!entry.isIntersecting) return;
+        chatDemo.querySelectorAll('.bubble').forEach((b, i) => setTimeout(() => b.classList.add('show'), reduce ? 0 : 300 + i * 700));
+        chatObs.disconnect();
+      }, { threshold: .4 });
+      chatObs.observe(chatDemo);
+
+      // База знаний: набор запроса
+      const typed = $('#kb-typed'), hit = $('#kb-hit');
+      const phrase = 'доступы к API';
+      const kbObs = new IntersectionObserver(async ([entry]) => {
+        if (!entry.isIntersecting) return;
+        kbObs.disconnect();
+        if (reduce) { typed.textContent = phrase; hit.classList.add('show'); return; }
+        while (true) {
+          for (let i = 1; i <= phrase.length; i++) { typed.textContent = phrase.slice(0, i); await sleep(90); }
+          hit.classList.add('show');
+          await sleep(3200);
+          hit.classList.remove('show');
+          for (let i = phrase.length; i >= 0; i--) { typed.textContent = phrase.slice(0, i); await sleep(35); }
+          await sleep(700);
+        }
+      }, { threshold: .5 });
+      kbObs.observe(typed);
+
+      // Калькулятор
+      const range = $('#hours'), out = $('#hours-out'), price = $('#price-value');
+      $('#rate').textContent = fmt(RATE);
+      let shown = 20 * RATE, raf = 0;
+      const animatePrice = target => {
+        cancelAnimationFrame(raf);
+        if (reduce) { shown = target; price.textContent = fmt(target); return; }
+        const from = shown, start = performance.now();
+        const step = now => { const p = Math.min(1, (now - start) / 400); shown = from + (target - from) * (1 - Math.pow(1 - p, 3)); price.textContent = fmt(shown); if (p < 1) raf = requestAnimationFrame(step); };
+        raf = requestAnimationFrame(step);
+      };
+      const update = () => {
+        const h = Number(range.value);
+        out.textContent = `${h} ч`;
+        range.style.setProperty('--p', `${(h - 1) / 99 * 100}%`);
+        range.setAttribute('aria-valuetext', `${h} часов`);
+        $$('.presets button').forEach(b => b.setAttribute('aria-pressed', String(Number(b.dataset.h) === h)));
+        animatePrice(h * RATE);
+      };
+      range.addEventListener('input', update);
+      $$('.presets button').forEach(b => b.addEventListener('click', () => { range.value = b.dataset.h; update(); }));
+      update();
+
+      // Вопросы
+      $$('.qa button').forEach(button => button.addEventListener('click', () => {
+        const qa = button.closest('.qa');
+        const open = !qa.classList.contains('open');
+        qa.classList.toggle('open', open);
+        button.setAttribute('aria-expanded', String(open));
+      }));
+    })();
+  </script>
+</body>
+</html>

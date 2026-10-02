@@ -949,6 +949,11 @@ def home():
     return FileResponse(ROOT / "web" / "index.html")
 
 
+@app.get("/landing")
+def landing():
+    return FileResponse(ROOT / "web" / "landing.html")
+
+
 @app.get("/style.css")
 def style():
     return FileResponse(ROOT / "web" / "style.css", media_type="text/css")
