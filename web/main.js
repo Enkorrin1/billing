@@ -36,6 +36,8 @@ const ICONS = {
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a7 7 0 0 1 16 0v1"/>',
   alert: '<circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/>',
   arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>',
+  moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>',
   help: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 4.9.8c0 1.7-2.4 2.2-2.4 3.7M12 17h.01"/>',
 };
 const icon = (name, size = 18) => `<svg class="ico" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`;
@@ -96,6 +98,7 @@ function openPalette() {
     { group: 'Разделы', svg: icon('user'), label: 'Мой профиль', run: () => setView('profile') },
     { group: 'Действия', svg: icon('plus'), label: 'Создать заявку', run: () => setView('new') },
     ...(staff ? [] : [{ group: 'Действия', svg: icon('help'), label: 'Пройти обучение по кабинету', run: () => startTour() }]),
+    { group: 'Действия', svg: icon(effectiveTheme() === 'dark' ? 'sun' : 'moon'), label: effectiveTheme() === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему', run: () => toggleTheme() },
   ].map(item => ({ ...item, hay: item.label.toLocaleLowerCase('ru-RU') }));
   const tickets = state.tickets.slice().sort((a, b) => b.updated_at.localeCompare(a.updated_at)).map(t => ({ group: 'Заявки', svg: icon('ticket'), label: `№${t.id} · ${t.title}`, hint: statusNames[t.status], run: () => openTicket(t.id), hay: [t.id, t.title, t.customer_name, t.customer_company].join(' ').toLocaleLowerCase('ru-RU') }));
   const chats = staff ? state.chats.map(c => ({ group: 'Чаты', svg: icon('chat'), label: c.customer_name, hint: c.last_message || '', run: () => openChat(c.id), hay: [c.customer_name, c.last_message].join(' ').toLocaleLowerCase('ru-RU') })) : [];
@@ -265,6 +268,183 @@ function endTour(completed) {
   if (state.view !== 'tickets') { history.replaceState(null, '', location.pathname); setView('tickets'); }
   toast(completed ? 'Обучение пройдено. Запустить снова — кнопка «?» вверху' : 'Обучение можно пройти позже — кнопка «?» вверху', 'info');
 }
+const SCROLL_AREAS = '.messages, .inbox-items, .internal-notes-list';
+function captureUi() {
+  const active = document.activeElement;
+  return {
+    scrollY: window.scrollY,
+    scrolls: [...document.querySelectorAll(SCROLL_AREAS)].map(el => el.scrollHeight - el.scrollTop - el.clientHeight < 40 ? 'bottom' : el.scrollTop),
+    focus: active?.id && active !== document.body ? { id: active.id, start: active.selectionStart, end: active.selectionEnd } : null,
+  };
+}
+function restoreUi(ui) {
+  window.scrollTo(0, ui.scrollY);
+  document.querySelectorAll(SCROLL_AREAS).forEach((el, i) => { const value = ui.scrolls[i]; if (value !== undefined) el.scrollTop = value === 'bottom' ? el.scrollHeight : value; });
+  const el = ui.focus && document.getElementById(ui.focus.id);
+  if (!el) return;
+  el.focus({ preventScroll: true });
+  if (ui.focus.start != null) try { el.setSelectionRange(ui.focus.start, ui.focus.end); } catch {}
+}
+const draftKey = name => `linia-draft-${state.user?.id}-${name}`;
+function bindDrafts(root = document) {
+  root.querySelectorAll('textarea[data-draft]').forEach(el => {
+    if (el.dataset.draftBound) return;
+    el.dataset.draftBound = '1';
+    try { const saved = localStorage.getItem(draftKey(el.dataset.draft)); if (saved && !el.value) el.value = saved; } catch {}
+    el.addEventListener('input', () => { try { el.value.trim() ? localStorage.setItem(draftKey(el.dataset.draft), el.value) : localStorage.removeItem(draftKey(el.dataset.draft)); } catch {} });
+  });
+}
+function clearDraft(name) { try { localStorage.removeItem(draftKey(name)); } catch {} }
+/* ---------- Тема ---------- */
+const themeMedia = window.matchMedia('(prefers-color-scheme: dark)');
+const effectiveTheme = () => document.documentElement.dataset.theme || (themeMedia.matches ? 'dark' : 'light');
+function syncThemeUi() {
+  const dark = effectiveTheme() === 'dark';
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', dark ? '#0a1314' : '#122527');
+  const button = document.querySelector('#theme-toggle');
+  if (button) { button.innerHTML = icon(dark ? 'sun' : 'moon'); button.setAttribute('aria-label', dark ? 'Включить светлую тему' : 'Включить тёмную тему'); button.title = button.getAttribute('aria-label'); }
+}
+function toggleTheme() {
+  const next = effectiveTheme() === 'dark' ? 'light' : 'dark';
+  const root = document.documentElement;
+  if (!reduceMotion()) { root.classList.add('theme-switching'); setTimeout(() => root.classList.remove('theme-switching'), 350); }
+  root.dataset.theme = next;
+  try { localStorage.setItem('linia-theme', next); } catch {}
+  syncThemeUi();
+  toast(next === 'dark' ? 'Тёмная тема включена' : 'Светлая тема включена');
+}
+
+/* ---------- Скелетоны ---------- */
+let loadingTimer = null;
+function skeletonLines(count = 3) { return `<div class="skeleton-wrap" aria-busy="true"><span class="visually-hidden" role="status">Загрузка…</span>${Array.from({ length: count }, (_, i) => `<span class="skeleton" style="width:${[92, 76, 84, 64][i % 4]}%;height:12px"></span>`).join('')}</div>`; }
+function skeleton(kind) {
+  const line = (w, h = 12, extra = '') => `<span class="skeleton" style="width:${w};height:${h}px;${extra}"></span>`;
+  const stat = () => `<div class="stat skeleton-card">${line('55%')}${line('38%', 26)}${line('72%')}</div>`;
+  const rows = n => Array.from({ length: n }, () => `<div class="skeleton-row">${line('36px', 36, 'border-radius:10px')}<div class="skeleton-stack">${line('62%', 13)}${line('40%', 11)}</div>${line('96px', 24, 'border-radius:7px')}</div>`).join('');
+  const panel = n => `<section class="panel"><div class="toolbar">${line('30%', 16)}</div>${rows(n)}</section>`;
+  const card = () => `<section class="panel content skeleton-stack">${line('40%', 16)}${line('100%')}${line('86%')}${line('64%')}</section>`;
+  const stats = n => `<div class="stats ${n === 5 ? 'five' : ''}">${Array.from({ length: n }, stat).join('')}</div>`;
+  const inner = {
+    dashboard: `${stats(4)}<div class="workspace-grid">${panel(6)}<div class="context-stack">${card()}${card()}</div></div>`,
+    analytics: `${stats(5)}<div class="split"><div class="context-stack">${card()}${panel(4)}</div><div class="context-stack">${card()}${card()}</div></div>`,
+    billing: `<div class="billing-kpi-grid">${Array.from({ length: 4 }, stat).join('')}</div>${panel(5)}`,
+    cards: `<div class="kb-grid">${Array.from({ length: 6 }, card).join('')}</div>`,
+    detail: `<section class="ticket-progress">${line('100%', 28, 'border-radius:14px')}</section><div class="detail-grid"><div>${card()}${panel(3)}</div><div>${card()}${card()}</div></div>`,
+    list: panel(6),
+  }[kind] || panel(6);
+  return `<div class="skeleton-wrap" aria-busy="true"><span class="visually-hidden" role="status">Загрузка…</span>${inner}</div>`;
+}
+function delayedLoading(title, kind) {
+  clearTimeout(loadingTimer);
+  loadingTimer = setTimeout(() => { if (state.user) shell(title, '', skeleton(kind)); }, 180);
+}
+
+/* ---------- Перетаскивание файлов ---------- */
+const ALLOWED_FILES = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.pdf', '.txt', '.doc', '.docx', '.xls', '.xlsx', '.csv', '.zip'];
+function checkFiles(files) {
+  const ok = [], rejected = [];
+  files.forEach(file => { const ext = '.' + (file.name.split('.').pop() || '').toLowerCase(); (file.size > 10 * 1024 * 1024 || !ALLOWED_FILES.includes(ext) ? rejected : ok).push(file); });
+  if (rejected.length) toast(`Не подходят по формату или размеру (до 10 МБ): ${rejected.map(f => f.name).join(', ')}`, 'error');
+  return ok;
+}
+function bindDropzone(area, label, onFiles) {
+  if (!area) return;
+  area.classList.add('dropzone');
+  area.insertAdjacentHTML('beforeend', `<div class="drop-overlay" aria-hidden="true"><div>${icon('paperclip', 28)}<strong>${label}</strong><span>PNG, JPG, PDF, документы и архивы до 10 МБ</span></div></div>`);
+  let depth = 0;
+  const hasFiles = e => [...(e.dataTransfer?.types || [])].includes('Files');
+  area.addEventListener('dragenter', e => { if (!hasFiles(e)) return; e.preventDefault(); depth += 1; area.classList.add('dragging'); });
+  area.addEventListener('dragover', e => { if (!hasFiles(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+  area.addEventListener('dragleave', e => { if (!hasFiles(e)) return; depth = Math.max(0, depth - 1); if (!depth) area.classList.remove('dragging'); });
+  area.addEventListener('drop', e => { if (!hasFiles(e)) return; e.preventDefault(); e.stopPropagation(); depth = 0; area.classList.remove('dragging'); const files = checkFiles([...e.dataTransfer.files]); if (files.length) onFiles(files); });
+}
+function bindChatFiles() {
+  const form = document.querySelector('#chat-message-form');
+  if (!form) return;
+  const input = form.elements.files;
+  const list = form.querySelector('#chat-files');
+  const paint = () => {
+    list.innerHTML = [...input.files].map((file, i) => `<span class="file-chip">${icon('paperclip', 13)}<span>${esc(file.name)}</span><button type="button" data-remove-file="${i}" aria-label="Убрать ${esc(file.name)}">×</button></span>`).join('');
+    list.querySelectorAll('[data-remove-file]').forEach(button => button.onclick = () => { const dt = new DataTransfer(); [...input.files].forEach((file, i) => { if (i !== Number(button.dataset.removeFile)) dt.items.add(file); }); input.files = dt.files; paint(); });
+  };
+  const add = files => { const dt = new DataTransfer(); [...input.files, ...files].forEach(file => dt.items.add(file)); input.files = dt.files; paint(); };
+  input.addEventListener('change', () => { const ok = checkFiles([...input.files]); if (ok.length !== input.files.length) { const dt = new DataTransfer(); ok.forEach(f => dt.items.add(f)); input.files = dt.files; } paint(); });
+  form.querySelector('textarea').addEventListener('paste', e => { const files = checkFiles([...(e.clipboardData?.files || [])]); if (files.length) { e.preventDefault(); add(files); toast(`Прикреплено файлов: ${files.length}`); } });
+  bindDropzone(document.querySelector('.inbox-thread'), 'Отпустите, чтобы приложить к сообщению', files => { add(files); toast(`Прикреплено файлов: ${files.length} — они уйдут с сообщением`); });
+}
+
+/* ---------- Push-уведомления ---------- */
+const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const isIos = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const base64ToBytes = value => { const raw = atob((value + '='.repeat((4 - value.length % 4) % 4)).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from(raw, c => c.charCodeAt(0)); };
+async function currentPushSubscription() {
+  if (!pushSupported()) return null;
+  const reg = await navigator.serviceWorker.getRegistration();
+  return reg ? reg.pushManager.getSubscription() : null;
+}
+async function savePushSubscription(subscription) {
+  const json = subscription.toJSON();
+  await api('/push/subscribe', { method: 'POST', body: JSON.stringify({ endpoint: json.endpoint, keys: json.keys }) });
+  state.pushEnabled = true;
+}
+async function enablePush() {
+  if (!pushSupported()) throw new Error(isIos() && !isStandalone() ? 'На iPhone сначала добавьте кабинет на экран «Домой» и откройте его оттуда' : 'Этот браузер не поддерживает push-уведомления');
+  const permission = await Notification.requestPermission();
+  if (permission !== 'granted') throw new Error('Уведомления не разрешены в браузере');
+  const { public_key } = await api('/push/key');
+  const key = base64ToBytes(public_key);
+  const reg = await navigator.serviceWorker.ready;
+  let subscription = await reg.pushManager.getSubscription();
+  const sameKey = subscription?.options?.applicationServerKey && new Uint8Array(subscription.options.applicationServerKey).every((byte, i) => byte === key[i]);
+  if (subscription && !sameKey) { await subscription.unsubscribe(); subscription = null; }
+  if (!subscription) subscription = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+  await savePushSubscription(subscription);
+}
+async function disablePush() {
+  const subscription = await currentPushSubscription().catch(() => null);
+  if (subscription) {
+    await api('/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint: subscription.endpoint }) }).catch(() => {});
+    await subscription.unsubscribe().catch(() => {});
+  }
+  state.pushEnabled = false;
+}
+async function syncPush() {
+  try {
+    if (!pushSupported() || Notification.permission !== 'granted') return;
+    const subscription = await currentPushSubscription();
+    if (subscription) await savePushSubscription(subscription);
+  } catch {}
+}
+async function mountPushCard() {
+  const note = document.querySelector('.profile-layout > .profile-note');
+  if (!note) return;
+  const stack = document.createElement('div');
+  stack.className = 'context-stack';
+  note.replaceWith(stack);
+  stack.append(note);
+  stack.insertAdjacentHTML('beforeend', '<section class="panel content push-card" id="push-card" aria-live="polite"><div class="eyebrow">Уведомления на этом устройстве</div><h2>Push-уведомления</h2><div id="push-body">' + skeletonLines(2) + '</div></section>');
+  const body = stack.querySelector('#push-body');
+  const paint = async () => {
+    const subscription = await currentPushSubscription().catch(() => null);
+    state.pushEnabled = Boolean(subscription);
+    if (!pushSupported()) {
+      body.innerHTML = isIos() && !isStandalone()
+        ? '<p>На iPhone уведомления работают из приложения на экране «Домой».</p><ol class="push-steps"><li>Нажмите «Поделиться» в Safari.</li><li>Выберите «На экран „Домой“».</li><li>Откройте кабинет с экрана «Домой» и вернитесь сюда.</li></ol>'
+        : '<p>Этот браузер не поддерживает push-уведомления. Попробуйте Chrome, Edge, Firefox или Safari.</p>';
+    } else if (Notification.permission === 'denied') {
+      body.innerHTML = '<p>Уведомления запрещены в настройках браузера. Разрешите их для этого сайта и обновите страницу.</p>';
+    } else if (subscription) {
+      body.innerHTML = `<p class="push-on">${icon('check', 16)}Включены — новые события придут, даже если кабинет закрыт.</p><div class="row"><button class="button small" id="push-test">Проверить</button><button class="button small" id="push-off">Отключить</button></div>`;
+    } else {
+      body.innerHTML = '<p>Получайте новые сообщения, оценки и смены статуса на телефон или компьютер, даже когда кабинет закрыт.</p><button class="button primary" id="push-on">Включить уведомления</button>';
+    }
+    body.querySelector('#push-on')?.addEventListener('click', async e => { e.target.disabled = true; try { await enablePush(); toast('Уведомления включены'); } catch (error) { toast(error.message, 'error'); } paint(); });
+    body.querySelector('#push-off')?.addEventListener('click', async e => { e.target.disabled = true; await disablePush(); toast('Уведомления на этом устройстве отключены', 'info'); paint(); });
+    body.querySelector('#push-test')?.addEventListener('click', async e => { e.target.disabled = true; try { const { devices } = await api('/push/test', { method: 'POST' }); toast(devices ? 'Тестовое уведомление отправлено' : 'Устройство не подписано', devices ? 'success' : 'error'); } catch (error) { toast(error.message, 'error'); } e.target.disabled = false; });
+  };
+  paint();
+}
 function bindCtrlEnter(formSelector) {
   document.querySelector(`${formSelector} textarea`)?.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); e.target.form.requestSubmit(); } });
 }
@@ -368,7 +548,7 @@ function initRealtime() {
         const data = JSON.parse(e.data);
         playNotificationSound();
         if (data.type === 'notification') {
-          showBrowserNotification('Линия · Новое уведомление', data.text);
+          if (!state.pushEnabled) showBrowserNotification('Линия · Новое уведомление', data.text);
           toast(data.text, 'info');
           await loadNotifications();
         } else if (data.type === 'ticket_message') {
@@ -420,12 +600,13 @@ async function upload(path, file, extra={}) {
 }
 function showError(error) { state.error = error.message || String(error); render(); }
 function setView(view) { state.view=view; state.error=''; render(); }
+async function fetchNotifications() {
+  const [tickets, chats] = await Promise.all([api('/notifications'), api('/chat-notifications')]);
+  return [...tickets.map(n=>({...n,target:'ticket'})), ...chats.map(n=>({...n,target:'chat'}))].sort((a,b)=>b.created_at.localeCompare(a.created_at));
+}
 async function loadNotifications() {
   if (!state.user) return;
-  const incoming = [
-    ...(await api('/notifications')).map(n=>({...n,target:'ticket'})),
-    ...(await api('/chat-notifications')).map(n=>({...n,target:'chat'})),
-  ].sort((a,b)=>b.created_at.localeCompare(a.created_at));
+  const incoming = await fetchNotifications();
   const changed = JSON.stringify(incoming) !== JSON.stringify(state.notifications);
   state.notifications = incoming;
   const unread = state.notifications.filter(n=>!n.read_at).length;
@@ -436,16 +617,14 @@ async function loadNotifications() {
   if (changed && state.view === 'notifications') renderNotifications();
 }
 async function refresh() {
-  state.tickets = await api('/tickets');
-  state.chats = await api('/chats');
-  state.organizations = await api('/organizations');
-  state.profile=await api(state.user.role==='customer'?'/customer-profile/me':'/profile/me');
-  state.user.name=state.profile.name;
-  if (state.user.role !== 'customer') {state.staff = await api('/staff');state.customers = await api('/customers');state.queue = await api('/work-queue');}
-  state.notifications = [
-    ...(await api('/notifications')).map(n=>({...n,target:'ticket'})),
-    ...(await api('/chat-notifications')).map(n=>({...n,target:'chat'})),
-  ].sort((a,b)=>b.created_at.localeCompare(a.created_at));
+  const staff = state.user.role !== 'customer';
+  const [tickets, chats, organizations, profile, notifications, staffList, customers, queue] = await Promise.all([
+    api('/tickets'), api('/chats'), api('/organizations'), api(staff?'/profile/me':'/customer-profile/me'), fetchNotifications(),
+    staff?api('/staff'):null, staff?api('/customers'):null, staff?api('/work-queue'):null,
+  ]);
+  Object.assign(state, {tickets, chats, organizations, profile, notifications});
+  state.user.name=profile.name;
+  if (staff) Object.assign(state, {staff: staffList, customers, queue});
   render();
 }
 function renderAuth() {
@@ -485,10 +664,12 @@ function shell(title, action, body, opts = {}) {
   const subtitle = staff ? (state.profile?.job_title || role) : (state.organizations[0]?.name || state.profile?.company_name || 'Заказчик');
   const kicker = opts.kicker ?? (staff ? 'Рабочее место' : 'Личный кабинет');
   const viewKey = `${v}:${v === 'detail' ? state.current?.ticket?.id : v === 'chat' ? state.currentChat?.chat?.id : ''}`;
+  clearTimeout(loadingTimer);
+  const preserved = viewKey === lastViewKey ? captureUi() : null;
   const entering = viewKey !== lastViewKey && !reduceMotion();
   lastViewKey = viewKey;
   document.body.classList.remove('nav-open');
-  app.innerHTML = `<div class="shell"><aside id="sidebar" aria-label="Основное меню"><div class="brand"><span class="brand-mark" aria-hidden="true">Л</span><span><span class="brand-name">Линия<span class="brand-dot">.</span></span><small>Кабинет заявок</small></span></div><nav class="nav">${groups}</nav><div class="aside-bottom aside-user">${avatar(state.profile, 'small')}<div class="aside-user-meta"><strong>${esc(state.user.name)}</strong><small>${esc(subtitle)}</small></div><button id="logout" class="aside-logout" aria-label="Выйти" title="Выйти">${icon('logout')}</button></div></aside><div class="nav-backdrop" data-nav-close></div><div class="workspace"><header class="topbar"><button class="icon-btn menu-btn" data-nav-toggle aria-controls="sidebar" aria-label="Открыть меню">${icon('menu')}</button><button type="button" class="global-search" id="open-palette" aria-haspopup="dialog">${icon('search', 17)}<span class="global-search-text">Поиск заявок, чатов и разделов</span><kbd>Ctrl K</kbd></button><span class="topbar-spacer"></span><button class="button primary" id="top-new-ticket">${icon('plus', 16)}<span>Новая заявка</span></button>${staff ? '' : `<button class="icon-btn" id="help-tour" aria-label="Пройти обучение по кабинету" title="Обучение по кабинету">${icon('help')}</button>`}<button class="icon-btn ${v === 'notifications' ? 'active' : ''}" data-nav="notifications" aria-label="Уведомления${unread ? `: ${unread} новых` : ''}">${icon('bell')}<span class="dot-count" id="notification-count">${unread || ''}</span></button><button class="top-profile ${v === 'profile' ? 'active' : ''}" data-nav="profile" aria-label="Мой профиль">${avatar(state.profile, 'small')}${icon('chevron', 14)}</button></header><main id="main" class="${entering ? 'is-entering' : ''}">${opts.crumbs ? `<nav class="crumbs" aria-label="Навигационная цепочка">${opts.crumbs}</nav>` : ''}<div class="top"><div class="top-text">${opts.badges ? `<div class="top-badges">${opts.badges}</div>` : kicker ? `<div class="eyebrow">${kicker}</div>` : ''}<h1>${esc(title)}</h1>${opts.lead ? `<p class="lead">${opts.lead}</p>` : ''}</div>${action ? `<div class="top-actions">${action}</div>` : ''}</div>${notice()}${body}</main></div><nav class="tabbar" aria-label="Быстрая навигация">${tabs}</nav></div>`;
+  app.innerHTML = `<div class="shell"><aside id="sidebar" aria-label="Основное меню"><div class="brand"><span class="brand-mark" aria-hidden="true">Л</span><span><span class="brand-name">Линия<span class="brand-dot">.</span></span><small>Кабинет заявок</small></span></div><nav class="nav">${groups}</nav><div class="aside-bottom aside-user">${avatar(state.profile, 'small')}<div class="aside-user-meta"><strong>${esc(state.user.name)}</strong><small>${esc(subtitle)}</small></div><button id="theme-toggle" class="aside-logout" aria-label="Сменить тему">${icon(effectiveTheme() === 'dark' ? 'sun' : 'moon')}</button><button id="logout" class="aside-logout" aria-label="Выйти" title="Выйти">${icon('logout')}</button></div></aside><div class="nav-backdrop" data-nav-close></div><div class="workspace"><header class="topbar"><button class="icon-btn menu-btn" data-nav-toggle aria-controls="sidebar" aria-label="Открыть меню">${icon('menu')}</button><button type="button" class="global-search" id="open-palette" aria-haspopup="dialog">${icon('search', 17)}<span class="global-search-text">Поиск заявок, чатов и разделов</span><kbd>Ctrl K</kbd></button><span class="topbar-spacer"></span><button class="button primary" id="top-new-ticket">${icon('plus', 16)}<span>Новая заявка</span></button>${staff ? '' : `<button class="icon-btn" id="help-tour" aria-label="Пройти обучение по кабинету" title="Обучение по кабинету">${icon('help')}</button>`}<button class="icon-btn ${v === 'notifications' ? 'active' : ''}" data-nav="notifications" aria-label="Уведомления${unread ? `: ${unread} новых` : ''}">${icon('bell')}<span class="dot-count" id="notification-count">${unread || ''}</span></button><button class="top-profile ${v === 'profile' ? 'active' : ''}" data-nav="profile" aria-label="Мой профиль">${avatar(state.profile, 'small')}${icon('chevron', 14)}</button></header><main id="main" class="${entering ? 'is-entering' : ''}">${opts.crumbs ? `<nav class="crumbs" aria-label="Навигационная цепочка">${opts.crumbs}</nav>` : ''}<div class="top"><div class="top-text">${opts.badges ? `<div class="top-badges">${opts.badges}</div>` : kicker ? `<div class="eyebrow">${kicker}</div>` : ''}<h1>${esc(title)}</h1>${opts.lead ? `<p class="lead">${opts.lead}</p>` : ''}</div>${action ? `<div class="top-actions">${action}</div>` : ''}</div>${notice()}${body}</main></div><nav class="tabbar" aria-label="Быстрая навигация">${tabs}</nav></div>`;
   const navActions = {
     queue: () => setView('queue'), tickets: () => setView('tickets'), notifications: () => setView('notifications'), profile: () => setView('profile'),
     organizations: () => setView('organizations'), team: () => setView('team'), kb: () => openKb(), billing: () => openBilling(),
@@ -501,8 +682,11 @@ function shell(title, action, body, opts = {}) {
   document.querySelector('#top-new-ticket').onclick = () => setView('new');
   document.querySelector('#open-palette').onclick = () => openPalette();
   document.querySelector('#help-tour')?.addEventListener('click', () => startTour());
+  document.querySelector('#theme-toggle').onclick = toggleTheme;
+  syncThemeUi();
   if (entering) queueMicrotask(animateEntrance);
-  document.querySelector('#logout').onclick = async () => { await api('/logout', { method: 'POST' }); state.user = null; state.current = null; state.bots = null; state.pairings = {}; state.pendingOps = {}; state.error = ''; renderAuth(); };
+  queueMicrotask(() => { bindDrafts(); if (preserved) restoreUi(preserved); });
+  document.querySelector('#logout').onclick = async () => { await disablePush(); await api('/logout', { method: 'POST' }); state.user = null; state.current = null; state.bots = null; state.pairings = {}; state.pendingOps = {}; state.error = ''; renderAuth(); };
 }
 function recentActivity() {
   const items = state.notifications.slice(0, 3).map(n => `<div class="activity-item"><span class="activity-dot ${n.read_at ? '' : 'fresh'}"></span><div><strong>${esc(n.text)}</strong><small>${date(n.created_at)}</small></div></div>`).join('');
@@ -550,7 +734,7 @@ function renderTickets() {
     return `<button class="trow" data-ticket="${t.id}"><span class="tnum">${t.id}</span><span class="ttitle"><strong>${esc(t.title)}</strong><small>${esc([t.customer_name, staff ? t.customer_company : '', serviceNames[t.service_type]].filter(Boolean).join(' · '))}</small></span><span class="badge ${esc(t.status)}">${statusNames[t.status]}</span><span>${deadline}</span><span class="tnum-strong">${t.effort_minutes ? hours(t.effort_minutes) : '—'}</span><span class="twho">${avatarOf(t.assignee_id, t.assignee_name)}<span>${esc(t.assignee_name || (staff ? 'Не назначен' : 'Назначается'))}</span></span><span class="tdate">${date(t.updated_at)}</span></button>`;
   };
   const head = '<div class="table-head" aria-hidden="true"><span>№</span><span>Заявка</span><span>Статус</span><span>Ближайший срок</span><span>Оценка</span><span>Ответственный</span><span>Обновлена</span></div>';
-  shell(staff ? 'Заявки' : 'Мои заявки', '', `${portfolioOverview(owned)}<section class="panel"><div class="toolbar"><div class="chips" role="group" aria-label="Фильтр по статусу">${chips}</div><div class="ticket-tools"><input class="field ticket-search" id="ticket-search" type="search" maxlength="100" aria-label="Поиск по заявкам" placeholder="Номер, тема, клиент" value="${esc(state.search)}">${ownerSelect}</div></div>${head}<div id="ticket-list"></div><div class="toolbar" style="border-top:1px solid var(--line-light);border-bottom:0;min-height:52px"><span class="muted" id="ticket-count"></span></div></section>`, { kicker: staff ? (dispatcher ? 'Все клиенты' : 'Назначенные мне и команде') : 'Личный кабинет' });
+  shell(staff ? 'Заявки' : 'Мои заявки', '', `${portfolioOverview(owned)}<section class="panel"><div class="toolbar"><div class="chips" role="group" aria-label="Фильтр по статусу">${chips}</div><div class="ticket-tools"><input class="field ticket-search" id="ticket-search" type="search" maxlength="100" aria-label="Поиск по заявкам" placeholder="Номер, тема, клиент" value="${esc(state.search)}">${ownerSelect}</div></div>${head}<div id="ticket-list"></div><div class="toolbar" style="border-top:1px solid var(--line-light);border-bottom:0;min-height:52px"><span class="muted" id="ticket-count"></span><span class="kbd-hint"><kbd>J</kbd><kbd>K</kbd> по строкам · <kbd>Enter</kbd> открыть</span></div></section>`, { kicker: staff ? (dispatcher ? 'Все клиенты' : 'Назначенные мне и команде') : 'Личный кабинет' });
   const updateList = () => {
     const query = state.search.trim().toLocaleLowerCase('ru-RU');
     const matches = query ? visible.filter(t => [t.id, t.title, t.description, t.customer_name, t.customer_company, t.assignee_name, statusNames[t.status]].some(value => String(value || '').toLocaleLowerCase('ru-RU').includes(query))) : visible;
@@ -594,7 +778,7 @@ function renderQueue() {
   const today = new Date().toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' });
   const lead = items.length ? `${needs} ${plural(needs, ['задача ждёт', 'задачи ждут', 'задач ждут'])} действия${late ? `, ${late} ${plural(late, ['просрочена', 'просрочены', 'просрочено'])} по SLA` : ''}` : 'Новых обращений пока нет';
   const empty = state.queueGroup || source !== 'all' ? '<div class="empty"><strong>Здесь пусто</strong>Сбросьте фильтр, чтобы увидеть всю очередь.</div>' : '<div class="empty"><strong>Очередь пуста</strong>Новых обращений пока нет.</div>';
-  shell('Рабочая очередь', scope, `${stats}<div class="workspace-grid"><section class="panel"><div class="toolbar"><strong>Очередь действий</strong><div class="chips" role="group" aria-label="Тип обращений">${sourceChip('all', 'Все')}${sourceChip('ticket', 'Заявки')}${sourceChip('chat', 'Чаты')}</div></div>${list || empty}</section><div class="context-stack">${focusCard}${workloadPanel()}${recentActivity()}</div></div>`, { kicker: today.charAt(0).toUpperCase() + today.slice(1), lead });
+  shell('Рабочая очередь', scope, `${stats}<div class="workspace-grid"><section class="panel"><div class="toolbar"><div class="toolbar-title"><strong>Очередь действий</strong><span class="kbd-hint"><kbd>J</kbd><kbd>K</kbd> по строкам · <kbd>Enter</kbd> открыть</span></div><div class="chips" role="group" aria-label="Тип обращений">${sourceChip('all', 'Все')}${sourceChip('ticket', 'Заявки')}${sourceChip('chat', 'Чаты')}</div></div>${list || empty}</section><div class="context-stack">${focusCard}${workloadPanel()}${recentActivity()}</div></div>`, { kicker: today.charAt(0).toUpperCase() + today.slice(1), lead });
   document.querySelector('#focus-queue')?.addEventListener('click', () => focus.source === 'chat' ? openChat(focus.id) : openTicket(focus.id));
   document.querySelectorAll('.qrow').forEach(el => el.onclick = () => el.dataset.source === 'chat' ? openChat(Number(el.dataset.record)) : openTicket(Number(el.dataset.record)));
   document.querySelectorAll('[data-queue-group]').forEach(el => el.onclick = () => { state.queueGroup = state.queueGroup === el.dataset.queueGroup ? null : el.dataset.queueGroup; renderQueue(); });
@@ -603,7 +787,9 @@ function renderQueue() {
 }
 function renderNotifications() {
   const rows=state.notifications.map(n=>`<button class="ticket-row notification-row ${n.read_at?'':'unread'}" data-notice="${n.id}" data-target="${n.target}" data-record="${n.target==='chat'?n.chat_id:n.ticket_id}"><span><strong>${esc(n.text)}</strong><small>${n.target==='chat'?'Общий чат':'Заявка №'+n.ticket_id} · ${date(n.created_at)}</small></span><span class="badge ${n.read_at?'':'new'}">${n.read_at?'Прочитано':'Новое'}</span></button>`).join('');
-  shell('Уведомления','',`<div class="panel">${rows||'<div class="empty"><strong>Уведомлений пока нет</strong>Здесь появятся события по вашим заявкам.</div>'}</div>`);
+  const pushAction=pushSupported()&&!state.pushEnabled&&Notification.permission!=='denied'?`<button class="button" id="enable-push">${icon('bell',16)}Уведомления на телефон</button>`:'';
+  shell('Уведомления',pushAction,`<div class="panel">${rows||'<div class="empty"><strong>Уведомлений пока нет</strong>Здесь появятся события по вашим заявкам.</div>'}</div>`);
+  document.querySelector('#enable-push')?.addEventListener('click',async e=>{e.target.disabled=true;try{await enablePush();toast('Уведомления включены');renderNotifications();}catch(error){toast(error.message,'error');e.target.disabled=false;}});
   document.querySelectorAll('[data-notice]').forEach(el=>el.onclick=async()=>{try{await api(`/${el.dataset.target==='chat'?'chat-notifications':'notifications'}/${el.dataset.notice}/read`,{method:'POST'});await refresh();if(el.dataset.target==='chat')await openChat(Number(el.dataset.record));else await openTicket(Number(el.dataset.record));}catch(error){showError(error);}});
 }
 function renderNew() {
@@ -612,7 +798,7 @@ function renderNew() {
   const customerField=staff?`<label>Заказчик<select class="field" name="customer_id" required><option value="">Выберите заказчика</option>${state.customers.map(c=>`<option value="${c.id}">${esc(c.name)} · ${esc(c.email)}</option>`).join('')}</select></label>`:'';
   const assigneeField=dispatcher?`<label>Ответственный<select class="field" name="assignee_id"><option value="">Назначить позже</option>${state.staff.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></label>`:staff?'<p class="muted">Вы будете назначены ответственным за эту заявку.</p>':'';
   const help=staff?['Выберите заказчика, которому нужна помощь.','Опишите задачу его словами — он увидит текст в своём кабинете.','После создания заказчик получит уведомление.']:['Коротко назовите задачу, чтобы её было легко найти.','Напишите, какой результат нужен и какие детали важны.','Команда оценит трудозатраты в часах; решение останется за вами.'];
-  shell('Новая заявка','',`<button class="back" id="back">← К заявкам</button><div class="form-layout"><div class="panel content"><h2>${staff?'Создать заявку для заказчика':'Опишите задачу'}</h2>${staff&&!state.customers.length?'<div class="notice">Нет доступных заказчиков. Менеджер или администратор может создать заявку для любого зарегистрированного заказчика.</div>':''}<form class="form" id="ticket-form">${customerField}<label>Тема<input class="field" name="title" required minlength="3" maxlength="140" placeholder="Коротко о задаче"></label><div id="kb-suggest-box" class="kb-suggest-box" style="display:none"></div><label>Описание<textarea name="description" required minlength="5" maxlength="10000" placeholder="Что нужно сделать? Укажите важные детали."></textarea></label>${assigneeField}<button class="button primary" ${staff&&!state.customers.length?'disabled':''}>Создать заявку</button></form></div><div class="form-help"><span>ПОДСКАЗКА</span><h2>Чтобы быстрее начать</h2>${help.map((item,index)=>`<div class="help-step"><b>${String(index+1).padStart(2,'0')}</b><p>${item}</p></div>`).join('')}</div></div>`);
+  shell('Новая заявка','',`<button class="back" id="back">← К заявкам</button><div class="form-layout"><div class="panel content"><h2>${staff?'Создать заявку для заказчика':'Опишите задачу'}</h2>${staff&&!state.customers.length?'<div class="notice">Нет доступных заказчиков. Менеджер или администратор может создать заявку для любого зарегистрированного заказчика.</div>':''}<form class="form" id="ticket-form">${customerField}<label>Тема<input class="field" name="title" required minlength="3" maxlength="140" placeholder="Коротко о задаче"></label><div id="kb-suggest-box" class="kb-suggest-box" style="display:none"></div><label>Описание<textarea name="description" data-draft="new-ticket" required minlength="5" maxlength="10000" placeholder="Что нужно сделать? Укажите важные детали."></textarea></label>${assigneeField}<button class="button primary" ${staff&&!state.customers.length?'disabled':''}>Создать заявку</button></form></div><div class="form-help"><span>ПОДСКАЗКА</span><h2>Чтобы быстрее начать</h2>${help.map((item,index)=>`<div class="help-step"><b>${String(index+1).padStart(2,'0')}</b><p>${item}</p></div>`).join('')}</div></div>`);
   document.querySelector('#ticket-form [name="title"]').parentElement.insertAdjacentHTML('beforebegin',`<label>Тип задачи<select class="field" name="service_type">${Object.entries(serviceNames).map(([key,label])=>`<option value="${key}">${label}</option>`).join('')}</select></label>`);
   document.querySelector('#ticket-form [name="service_type"]').onchange=e=>{document.querySelector('#ticket-form [name="description"]').placeholder=serviceHints[e.target.value];document.querySelector('.form-help h2').textContent=serviceNames[e.target.value];};
   document.querySelector('#ticket-form [name="service_type"]').dispatchEvent(new Event('change'));
@@ -663,9 +849,9 @@ function renderNew() {
   if(!staff&&state.organizations[0]?.members.some(m=>m.user_id===state.user.id&&m.role==='viewer')){document.querySelector('#visibility-field').hidden=true;document.querySelector('#visibility-field select').value='private';}
   if(staff)document.querySelector('#ticket-form [name="customer_id"]').onchange=e=>{const member=state.organizations.some(o=>o.members.some(m=>m.user_id===Number(e.target.value)));document.querySelector('#visibility-field').hidden=!member;document.querySelector('#visibility-field select').value=member?'organization':'private';};
   document.querySelector('#back').onclick=()=>setView('tickets');
-  document.querySelector('#ticket-form').onsubmit=async e=>{e.preventDefault();const files=[...e.target.elements.files.files];const data=Object.fromEntries(new FormData(e.target));delete data.files;if(document.querySelector('#visibility-field').hidden)data.visibility='private';if(staff){data.customer_id=Number(data.customer_id);if(dispatcher)data.assignee_id=data.assignee_id?Number(data.assignee_id):null;}e.target.querySelector('button').disabled=true;try{const ticket=await api('/tickets',{method:'POST',body:JSON.stringify(data)});const failed=[];for(const file of files){try{await upload(`/tickets/${ticket.id}/attachments`,file);}catch(error){failed.push(file.name);}}await refresh();await openTicket(ticket.id);if(failed.length){state.error=`Заявка создана, но файлы не загрузились: ${failed.join(', ')}. Прикрепите их в карточке.`;render();}}catch(error){showError(error);}};
+  document.querySelector('#ticket-form').onsubmit=async e=>{e.preventDefault();const files=[...e.target.elements.files.files];const data=Object.fromEntries(new FormData(e.target));delete data.files;if(document.querySelector('#visibility-field').hidden)data.visibility='private';if(staff){data.customer_id=Number(data.customer_id);if(dispatcher)data.assignee_id=data.assignee_id?Number(data.assignee_id):null;}e.target.querySelector('button').disabled=true;try{const ticket=await api('/tickets',{method:'POST',body:JSON.stringify(data)});clearDraft('new-ticket');const failed=[];for(const file of files){try{await upload(`/tickets/${ticket.id}/attachments`,file);}catch(error){failed.push(file.name);}}await refresh();await openTicket(ticket.id);if(failed.length){state.error=`Заявка создана, но файлы не загрузились: ${failed.join(', ')}. Прикрепите их в карточке.`;render();}}catch(error){showError(error);}};
 }
-async function openTicket(id) {try{const sameTicket=state.current?.ticket?.id===id;state.current=await api(`/tickets/${id}`);if(!sameTicket)state.detailTab='messages';state.current.assignee_profile=state.current.ticket.assignee_id?await api(`/staff/${state.current.ticket.assignee_id}/profile`).catch(()=>null):null;state.gitLinks=await api(`/tickets/${id}/git-links`).catch(()=>[]);state.view='detail';state.error='';render();}catch(error){showError(error);}}
+async function openTicket(id) {if(state.view!=='detail'||state.current?.ticket?.id!==id)delayedLoading(`Заявка №${id}`,'detail');try{const sameTicket=state.current?.ticket?.id===id;state.current=await api(`/tickets/${id}`);if(!sameTicket)state.detailTab='messages';state.current.assignee_profile=state.current.ticket.assignee_id?await api(`/staff/${state.current.ticket.assignee_id}/profile`).catch(()=>null):null;state.gitLinks=await api(`/tickets/${id}/git-links`).catch(()=>[]);state.view='detail';state.error='';render();}catch(error){showError(error);}}
 function ticketProgress(ticket, estimates) {
   const estimate = estimates[0];
   const step = ['done', 'closed'].includes(ticket.status) ? 4 : ['working', 'waiting'].includes(ticket.status) ? 3 : estimate?.state === 'approved' ? 2 : estimate ? 1 : 0;
@@ -758,11 +944,12 @@ function renderInternalNotes(ticketId) {
         `).join('') || '<div class="muted" style="font-size:12.5px;padding:4px 0">Заметок пока нет. Зафиксируйте технические детали, пароли или ход задачи.</div>'}
       </div>
       <form class="internal-note-form" id="internal-note-form">
-        <textarea name="body" required placeholder="Добавить внутреннюю заметку..." maxlength="5000"></textarea>
+        <textarea id="internal-note-body" data-draft="note-${ticketId}" name="body" required placeholder="Добавить внутреннюю заметку..." maxlength="5000"></textarea>
         <button class="button">Записать</button>
       </form>
     </section>
   `;
+  bindDrafts(container);
   container.querySelector('#internal-note-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const body = new FormData(e.target).get('body');
@@ -773,6 +960,7 @@ function renderInternalNotes(ticketId) {
         method: 'POST',
         body: JSON.stringify({ body })
       });
+      clearDraft(`note-${ticketId}`);
       await loadInternalNotes(ticketId);
     } catch(err) {
       showError(err);
@@ -851,7 +1039,7 @@ function renderDetail() {
   if (!staff && state.detailTab === 'notes') state.detailTab = 'messages';
   const tab = state.detailTab || 'messages';
   const tabButton = (id, label, count, ic = '') => `<button type="button" role="tab" class="tab ${tab === id ? 'active' : ''}" aria-selected="${tab === id}" data-detail-tab="${id}">${ic}${label}${count !== undefined ? ` <i>${count}</i>` : ''}</button>`;
-  const composer = viewer ? '<div class="content muted">У вас доступ только к просмотру заявки.</div>' : t.status !== 'closed' ? `<form class="composer" id="message-form"><label class="visually-hidden" for="message-body">Сообщение</label><textarea id="message-body" name="body" required maxlength="10000" placeholder="${staff ? 'Напишите сообщение заказчику…' : 'Напишите сообщение команде…'}"></textarea><div class="composer-bar"><span class="composer-hint">Ctrl + Enter — отправить</span><button class="button primary">Отправить</button></div></form>` : '<div class="content muted">Заявка закрыта. Переписка доступна для чтения.</div>';
+  const composer = viewer ? '<div class="content muted">У вас доступ только к просмотру заявки.</div>' : t.status !== 'closed' ? `<form class="composer" id="message-form"><label class="visually-hidden" for="message-body">Сообщение</label><textarea id="message-body" data-draft="ticket-${t.id}" name="body" required maxlength="10000" placeholder="${staff ? 'Напишите сообщение заказчику…' : 'Напишите сообщение команде…'}"></textarea><div class="composer-bar"><span class="composer-hint">Ctrl + Enter — отправить</span><button class="button primary">Отправить</button></div></form>` : '<div class="content muted">Заявка закрыта. Переписка доступна для чтения.</div>';
   const meta = `<dl class="meta"><dt>Заказчик</dt><dd>${esc(t.customer_name)}${staff && t.customer_company ? `<small>${esc(t.customer_company)}</small>` : ''}</dd><dt>Ответственный</dt><dd>${assignee}</dd><dt>Тип задачи</dt><dd>${serviceNames[t.service_type] || 'Другое'}</dd>${t.organization_id ? `<dt>Видимость</dt><dd>${t.visibility === 'organization' ? 'Вся компания' : 'Личная заявка'}</dd>` : ''}<dt>Создана</dt><dd>${date(t.created_at)}</dd>${t.created_by_name ? `<dt>Создал</dt><dd>${esc(t.created_by_name)}</dd>` : ''}</dl>`;
   const personCard = person ? `<section class="panel content assigned-person"><div class="person-heading">${avatar(person)}<div><span class="eyebrow">${staff ? 'Ответственный' : 'Ваш специалист'}</span><h2>${esc(person.name)}</h2><p>${esc(person.job_title || 'Сотрудник команды')}</p></div></div>${person.bio ? `<p class="person-bio">${esc(person.bio)}</p>` : ''}</section>` : '';
   const body = `${ticketProgress(t, estimates)}<div class="detail-grid"><div>${t.next_step ? `<div class="next-step"><span>Следующий шаг</span><strong>${esc(t.next_step)}</strong></div>` : ''}<section class="panel content"><h2>Описание задачи</h2><p class="description">${esc(t.description)}</p>${state.current.linked_chat ? `<button class="button linked-chat" id="linked-chat">${icon('chat', 16)}Обсуждение в общем чате</button>` : ''}</section><section class="panel conversation"><div class="tabs" role="tablist" aria-label="Обсуждение заявки">${tabButton('messages', 'Переписка', messages.length)}${staff ? tabButton('notes', 'Заметки команды', undefined, icon('lock', 14)) : ''}${tabButton('history', 'История', events.length)}</div><div class="tab-pane" data-pane="messages" ${tab !== 'messages' ? 'hidden' : ''}><div class="messages">${chat}</div>${composer}</div>${staff ? `<div class="tab-pane" data-pane="notes" ${tab !== 'notes' ? 'hidden' : ''}><div id="internal-notes-container"></div></div>` : ''}<div class="tab-pane" data-pane="history" ${tab !== 'history' ? 'hidden' : ''}>${history ? `<ol class="events">${history}</ol>` : '<div class="empty">Статус и ответственный пока не менялись.</div>'}</div></section>${renderCsat(t, staff)}</div><div><section class="panel content"><h2>Детали</h2>${meta}</section>${personCard}</div></div>`;
@@ -869,11 +1057,18 @@ function renderDetail() {
   document.querySelector('#assignee')?.addEventListener('change', async e => { try { await api(`/tickets/${t.id}/assignee`, { method: 'PATCH', body: JSON.stringify({ assignee_id: e.target.value ? Number(e.target.value) : null }) }); toast('Ответственный обновлён'); await refresh(); await openTicket(t.id); } catch (error) { showError(error); } });
   document.querySelector('#status')?.addEventListener('change', async e => { try { await api(`/tickets/${t.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: e.target.value }) }); toast(`Статус изменён: ${statusNames[e.target.value]}`); await refresh(); await openTicket(t.id); } catch (error) { showError(error); } });
   bindCtrlEnter('#message-form');
-  document.querySelector('#message-form')?.addEventListener('submit', async e => { e.preventDefault(); const body = new FormData(e.target).get('body'); e.target.querySelector('button.primary').disabled = true; try { await api(`/tickets/${t.id}/messages`, { method: 'POST', body: JSON.stringify({ body, request_id: crypto.randomUUID() }) }); state.justSent = true; await refresh(); await openTicket(t.id); } catch (error) { showError(error); } });
+  document.querySelector('#message-form')?.addEventListener('submit', async e => { e.preventDefault(); const body = new FormData(e.target).get('body'); e.target.querySelector('button.primary').disabled = true; try { await api(`/tickets/${t.id}/messages`, { method: 'POST', body: JSON.stringify({ body, request_id: crypto.randomUUID() }) }); clearDraft(`ticket-${t.id}`); state.justSent = true; await refresh(); await openTicket(t.id); } catch (error) { showError(error); } });
   if (staff) {
     loadInternalNotes(t.id);
     if (t.status !== 'closed') renderCannedTrigger();
   }
+  if (!viewer && t.status !== 'closed') bindDropzone(document.querySelector('.conversation'), 'Отпустите, чтобы прикрепить к заявке', async files => {
+    toast(`Загружаем файлы: ${files.length}`, 'info');
+    const failed = [];
+    for (const file of files) { try { await upload(`/tickets/${t.id}/attachments`, file); } catch (error) { failed.push(file.name); } }
+    if (failed.length) toast(`Не удалось загрузить: ${failed.join(', ')}`, 'error'); else toast(files.length === 1 ? 'Файл прикреплён к заявке' : `Файлы прикреплены к заявке: ${files.length}`);
+    await refresh(); await openTicket(t.id);
+  });
   attachCsatHandlers(t);
 }
 function renderEstimate(ticket, estimates, staff) {
@@ -939,6 +1134,7 @@ function renderChats() {
   bindChatList();
 }
 async function openChat(id) {
+  if(state.view!=='chat'||state.currentChat?.chat?.id!==id)delayedLoading('Общий чат','list');
   try{state.currentChat=await api(`/chats/${id}`);state.view='chat';state.error='';render();}
   catch(error){showError(error);}
 }
@@ -957,7 +1153,7 @@ function renderChatDetail() {
   const ticketButton = t => `<button class="linked-ticket" data-linked-ticket="${t.id}"><span>№${t.id} · ${esc(t.title)}</span>${t.status ? `<span class="badge ${esc(t.status)}">${statusNames[t.status]}</span>` : ''}</button>`;
   const assigneeSelect = dispatcher ? `<label class="select-inline"><span>Ведёт</span><select id="chat-assignee" aria-label="Ответственный за чат"><option value="">Без ответственного</option>${state.staff.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select></label>` : '';
   const info = `<div class="inbox-info" role="complementary" aria-label="О диалоге"><div class="info-block"><span class="eyebrow">Заказчик</span><strong>${esc(chat.customer_name)}</strong></div><div class="info-block"><span class="eyebrow">Ответственный</span><strong>${esc(chat.assignee_name || 'Не назначен')}</strong></div>${linked_tickets.length ? `<div class="info-block"><span class="eyebrow">Заявки из этого чата <span>${linked_tickets.length}</span></span>${linked_tickets.map(ticketButton).join('')}</div>` : ''}${otherTickets.length ? `<div class="info-block"><span class="eyebrow">Открытые заявки <span>${otherTickets.length}</span></span>${otherTickets.slice(0, 5).map(ticketButton).join('')}</div>` : ''}</div>`;
-  const thread = `<section class="inbox-thread"><div class="inbox-thread-head">${staff ? `<button class="icon-btn thread-back" id="back-chats" aria-label="К списку диалогов">←</button>` : ''}<span class="chat-logo" aria-hidden="true">${initials(staff ? chat.customer_name : 'Линия')}</span><div><strong>${esc(staff ? chat.customer_name : 'Команда поддержки')}</strong><small>${messages.length} ${plural(messages.length, ['сообщение', 'сообщения', 'сообщений'])}</small></div>${assigneeSelect}</div><div class="messages" id="chat-messages">${items}</div><form class="composer" id="chat-message-form"><label class="visually-hidden" for="chat-body">Сообщение</label><textarea id="chat-body" name="body" required maxlength="10000" placeholder="${staff ? `Ответить: ${esc(chat.customer_name)}` : 'Напишите сообщение команде…'}"></textarea><div class="composer-bar"><label class="upload-label">${icon('paperclip', 15)}Файлы<input name="files" type="file" multiple accept=".png,.jpg,.jpeg,.webp,.gif,.pdf,.txt,.doc,.docx,.xls,.xlsx,.csv,.zip"></label><span class="composer-hint">Ctrl + Enter — отправить</span><button class="button primary">Отправить</button></div></form></section>`;
+  const thread = `<section class="inbox-thread"><div class="inbox-thread-head">${staff ? `<button class="icon-btn thread-back" id="back-chats" aria-label="К списку диалогов">←</button>` : ''}<span class="chat-logo" aria-hidden="true">${initials(staff ? chat.customer_name : 'Линия')}</span><div><strong>${esc(staff ? chat.customer_name : 'Команда поддержки')}</strong><small>${messages.length} ${plural(messages.length, ['сообщение', 'сообщения', 'сообщений'])}</small></div>${assigneeSelect}</div><div class="messages" id="chat-messages">${items}</div><form class="composer" id="chat-message-form"><label class="visually-hidden" for="chat-body">Сообщение</label><textarea id="chat-body" data-draft="chat-${chat.id}" name="body" required maxlength="10000" placeholder="${staff ? `Ответить: ${esc(chat.customer_name)}` : 'Напишите сообщение команде…'}"></textarea><div class="composer-files" id="chat-files"></div><div class="composer-bar"><label class="upload-label">${icon('paperclip', 15)}Файлы<input name="files" type="file" multiple accept=".png,.jpg,.jpeg,.webp,.gif,.pdf,.txt,.doc,.docx,.xls,.xlsx,.csv,.zip"></label><span class="composer-hint">Ctrl + Enter — отправить</span><button class="button primary">Отправить</button></div></form></section>`;
   shell(staff ? 'Общий чат' : 'Чат с командой', '', `<section class="panel inbox has-thread ${staff ? '' : 'customer'}">${staff ? chatListPanel(chat.id) : ''}${thread}${info}</section>`, { kicker: staff ? 'Переписка без привязки к заявке' : 'Личный кабинет' });
   if (staff) bindChatList();
   document.querySelectorAll('[data-linked-ticket]').forEach(el => el.onclick = () => openTicket(Number(el.dataset.linkedTicket)));
@@ -976,9 +1172,10 @@ function renderChatDetail() {
   document.querySelector('#back-chats')?.addEventListener('click', () => setView('chats'));
   if (dispatcher) { document.querySelector('#chat-assignee').value = chat.assignee_id || ''; document.querySelector('#chat-assignee').onchange = async e => { try { await api(`/chats/${chat.id}/assignee`, { method: 'PATCH', body: JSON.stringify({ assignee_id: e.target.value ? Number(e.target.value) : null }) }); await refresh(); await openChat(chat.id); } catch (error) { showError(error); } }; }
   bindCtrlEnter('#chat-message-form');
-  document.querySelector('#chat-message-form').onsubmit = async e => { e.preventDefault(); const button = e.target.querySelector('button.primary'); button.disabled = true; const requestId = e.target.dataset.requestId || (e.target.dataset.requestId = crypto.randomUUID()); try { const files = [...e.target.elements.files.files]; const message = await api(`/chats/${chat.id}/messages`, { method: 'POST', body: JSON.stringify({ body: new FormData(e.target).get('body'), request_id: requestId }) }); for (const file of files) await upload(`/chats/${chat.id}/attachments`, file, { message_id: message.id }); state.justSent = true; await refresh(); await openChat(chat.id); } catch (error) { state.error = error.message; button.disabled = false; const alert = document.querySelector('.notice'); if (alert) alert.textContent = state.error; else document.querySelector('main .top').insertAdjacentHTML('afterend', notice()); } };
+  document.querySelector('#chat-message-form').onsubmit = async e => { e.preventDefault(); const button = e.target.querySelector('button.primary'); button.disabled = true; const requestId = e.target.dataset.requestId || (e.target.dataset.requestId = crypto.randomUUID()); try { const files = [...e.target.elements.files.files]; const message = await api(`/chats/${chat.id}/messages`, { method: 'POST', body: JSON.stringify({ body: new FormData(e.target).get('body'), request_id: requestId }) }); clearDraft(`chat-${chat.id}`); for (const file of files) await upload(`/chats/${chat.id}/attachments`, file, { message_id: message.id }); state.justSent = true; await refresh(); await openChat(chat.id); } catch (error) { state.error = error.message; button.disabled = false; const alert = document.querySelector('.notice'); if (alert) alert.textContent = state.error; else document.querySelector('main .top').insertAdjacentHTML('afterend', notice()); } };
   document.querySelector('#chat-messages').scrollTop = document.querySelector('#chat-messages').scrollHeight;
   popLastMessage(document.querySelector('#chat-messages'));
+  bindChatFiles();
 }
 function renderTeam() {
   shell('Команда','',`<div class="detail-grid"><section class="panel content"><h2>Сотрудники</h2>${state.staff.map(x=>`<div class="team-person">${avatar(x)}<span><strong>${esc(x.name)}</strong><small>${esc(x.job_title||x.email)}</small></span><span class="badge">${x.role==='admin'?'Администратор':'Сотрудник'}</span></div>`).join('')}</section><section class="panel content"><h2>Добавить сотрудника</h2><form class="form" id="staff-form"><label>Имя<input class="field" name="name" required minlength="2"></label><label>Email<input class="field" name="email" type="email" required></label><label>Временный пароль<input class="field" name="password" type="password" required minlength="8"></label><button class="button primary">Добавить</button></form></section></div>`);
@@ -994,15 +1191,17 @@ function renderProfile(){
   if(state.user.role==='customer'){
     shell('Мой профиль','',`<div class="profile-layout"><section class="panel content profile-main"><div class="profile-heading customer-profile-heading">${avatar(p,'large')}<div><span class="eyebrow">КАБИНЕТ ЗАКАЗЧИКА</span><h2>${esc(p.name)}</h2><p>${esc(p.company_name||'Добавьте название компании')}</p><small>${esc(p.email)}</small></div></div><form class="form" id="customer-profile-form"><label>Ваше имя<input class="field" name="name" required minlength="2" maxlength="100" autocomplete="name" value="${esc(p.name)}"></label><label>Компания или команда<input class="field" name="company_name" maxlength="150" autocomplete="organization" placeholder="Например, Студия Север" value="${esc(p.company_name)}"></label><label>Контактный телефон<input class="field" name="phone" type="tel" maxlength="40" autocomplete="tel" placeholder="+7 999 123-45-67" value="${esc(p.phone)}"></label><p class="profile-hint">Email для входа: <strong>${esc(p.email)}</strong></p><div class="profile-actions"><button class="button primary">Сохранить изменения</button><span id="profile-saved" role="status"></span></div></form></section><div class="profile-note"><span class="eyebrow">НА СВЯЗИ С КОМАНДОЙ</span><h2>Ваши обращения в одном месте</h2><p>Имя и название компании помогут команде узнавать ваши задачи в заявках и общем чате. Контактный телефон доступен только вам в этом кабинете.</p><div class="profile-facts"><div><strong>${state.tickets.length}</strong><span>заявок</span></div><div><strong>${state.chats.length}</strong><span>общих чатов</span></div></div></div></div>`);
     if(state.organizations[0]){document.querySelector('.customer-profile-heading p').textContent=state.organizations[0].name;document.querySelector('#customer-profile-form [name="company_name"]').parentElement.innerHTML=`Компания <strong>${esc(state.organizations[0].name)}</strong><input type="hidden" name="company_name" value="${esc(p.company_name)}"><small>Состав компании управляется в разделе «Моя компания».</small>`;}
+    mountPushCard();
     document.querySelector('#customer-profile-form').onsubmit=async e=>{e.preventDefault();const button=e.target.querySelector('button');button.disabled=true;try{state.profile=await api('/customer-profile/me',{method:'PATCH',body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});state.user.name=state.profile.name;state.error='';renderProfile();document.querySelector('#profile-saved').textContent='Изменения сохранены';}catch(error){showError(error);}};
     return;
   }
   shell('Мой профиль','',`<div class="profile-layout"><section class="panel content profile-main"><div class="profile-heading"><div>${avatar(p,'large')}<label class="avatar-upload" for="avatar-file">Загрузить фото</label><input id="avatar-file" type="file" accept="image/png,image/jpeg,image/webp" hidden>${p.avatar_url?'<button class="avatar-remove" id="avatar-remove">Удалить фото</button>':''}</div><div><span class="eyebrow">ПРОФИЛЬ СОТРУДНИКА</span><h2>${esc(p.name)}</h2><p>${esc(p.job_title||'Укажите должность')}</p><small>${esc(p.email)}</small></div></div><form class="form" id="profile-form"><label>ФИО<input class="field" name="name" required minlength="2" maxlength="100" autocomplete="name" value="${esc(p.name)}"></label><label>Должность<input class="field" name="job_title" maxlength="100" placeholder="Например, ведущий разработчик" value="${esc(p.job_title)}"></label><label>О себе<textarea name="bio" maxlength="1000" placeholder="Чем вы помогаете заказчикам, ваш опыт и специализация">${esc(p.bio)}</textarea></label><div class="profile-actions"><button class="button primary">Сохранить изменения</button><span id="profile-saved" role="status"></span></div></form></section><aside class="profile-note"><span class="eyebrow">КАК ЭТО РАБОТАЕТ</span><h2>Знакомое лицо в каждой заявке</h2><p>Заказчик увидит ваше имя, должность, описание и фотографию в заявках, за которые вы отвечаете. Это помогает понимать, с кем идёт работа.</p><p>Подойдёт PNG, JPEG или WebP до 2 МБ. Изображение автоматически подстроится под кабинет.</p></aside></div>`);
+  mountPushCard();
   document.querySelector('#profile-form').onsubmit=async e=>{e.preventDefault();const button=e.target.querySelector('button');button.disabled=true;try{state.profile=await api('/profile/me',{method:'PATCH',body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});state.user.name=state.profile.name;state.error='';renderProfile();document.querySelector('#profile-saved').textContent='Изменения сохранены';}catch(error){showError(error);}};
   document.querySelector('#avatar-file').onchange=async e=>{const file=e.target.files?.[0];if(!file)return;if(file.size>2_000_000){showError(new Error('Фото должно быть меньше 2 МБ'));return;}try{const dataUrl=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('Не удалось прочитать файл'));reader.readAsDataURL(file);});state.profile=await api('/profile/me/avatar',{method:'POST',body:JSON.stringify({data_url:dataUrl})});await refresh();setView('profile');}catch(error){showError(error);}};
   document.querySelector('#avatar-remove')?.addEventListener('click',async()=>{try{state.profile=await api('/profile/me/avatar',{method:'DELETE'});await refresh();setView('profile');}catch(error){showError(error);}});
 }
-async function openMessengers(){try{state.bots=await api('/bots');state.view='messengers';state.error='';render();}catch(error){showError(error);}}
+async function openMessengers(){delayedLoading('Мессенджеры','list');try{state.bots=await api('/bots');state.view='messengers';state.error='';render();}catch(error){showError(error);}}
 function renderMessengers(){
   const info=state.bots;
   if(!info)return;
@@ -1040,7 +1239,7 @@ async function openAnalytics(){
 }
 function renderAnalytics() {
   if (!state.analytics) {
-    shell('Аналитика и SLA', '', '<div class="panel content"><p class="muted">Загрузка аналитики…</p></div>');
+    shell('Аналитика и SLA', '', skeleton('analytics'), { kicker: 'Сроки, качество и нагрузка' });
     return;
   }
   const a = state.analytics;
@@ -1162,14 +1361,19 @@ function attachGitLinkHandlers(ticketId) {
 }
 
 async function openKb() {
+  state.kbLoading = true;
+  state.kbReadingArticle = null;
+  state.kbEditingArticle = null;
   setView('kb');
   try {
     state.kbCategories = await api('/kb/categories');
     state.kbArticles = await api('/kb/articles' + (state.kbActiveCategory ? `?category_id=${state.kbActiveCategory}` : ''));
     state.kbReadingArticle = null;
     state.kbEditingArticle = null;
+    state.kbLoading = false;
     renderKb();
   } catch(e) {
+    state.kbLoading = false;
     showError(e);
   }
 }
@@ -1193,6 +1397,10 @@ function renderKb() {
   }
   if (state.kbReadingArticle) {
     return renderKbReader();
+  }
+  if (state.kbLoading && !(state.kbArticles || []).length) {
+    shell('База знаний и регламенты', '', skeleton('cards'));
+    return;
   }
 
   const allCount = (state.kbCategories || []).reduce((sum, c) => sum + (c.article_count || 0), 0);
@@ -1294,7 +1502,7 @@ function renderKbReader() {
   const actions = `
     <div style="display:flex;gap:8px">
       <button class="button" id="kb-back-btn">← Все статьи</button>
-      ${staff ? `<button class="button" id="kb-edit-btn">Редактировать</button><button class="button" id="kb-delete-btn" style="color:#ef4444">Удалить</button>` : ''}
+      ${staff ? `<button class="button" id="kb-edit-btn">Редактировать</button><button class="button" id="kb-delete-btn" style="color:var(--late)">Удалить</button>` : ''}
     </div>
   `;
   const body = `
@@ -1345,7 +1553,7 @@ function renderKbReader() {
         method: 'POST',
         body: JSON.stringify({ helpful })
       });
-      document.querySelector('#kb-feedback-box').innerHTML = `<span style="color:#059669;font-weight:700">✓ Спасибо за обратную связь!</span><div class="muted" style="font-size:12px">Полезно: ${res.helpful_yes} · Нет: ${res.helpful_no}</div>`;
+      document.querySelector('#kb-feedback-box').innerHTML = `<span style="color:var(--accent-ink);font-weight:700">✓ Спасибо за обратную связь!</span><div class="muted" style="font-size:12px">Полезно: ${res.helpful_yes} · Нет: ${res.helpful_no}</div>`;
     } catch(err) {
       showError(err);
     }
@@ -1421,9 +1629,11 @@ function renderKbEditor() {
 }
 
 async function openWebhooks() {
+  state.webhooksLoading = true;
   setView('webhooks');
   try {
     state.webhooks = await api('/webhooks');
+    state.webhooksLoading = false;
     renderWebhooks();
   } catch(err) {
     showError(err);
@@ -1432,6 +1642,7 @@ async function openWebhooks() {
 
 function renderWebhooks() {
   const list = state.webhooks || [];
+  if (state.webhooksLoading && !list.length) { shell('Вебхуки и интеграции', '', skeleton('list')); return; }
   const allEvents = [
     ['ticket.created', 'Создание заявки'],
     ['ticket.status_changed', 'Смена статуса заявки'],
@@ -1461,7 +1672,7 @@ function renderWebhooks() {
         <button class="button small-btn" data-wh-test="${w.id}">Тестовый запрос</button>
         <button class="button small-btn" data-wh-toggle="${w.id}">${w.is_active ? 'Приостановить' : 'Активировать'}</button>
         <button class="button small-btn" data-wh-logs="${w.id}">Журнал доставок</button>
-        <button class="button small-btn" data-wh-delete="${w.id}" style="color:#ef4444;margin-left:auto">Удалить</button>
+        <button class="button small-btn" data-wh-delete="${w.id}" style="color:var(--late);margin-left:auto">Удалить</button>
       </div>
       <div class="webhook-logs-drawer" id="wh-logs-${w.id}" style="display:none"></div>
     </div>
@@ -1591,7 +1802,7 @@ function renderWebhooks() {
         return;
       }
       drawer.style.display = 'block';
-      drawer.innerHTML = '<div class="muted">Загрузка журнала доставок...</div>';
+      drawer.innerHTML = skeletonLines(3);
       try {
         const logs = await api(`/webhooks/${id}/logs`);
         if (!logs.length) {
@@ -1613,7 +1824,7 @@ function renderWebhooks() {
           </div>
         `;
       } catch(err) {
-        drawer.innerHTML = `<div class="muted" style="color:#ef4444">Ошибка загрузки: ${esc(err.message)}</div>`;
+        drawer.innerHTML = `<div class="muted" style="color:var(--late)">Ошибка загрузки: ${esc(err.message)}</div>`;
       }
     };
   });
@@ -1642,6 +1853,7 @@ async function openBilling() {
 
 function renderBilling() {
   const staff = state.user.role !== 'customer';
+  if (!state.billing) { shell('Биллинг и счета', '', skeleton('billing')); return; }
   const b = state.billing || {};
   const clients = staff ? (b.clients || state.billingClients || []) : [];
   const rub = value => `${(value || 0).toLocaleString('ru-RU')} ₽`;
@@ -1885,7 +2097,7 @@ async function openActModal(preselectedKey = '') {
       return;
     }
     const [cType, cId] = key.split(':');
-    ticketsBox.innerHTML = '<div class="muted">Загрузка заявок...</div>';
+    ticketsBox.innerHTML = skeletonLines(3);
     try {
       currentTickets = await api(`/billing/unbilled-tickets?client_type=${cType}&client_id=${cId}`);
       if (!currentTickets.length) {
@@ -1921,7 +2133,7 @@ async function openActModal(preselectedKey = '') {
       });
       recalc();
     } catch(err) {
-      ticketsBox.innerHTML = `<div class="muted" style="color:#ef4444">Ошибка: ${esc(err.message)}</div>`;
+      ticketsBox.innerHTML = `<div class="muted" style="color:var(--late)">Ошибка: ${esc(err.message)}</div>`;
     }
   }
 
@@ -2286,7 +2498,9 @@ async function openHash(){
 }
 function render() {if(!state.user)return renderAuth();if(state.view==='organizations')return renderOrganizations();if(state.view==='profile')return renderProfile();if(state.view==='messengers')return renderMessengers();if(state.view==='queue')return renderQueue();if(state.view==='new')return renderNew();if(state.view==='detail'&&state.current)return renderDetail();if(state.view==='team')return renderTeam();if(state.view==='notifications')return renderNotifications();if(state.view==='chats')return renderChats();if(state.view==='chat'&&state.currentChat)return renderChatDetail();if(state.view==='analytics')return renderAnalytics();if(state.view==='kb')return renderKb();if(state.view==='webhooks')return renderWebhooks();if(state.view==='billing')return renderBilling();renderTickets();}
 async function start(){
-  if(new URLSearchParams(location.search).has('register')){state.authMode='register';history.replaceState(null,'',location.pathname+location.hash);}
+  const params=new URLSearchParams(location.search);
+  if(params.has('register'))state.authMode='register';
+  if(params.has('register')||params.has('login'))history.replaceState(null,'',location.pathname+location.hash);
   if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
   try{
     state.user=await api('/me');
@@ -2295,12 +2509,28 @@ async function start(){
     await refresh();
     await openHash();
     maybeStartTour();
+    syncPush();
   }catch{
     state.user=null;
     renderAuth();
   }
 }
 window.addEventListener('hashchange',()=>openHash());
+themeMedia.addEventListener?.('change',syncThemeUi);
+window.addEventListener('dragover',e=>{if([...(e.dataTransfer?.types||[])].includes('Files'))e.preventDefault();});
+window.addEventListener('drop',e=>{if([...(e.dataTransfer?.types||[])].includes('Files'))e.preventDefault();});
+navigator.serviceWorker?.addEventListener('message',e=>{if(e.data?.type!=='open-url')return;const target=new URL(e.data.url,location.origin);if(location.hash===target.hash)openHash();else location.hash=target.hash;});
+document.addEventListener('keydown',e=>{
+  if(e.defaultPrevented||e.ctrlKey||e.metaKey||e.altKey||!['KeyJ','KeyK'].includes(e.code)||!state.user)return;
+  if(e.target.closest?.('input, textarea, select, [contenteditable="true"]')||document.querySelector('.palette-backdrop, .tour-layer, .billing-modal-backdrop'))return;
+  const rows=[...document.querySelectorAll('#main .qrow, #main .trow, #main .chat-item:not([hidden]), #main .notification-row')];
+  if(!rows.length)return;
+  e.preventDefault();
+  const current=rows.indexOf(document.activeElement);
+  const next=current<0?0:Math.min(rows.length-1,Math.max(0,current+(e.code==='KeyJ'?1:-1)));
+  rows[next].focus({preventScroll:true});
+  rows[next].scrollIntoView({block:'nearest',behavior:reduceMotion()?'auto':'smooth'});
+});
 document.addEventListener('keydown',e=>{
   if((e.ctrlKey||e.metaKey)&&e.code==='KeyK'&&state.user){e.preventDefault();openPalette();return;}
   if(e.key==='Escape'){document.body.classList.remove('nav-open');const slot=document.querySelector('#billing-modal-slot');if(slot?.firstElementChild)slot.innerHTML='';}

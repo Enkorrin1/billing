@@ -19,12 +19,15 @@ from datetime import datetime, timedelta, timezone
 from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import Cookie, FastAPI, Header, HTTPException, Request, Response, UploadFile, File, Form
 from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse
 from pydantic import BaseModel, Field
 from PIL import Image, ImageOps, UnidentifiedImageError
+
+from web_push import WebPush, b64url_decode
 
 
 ROOT = Path(__file__).resolve().parent
@@ -73,6 +76,7 @@ class RealtimeBus:
 
 
 realtime_bus = RealtimeBus()
+web_push = WebPush(DB_PATH)
 
 
 @contextmanager
@@ -259,6 +263,14 @@ def init_db():
             id INTEGER PRIMARY KEY, title TEXT NOT NULL, body TEXT NOT NULL,
             category TEXT NOT NULL DEFAULT 'Общие', created_at TEXT NOT NULL
         );
+        """)
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS push_subscriptions (
+            id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            endpoint TEXT NOT NULL UNIQUE, p256dh TEXT NOT NULL, auth TEXT NOT NULL,
+            user_agent TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(user_id);
         """)
         if conn.execute("SELECT COUNT(*) FROM canned_responses").fetchone()[0] == 0:
             stamp = now()
@@ -595,6 +607,7 @@ def notify(conn, user_id, ticket_id, kind, message):
                  (user_id, ticket_id, kind, message, now()))
     bot_engine.enqueue_notification(conn, user_id, "ticket", ticket_id, kind, message)
     realtime_bus.publish(user_id, {"type": "notification", "target": "ticket", "record_id": ticket_id, "kind": kind, "text": message})
+    web_push.enqueue(user_id, {"title": f"Заявка №{ticket_id}", "body": message, "url": f"/#ticket/{ticket_id}", "tag": f"ticket-{ticket_id}"})
 
 
 def chat_for(conn, chat_id, user):
@@ -614,6 +627,7 @@ def notify_chat(conn, user_id, chat_id, kind, message):
                      (user_id, chat_id, kind, message, now()))
         bot_engine.enqueue_notification(conn, user_id, "chat", chat_id, kind, message)
         realtime_bus.publish(user_id, {"type": "notification", "target": "chat", "record_id": chat_id, "kind": kind, "text": message})
+        web_push.enqueue(user_id, {"title": "Общий чат", "body": message, "url": f"/#chat/{chat_id}", "tag": f"chat-{chat_id}"})
 
 
 class Credentials(BaseModel):
@@ -944,14 +958,29 @@ def dispatch_webhooks(event: str, payload: dict):
         pass
 
 
+# Браузер сверяет версию по ETag и не держит устаревшие скрипты и стили.
+NO_CACHE = {"Cache-Control": "no-cache"}
+
+
 @app.get("/")
-def home():
-    return FileResponse(ROOT / "web" / "index.html")
+def home(request: Request, desk_session: str | None = Cookie(default=None)):
+    wants_cabinet = "login" in request.query_params or "register" in request.query_params
+    if not wants_cabinet:
+        try:
+            current_user(desk_session)
+        except HTTPException:
+            return FileResponse(ROOT / "web" / "landing.html", headers=NO_CACHE)
+    return FileResponse(ROOT / "web" / "index.html", headers=NO_CACHE)
+
+
+@app.get("/api/public/settings")
+def public_settings():
+    return {"hourly_rate_rub": int(os.getenv("DEFAULT_HOURLY_RATE_RUB", "3000"))}
 
 
 @app.get("/landing")
 def landing():
-    return FileResponse(ROOT / "web" / "landing.html")
+    return FileResponse(ROOT / "web" / "landing.html", headers=NO_CACHE)
 
 
 @app.get("/style.css")
@@ -961,7 +990,7 @@ def style():
 
 @app.get("/design.css")
 def design():
-    return FileResponse(ROOT / "web" / "design.css", media_type="text/css")
+    return FileResponse(ROOT / "web" / "design.css", media_type="text/css", headers=NO_CACHE)
 
 
 @app.get("/design-concepts")
@@ -971,7 +1000,7 @@ def design_concepts():
 
 @app.get("/main.js")
 def script():
-    return FileResponse(ROOT / "web" / "main.js", media_type="text/javascript")
+    return FileResponse(ROOT / "web" / "main.js", media_type="text/javascript", headers=NO_CACHE)
 
 
 @app.get("/manifest.json")
@@ -981,12 +1010,88 @@ def manifest():
 
 @app.get("/sw.js")
 def service_worker():
-    return FileResponse(ROOT / "web" / "sw.js", media_type="application/javascript")
+    return FileResponse(ROOT / "web" / "sw.js", media_type="application/javascript", headers=NO_CACHE)
+
+
+PWA_ICONS = {"icon-192.png", "icon-512.png", "maskable-512.png", "apple-touch-icon.png", "badge-96.png"}
+
+
+@app.get("/icons/{name}")
+def pwa_png_icon(name: str):
+    if name not in PWA_ICONS:
+        raise HTTPException(404, "Не найдено")
+    return FileResponse(ROOT / "web" / "icons" / name, media_type="image/png", headers={"Cache-Control": "public, max-age=604800"})
 
 
 @app.get("/icon.svg")
 def pwa_icon():
     return FileResponse(ROOT / "web" / "icon.svg", media_type="image/svg+xml")
+
+
+# Push-уведомления: сервер отправляет запросы только известным push-сервисам браузеров.
+PUSH_HOSTS = ("fcm.googleapis.com", ".push.services.mozilla.com", ".notify.windows.com", "web.push.apple.com", ".push.apple.com")
+
+
+class PushKeys(BaseModel):
+    p256dh: str = Field(min_length=80, max_length=120)
+    auth: str = Field(min_length=16, max_length=40)
+
+
+class PushSubscriptionIn(BaseModel):
+    endpoint: str = Field(min_length=20, max_length=1000)
+    keys: PushKeys
+
+
+class PushEndpoint(BaseModel):
+    endpoint: str = Field(min_length=20, max_length=1000)
+
+
+def push_endpoint_allowed(endpoint: str) -> bool:
+    parts = urlsplit(endpoint)
+    host = (parts.hostname or "").lower()
+    return parts.scheme == "https" and any(host == h or (h.startswith(".") and host.endswith(h)) for h in PUSH_HOSTS)
+
+
+@app.get("/api/push/key")
+def push_key(desk_session: str | None = Cookie(default=None)):
+    current_user(desk_session)
+    return {"public_key": web_push.public_key}
+
+
+@app.post("/api/push/subscribe")
+def push_subscribe(data: PushSubscriptionIn, request: Request, desk_session: str | None = Cookie(default=None)):
+    user = current_user(desk_session)
+    if not push_endpoint_allowed(data.endpoint):
+        raise HTTPException(422, "Этот браузер не поддерживает уведомления")
+    try:
+        valid = len(b64url_decode(data.keys.p256dh)) == 65 and len(b64url_decode(data.keys.auth)) == 16
+    except (ValueError, binascii.Error):
+        valid = False
+    if not valid:
+        raise HTTPException(422, "Некорректная подписка на уведомления")
+    with db() as conn:
+        conn.execute("""INSERT INTO push_subscriptions(user_id,endpoint,p256dh,auth,user_agent,created_at) VALUES(?,?,?,?,?,?)
+            ON CONFLICT(endpoint) DO UPDATE SET user_id=excluded.user_id,p256dh=excluded.p256dh,auth=excluded.auth,user_agent=excluded.user_agent""",
+                     (user["id"], data.endpoint, data.keys.p256dh, data.keys.auth, request.headers.get("user-agent", "")[:300], now()))
+    return {"ok": True}
+
+
+@app.post("/api/push/unsubscribe")
+def push_unsubscribe(data: PushEndpoint, desk_session: str | None = Cookie(default=None)):
+    user = current_user(desk_session)
+    with db() as conn:
+        conn.execute("DELETE FROM push_subscriptions WHERE endpoint=? AND user_id=?", (data.endpoint, user["id"]))
+    return {"ok": True}
+
+
+@app.post("/api/push/test")
+def push_test(desk_session: str | None = Cookie(default=None)):
+    user = current_user(desk_session)
+    with db() as conn:
+        devices = conn.execute("SELECT COUNT(*) FROM push_subscriptions WHERE user_id=?", (user["id"],)).fetchone()[0]
+    if devices:
+        web_push.enqueue(user["id"], {"title": "Линия", "body": "Уведомления на этом устройстве работают", "url": "/", "tag": "push-test"})
+    return {"devices": devices}
 
 
 @app.get("/api/events")
