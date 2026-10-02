@@ -1,6 +1,6 @@
 const app = document.querySelector('#app');
-const state = { user: null, profile: null, tickets: [], chats: [], queue: [], staff: [], customers: [], organizations: [], notifications: [], current: null, currentChat: null, view: 'tickets', filter: 'all', search: '', authMode: 'login', error: '', internalNotes: [], cannedResponses: [], analytics: null, kbCategories: [], kbArticles: [], kbActiveCategory: null, kbSearch: '', kbReadingArticle: null, kbEditingArticle: null, gitLinks: [], webhooks: [], billing: null, billingTab: 'docs', billingFilter: 'all', billingModal: null, owner: 'all', queueScope: 'all', queueSource: 'all', queueGroup: null, detailTab: 'messages', chatSearch: '' };
-const statusNames = { new: 'Новая', working: 'В работе', waiting: 'Ожидает заказчика', done: 'Выполнена', closed: 'Закрыта' };
+const state = { user: null, profile: null, tickets: [], chats: [], queue: [], staff: [], customers: [], organizations: [], notifications: [], current: null, currentChat: null, view: 'tickets', filter: 'all', search: '', authMode: 'login', error: '', internalNotes: [], cannedResponses: [], analytics: null, kbCategories: [], kbArticles: [], kbActiveCategory: null, kbSearch: '', kbReadingArticle: null, kbEditingArticle: null, gitLinks: [], webhooks: [], billing: null, billingTab: 'docs', billingFilter: 'all', billingModal: null, owner: 'all', queueScope: 'all', queueSource: 'all', queueGroup: null, detailTab: 'messages', chatSearch: '', waiting: [], replyTo: null };
+const statusNames = { new: 'Новая', working: 'В работе', waiting: 'Ожидает заказчика', done: 'На проверке', closed: 'Закрыта' };
 const estimateNames = {pending:'Ожидает решения',approved:'Одобрена',rejected:'Отклонена',revision_requested:'Запрошена корректировка'};
 const serviceNames = {development:'Доработка',integration:'Интеграция',support:'Поддержка',consultation:'Консультация',other:'Другое'};
 const serviceHints = {development:'Что нужно изменить? Как должен выглядеть готовый результат? Где это работает сейчас?',integration:'Какие системы нужно связать? Какие данные передавать и в каком направлении? Есть ли документация API?',support:'Что не работает? Когда возникла проблема? Какие действия её повторяют?',consultation:'По какому вопросу нужна помощь? Какое решение вы хотите принять?',other:'Что нужно сделать? Какой результат вы ожидаете?'};
@@ -9,7 +9,7 @@ const hours = minutes =>`${(minutes/60).toLocaleString('ru-RU',{maximumFractionD
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const avatar = (person, extra='') => `<span class="person-avatar ${extra}">${person?.avatar_url?`<img src="${esc(person.avatar_url)}" alt="">`:esc((person?.name||'?').trim().split(/\s+/).slice(0,2).map(word=>word[0]).join('').toUpperCase())}</span>`;
 const date = value => new Date(value).toLocaleString('ru-RU', {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
-const statusChipNames = { new: 'Новые', working: 'В работе', waiting: 'Ожидают', done: 'Выполнены', closed: 'Закрыты' };
+const statusChipNames = { new: 'Новые', working: 'В работе', waiting: 'Ожидают', done: 'На проверке', closed: 'Закрыты' };
 const ICONS = {
   queue: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
   ticket: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/>',
@@ -40,6 +40,9 @@ const ICONS = {
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>',
   moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>',
   help: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 4.9.8c0 1.7-2.4 2.2-2.4 3.7M12 17h.01"/>',
+  reply: '<path d="M9 17 4 12l5-5"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/>',
+  checks: '<path d="M17 7 6.5 17.5 2 13"/><path d="m22 8-9.5 9.5-1.5-1.5"/>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>',
 };
 const icon = (name, size = 18) => `<svg class="ico" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`;
 const initials = name => esc((name || '?').trim().split(/\s+/).slice(0, 2).map(word => word[0]).join('').toUpperCase());
@@ -164,11 +167,12 @@ function customerTourSteps() {
     { hero: true, title: 'Добро пожаловать в кабинет', text: 'За пару минут покажем, как создать заявку, согласовать оценку и следить за работой. Пройти обучение снова можно в любой момент — кнопкой «?» в верхней панели.', next: 'Начать', before: toTickets },
     { target: ['aside .nav', '.tabbar'], title: 'Разделы кабинета', text: 'Здесь все разделы: ваши заявки, общий чат с командой, компания, база знаний и счета.', before: toTickets },
     { target: '#top-new-ticket', title: 'Новая заявка', text: 'Нажмите, чтобы описать задачу. Выберите тип работы, расскажите, какой результат нужен, и при необходимости приложите файлы.', before: toTickets },
+    { target: '.waiting-panel', title: 'Ждём от вас', text: 'Здесь собрано всё, что ждёт вашего решения: оценки, дополнительные часы, приёмка работы и вопросы команды. Пока список не пуст, работа по этим заявкам стоит.', before: toTickets, skip: () => !(state.waiting?.length || state.tickets.some(t => t.status !== 'closed')) },
     { target: '.overview-card', title: 'Сводка по заявкам', text: 'Сколько задач на каждом этапе, сколько часов уже согласовано и сколько оценок ждут вашего решения.', before: toTickets },
     { target: ['#ticket-list .trow', '#ticket-list'], title: 'Список заявок', text: 'Фильтруйте по статусу и ищите по номеру или теме. Нажмите на заявку, чтобы открыть её. Сейчас откроем одну для примера.', before: toTickets },
-    { target: '.ticket-progress', title: 'Этапы заявки', text: 'Каждая заявка проходит пять шагов: создание, оценка, согласование, работа и завершение. Текущий шаг подсвечен.', before: toDetail, skip: noTickets },
+    { target: '.ticket-progress', title: 'Этапы заявки', text: 'Каждая заявка проходит пять шагов: создание, оценка, согласование, работа и приёмка. Когда работа готова, вы проверяете результат и принимаете его или возвращаете на доработку.', before: toDetail, skip: noTickets },
     { target: '.estimate-panel', title: 'Согласуйте оценку', text: 'Команда оценивает задачу в часах. Вы можете одобрить оценку, отклонить её или предложить свой вариант — без вашего решения работа не начнётся.', before: toDetail, skip: noTickets },
-    { target: '.conversation', title: 'Переписка по заявке', text: 'Задавайте вопросы и уточняйте детали прямо в заявке. Для быстрой отправки нажмите Ctrl + Enter.', before: toDetail, skip: noTickets },
+    { target: '.conversation', title: 'Переписка по заявке', text: 'Задавайте вопросы и уточняйте детали прямо в заявке. Чтобы ответить на конкретное сообщение, нажмите «Ответить» под ним. Отметка «Прочитано командой» показывает, что сообщение увидели.', before: toDetail, skip: noTickets },
     { target: '.detail-grid > div:last-child > .operations-panel', title: 'Сроки работы', text: 'Сроки ответа, оценки и сдачи. Если срок подходит, полоска становится жёлтой, если прошёл — красной.', before: toDetail, skip: noTickets },
     { target: ['aside [data-nav="chats"]', '.tabbar [data-nav="chats"]'], title: 'Общий чат', text: 'Для вопросов без привязки к заявке. Если из разговора вырастет задача, команда оформит её как заявку.', before: toTickets },
     { skip: () => !billingOn(), target: '.billing-kpi-grid', title: 'Часы и счета', text: 'Баланс депозита, ставка и часы в работе. Здесь же можно купить пакет часов и открыть счета и акты.', before: async () => { if (state.view !== 'billing') await openBilling(); } },
@@ -426,6 +430,7 @@ async function mountPushCard() {
   note.replaceWith(stack);
   stack.append(note);
   stack.insertAdjacentHTML('beforeend', '<section class="panel content push-card" id="push-card" aria-live="polite"><div class="eyebrow">Уведомления на этом устройстве</div><h2>Push-уведомления</h2><div id="push-body">' + skeletonLines(2) + '</div></section>');
+  mountEmailCard(stack);
   const body = stack.querySelector('#push-body');
   const paint = async () => {
     const subscription = await currentPushSubscription().catch(() => null);
@@ -444,6 +449,35 @@ async function mountPushCard() {
     body.querySelector('#push-on')?.addEventListener('click', async e => { e.target.disabled = true; try { await enablePush(); toast('Уведомления включены'); } catch (error) { toast(error.message, 'error'); } paint(); });
     body.querySelector('#push-off')?.addEventListener('click', async e => { e.target.disabled = true; await disablePush(); toast('Уведомления на этом устройстве отключены', 'info'); paint(); });
     body.querySelector('#push-test')?.addEventListener('click', async e => { e.target.disabled = true; try { const { devices } = await api('/push/test', { method: 'POST' }); toast(devices ? 'Тестовое уведомление отправлено' : 'Устройство не подписано', devices ? 'success' : 'error'); } catch (error) { toast(error.message, 'error'); } e.target.disabled = false; });
+  };
+  paint();
+}
+function mountEmailCard(stack) {
+  stack.insertAdjacentHTML('beforeend', '<section class="panel content push-card email-card" id="email-card" aria-live="polite"><div class="eyebrow">Почта</div><h2>Письма о заявках</h2><div id="email-body">' + skeletonLines(2) + '</div></section>');
+  const body = stack.querySelector('#email-body');
+  const customer = state.user.role === 'customer';
+  const paint = async () => {
+    let p;
+    try { p = await api('/email/preferences'); } catch (error) { body.innerHTML = `<p>${esc(error.message)}</p>`; return; }
+    if (!p.available) {
+      body.innerHTML = `<p>${customer ? 'Отправка писем пока не настроена командой. Уведомления приходят в кабинет, push и мессенджеры.' : 'Почта не настроена: задайте SMTP_HOST и EMAIL_FROM на сервере (см. .env.example).'}</p>`;
+      return;
+    }
+    body.innerHTML = `<form class="form" id="email-form"><p>Письма приходят на <strong>${esc(p.email)}</strong>, только если вы не увидели событие в кабинете в течение пары минут.${p.replies ? ' На письмо можно просто ответить — ответ попадёт в переписку.' : ''}</p><label class="check-row"><input type="checkbox" name="notify" ${p.notify ? 'checked' : ''}>Сообщения, оценки и другие события по заявкам</label>${customer ? `<label class="check-row"><input type="checkbox" name="digest" ${p.digest ? 'checked' : ''}>Ежемесячная сводка: что сделано, что в работе и что ждёт вас</label><label>Копия сводки руководителю<input class="field" name="digest_emails" type="text" inputmode="email" autocomplete="off" value="${esc(p.digest_emails.join(', '))}" placeholder="director@company.ru"><small>До трёх адресов через запятую. Удобно для тех, кто не заходит в кабинет.</small></label><a class="text-link" href="/api/digest/preview" target="_blank" rel="noopener">Посмотреть сводку за этот месяц ↗</a>` : ''}<div class="row"><button class="button primary small">Сохранить</button><button class="button small" type="button" id="email-test">${icon('mail', 14)}Тестовое письмо</button></div></form>`;
+    const form = body.querySelector('#email-form');
+    form.onsubmit = async e => {
+      e.preventDefault();
+      const button = form.querySelector('button.primary');
+      button.disabled = true;
+      const emails = (form.elements.digest_emails?.value || '').split(/[,;\s]+/).map(x => x.trim()).filter(Boolean);
+      try { await api('/email/preferences', { method: 'PUT', body: JSON.stringify({ notify: form.elements.notify.checked, digest: Boolean(form.elements.digest?.checked), digest_emails: emails }) }); toast('Настройки писем сохранены'); paint(); }
+      catch (error) { toast(error.message, 'error'); button.disabled = false; }
+    };
+    form.querySelector('#email-test').onclick = async e => {
+      e.currentTarget.disabled = true;
+      try { const r = await api('/email/test', { method: 'POST' }); toast(`Письмо отправлено на ${r.email}`); } catch (error) { toast(error.message, 'error'); }
+      e.target.closest('button').disabled = false;
+    };
   };
   paint();
 }
@@ -521,6 +555,7 @@ function nearestSla(t) { return ticketSla(t).sort((a, b) => a.diff - b.diff)[0] 
 function slaTag(s) { return s ? `<span class="sla ${s.tone}" title="Срок: ${date(s.due)}">${icon('clock', 13)}${esc(s.text)}</span>` : ''; }
 function ticketSlaBadges(t) { return ticketSla(t).map(slaTag).join(' '); }
 function slaCard(t) {
+  if (t.declined) return '<p class="muted">Заказчик отказался от заявки — сроки больше не отслеживаются.</p>';
   const now = Date.now();
   const created = new Date(t.created_at).getTime();
   const track = due => {
@@ -548,6 +583,16 @@ function initRealtime() {
     eventSource.addEventListener('update', async (e) => {
       try {
         const data = JSON.parse(e.data);
+        if (data.type === 'read') {
+          const current = data.target === 'ticket' ? (state.view === 'detail' && state.current?.ticket.id === data.record_id ? state.current : null) : (state.view === 'chat' && state.currentChat?.chat.id === data.record_id ? state.currentChat : null);
+          if (current) { current.read_state = { customer_read_id: data.customer_read_id, team_read_id: data.team_read_id }; paintReadTicks(current.read_state); }
+          return;
+        }
+        if (data.type === 'meeting_summary') {
+          if (data.ticket_id && state.view === 'detail' && state.current?.ticket.id === data.ticket_id && !document.querySelector('#message-form textarea')?.value) await openTicket(data.ticket_id);
+          if (data.chat_id && state.view === 'chat' && state.currentChat?.chat.id === data.chat_id && !document.querySelector('#chat-message-form textarea')?.value) await openChat(data.chat_id);
+          return;
+        }
         playNotificationSound();
         if (data.type === 'notification') {
           if (!state.pushEnabled) showBrowserNotification('Линия · Новое уведомление', data.text);
@@ -620,11 +665,12 @@ async function loadNotifications() {
 }
 async function refresh() {
   const staff = state.user.role !== 'customer';
-  const [tickets, chats, organizations, profile, notifications, staffList, customers, queue, settings] = await Promise.all([
+  const [tickets, chats, organizations, profile, notifications, staffList, customers, queue, settings, waiting] = await Promise.all([
     api('/tickets'), api('/chats'), api('/organizations'), api(staff?'/profile/me':'/customer-profile/me'), fetchNotifications(),
     staff?api('/staff'):null, staff?api('/customers'):null, staff?api('/work-queue'):null, api('/public/settings').catch(()=>({})),
+    staff?[]:api('/waiting-on-me').catch(()=>[]),
   ]);
-  Object.assign(state, {tickets, chats, organizations, profile, notifications, settings});
+  Object.assign(state, {tickets, chats, organizations, profile, notifications, settings, waiting});
   state.user.name=profile.name;
   if (staff) Object.assign(state, {staff: staffList, customers, queue});
   render();
@@ -720,6 +766,38 @@ function workloadPanel() {
   const none = unassigned ? `<span class="person-avatar small vacant" aria-hidden="true">+</span><div class="workload-name unassigned">Не назначены<div class="meter"><span class="soon" style="width:${unassigned / max * 100}%"></span></div></div><span class="workload-count"><strong>${unassigned}</strong></span>` : '';
   return `<section class="activity-panel"><div class="activity-heading"><h2>Нагрузка команды</h2><span>заявки в очереди</span></div>${rows || none ? `<div class="workload">${rows}${none}</div>` : '<p class="muted">Нет назначенных заявок.</p>'}</section>`;
 }
+const waitingIcons = { estimate: 'clock', hours: 'clock', acceptance: 'check', answer: 'chat' };
+function waitingAge(iso) {
+  const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+  return { days, text: days < 1 ? 'с сегодняшнего дня' : `ждёт ${days} ${plural(days, ['день', 'дня', 'дней'])}` };
+}
+function waitingPanel() {
+  const items = state.waiting || [];
+  if (!items.length) return state.tickets.some(t => t.status !== 'closed') ? `<section class="waiting-panel clear" aria-label="Ждём от вас">${icon('check', 18)}<div><strong>От вас сейчас ничего не нужно</strong><span>Команда работает. Если понадобится ваше решение, заявка появится здесь.</span></div></section>` : '';
+  const rows = items.map(w => {
+    const age = waitingAge(w.since);
+    return `<button type="button" class="waiting-row" data-waiting-ticket="${w.ticket_id}"><span class="waiting-ico ${w.kind}">${icon(waitingIcons[w.kind] || 'alert', 17)}</span><span class="waiting-text"><strong>${esc(w.action)}</strong><small>№${w.ticket_id} · ${esc(w.title)}</small><small class="waiting-detail">${esc(w.detail)}</small></span><span class="waiting-age ${age.days >= 2 ? 'late' : ''}">${age.text}</span><span class="waiting-go">${icon('arrow', 16)}</span></button>`;
+  }).join('');
+  const estimates = items.filter(w => w.kind === 'estimate');
+  const total = estimates.reduce((sum, w) => sum + (w.effort_minutes || 0), 0);
+  const bulk = estimates.length > 1 ? `<div class="waiting-bulk"><span><strong>${estimates.length} ${plural(estimates.length, ['оценка', 'оценки', 'оценок'])}</strong> на ${hours(total)} ждут одобрения</span><button type="button" class="button primary" id="approve-all">${icon('check', 16)}Одобрить все</button><button type="button" class="button primary" id="approve-all-confirm" hidden>Подтвердить: ${hours(total)}</button><button type="button" class="button" id="approve-all-cancel" hidden>Отмена</button></div>` : '';
+  return `<section class="panel waiting-panel" aria-labelledby="waiting-title"><div class="waiting-head"><div><span class="eyebrow">Ваше действие</span><h2 id="waiting-title">Ждём от вас</h2></div><span class="waiting-count" aria-label="${items.length} ${plural(items.length, ['шаг', 'шага', 'шагов'])}">${items.length}</span></div><div class="waiting-list">${rows}</div>${bulk}<p class="waiting-hint">Пока эти шаги не сделаны, работа по заявкам стоит.</p></section>`;
+}
+function bindWaitingBulk() {
+  const start = document.querySelector('#approve-all');
+  if (!start) return;
+  const confirm = document.querySelector('#approve-all-confirm');
+  const cancel = document.querySelector('#approve-all-cancel');
+  const toggle = asking => { start.hidden = asking; confirm.hidden = !asking; cancel.hidden = !asking; };
+  start.onclick = () => { toggle(true); confirm.focus(); };
+  cancel.onclick = () => toggle(false);
+  confirm.onclick = async () => {
+    confirm.disabled = true;
+    const ids = (state.waiting || []).filter(w => w.kind === 'estimate').map(w => w.ref_id);
+    try { const result = await api('/estimates/approve', { method: 'POST', body: JSON.stringify({ estimate_ids: ids }) }); toast(`Одобрено оценок: ${result.approved} — команда приступит к работе`); await refresh(); }
+    catch (error) { showError(error); await refresh(); }
+  };
+}
 function renderTickets() {
   const staff = state.user.role !== 'customer';
   const dispatcher = isDispatcher();
@@ -736,7 +814,7 @@ function renderTickets() {
     return `<button class="trow" data-ticket="${t.id}"><span class="tnum">${t.id}</span><span class="ttitle"><strong>${esc(t.title)}</strong><small>${esc([t.customer_name, staff ? t.customer_company : '', serviceNames[t.service_type]].filter(Boolean).join(' · '))}</small></span><span class="badge ${esc(t.status)}">${statusNames[t.status]}</span><span>${deadline}</span><span class="tnum-strong">${t.effort_minutes ? hours(t.effort_minutes) : '—'}</span><span class="twho">${avatarOf(t.assignee_id, t.assignee_name)}<span>${esc(t.assignee_name || (staff ? 'Не назначен' : 'Назначается'))}</span></span><span class="tdate">${date(t.updated_at)}</span></button>`;
   };
   const head = '<div class="table-head" aria-hidden="true"><span>№</span><span>Заявка</span><span>Статус</span><span>Ближайший срок</span><span>Оценка</span><span>Ответственный</span><span>Обновлена</span></div>';
-  shell(staff ? 'Заявки' : 'Мои заявки', '', `${portfolioOverview(owned)}<section class="panel"><div class="toolbar"><div class="chips" role="group" aria-label="Фильтр по статусу">${chips}</div><div class="ticket-tools"><input class="field ticket-search" id="ticket-search" type="search" maxlength="100" aria-label="Поиск по заявкам" placeholder="Номер, тема, клиент" value="${esc(state.search)}">${ownerSelect}</div></div>${head}<div id="ticket-list"></div><div class="toolbar" style="border-top:1px solid var(--line-light);border-bottom:0;min-height:52px"><span class="muted" id="ticket-count"></span><span class="kbd-hint"><kbd>J</kbd><kbd>K</kbd> по строкам · <kbd>Enter</kbd> открыть</span></div></section>`, { kicker: staff ? (dispatcher ? 'Все клиенты' : 'Назначенные мне и команде') : 'Личный кабинет' });
+  shell(staff ? 'Заявки' : 'Мои заявки', '', `${staff ? '' : waitingPanel()}${portfolioOverview(owned)}<section class="panel"><div class="toolbar"><div class="chips" role="group" aria-label="Фильтр по статусу">${chips}</div><div class="ticket-tools"><input class="field ticket-search" id="ticket-search" type="search" maxlength="100" aria-label="Поиск по заявкам" placeholder="Номер, тема, клиент" value="${esc(state.search)}">${ownerSelect}</div></div>${head}<div id="ticket-list"></div><div class="toolbar" style="border-top:1px solid var(--line-light);border-bottom:0;min-height:52px"><span class="muted" id="ticket-count"></span><span class="kbd-hint"><kbd>J</kbd><kbd>K</kbd> по строкам · <kbd>Enter</kbd> открыть</span></div></section>`, { kicker: staff ? (dispatcher ? 'Все клиенты' : 'Назначенные мне и команде') : 'Личный кабинет' });
   const updateList = () => {
     const query = state.search.trim().toLocaleLowerCase('ru-RU');
     const matches = query ? visible.filter(t => [t.id, t.title, t.description, t.customer_name, t.customer_company, t.assignee_name, statusNames[t.status]].some(value => String(value || '').toLocaleLowerCase('ru-RU').includes(query))) : visible;
@@ -748,6 +826,8 @@ function renderTickets() {
   if (ownerFilter) { ownerFilter.value = state.owner; ownerFilter.onchange = e => { state.owner = e.target.value; renderTickets(); }; }
   document.querySelector('#ticket-search').oninput = e => { state.search = e.target.value; updateList(); };
   updateList();
+  document.querySelectorAll('[data-waiting-ticket]').forEach(el => el.onclick = () => openTicket(Number(el.dataset.waitingTicket)));
+  bindWaitingBulk();
   document.querySelectorAll('[data-status-filter],[data-overview-filter]').forEach(button => button.onclick = () => { const key = button.dataset.statusFilter || button.dataset.overviewFilter; state.filter = state.filter === key && button.dataset.overviewFilter ? 'all' : key; renderTickets(); });
 }
 function renderQueue() {
@@ -799,8 +879,9 @@ function renderNew() {
   const dispatcher=state.user.role==='admin'||state.user.is_manager;
   const customerField=staff?`<label>Заказчик<select class="field" name="customer_id" required><option value="">Выберите заказчика</option>${state.customers.map(c=>`<option value="${c.id}">${esc(c.name)} · ${esc(c.email)}</option>`).join('')}</select></label>`:'';
   const assigneeField=dispatcher?`<label>Ответственный<select class="field" name="assignee_id"><option value="">Назначить позже</option>${state.staff.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></label>`:staff?'<p class="muted">Вы будете назначены ответственным за эту заявку.</p>':'';
-  const help=staff?['Выберите заказчика, которому нужна помощь.','Опишите задачу его словами — он увидит текст в своём кабинете.','После создания заказчик получит уведомление.']:['Коротко назовите задачу, чтобы её было легко найти.','Напишите, какой результат нужен и какие детали важны.','Команда оценит трудозатраты в часах; решение останется за вами.'];
-  shell('Новая заявка','',`<button class="back" id="back">← К заявкам</button><div class="form-layout"><div class="panel content"><h2>${staff?'Создать заявку для заказчика':'Опишите задачу'}</h2>${staff&&!state.customers.length?'<div class="notice">Нет доступных заказчиков. Менеджер или администратор может создать заявку для любого зарегистрированного заказчика.</div>':''}<form class="form" id="ticket-form">${customerField}<label>Тема<input class="field" name="title" required minlength="3" maxlength="140" placeholder="Коротко о задаче"></label><div id="kb-suggest-box" class="kb-suggest-box" style="display:none"></div><label>Описание<textarea name="description" data-draft="new-ticket" required minlength="5" maxlength="10000" placeholder="Что нужно сделать? Укажите важные детали."></textarea></label>${assigneeField}<button class="button primary" ${staff&&!state.customers.length?'disabled':''}>Создать заявку</button></form></div><div class="form-help"><span>ПОДСКАЗКА</span><h2>Чтобы быстрее начать</h2>${help.map((item,index)=>`<div class="help-step"><b>${String(index+1).padStart(2,'0')}</b><p>${item}</p></div>`).join('')}</div></div>`);
+  const estimateField=staff?`<details class="estimate-inline"><summary>Сразу приложить оценку</summary><p class="muted">Заказчику останется только согласовать часы — или отказаться, если заявка не нужна.${dispatcher?' Для оценки нужен ответственный.':''}</p><label>Плановые трудозатраты, часов<input class="field" name="effort_hours" type="number" min="0.25" max="1666" step="0.25"></label><label>Потрачено на оценку, минут<input class="field" name="assessment_minutes" type="number" min="1" max="100000" step="1"></label><label>Пояснение к оценке<textarea name="estimate_note" maxlength="3000" placeholder="Что входит в работу"></textarea></label></details>`:'';
+  const help=staff?['Выберите заказчика, которому нужна помощь.','Опишите задачу его словами — он увидит текст в своём кабинете.','Приложите оценку — заказчик согласует её в один клик или откажется от заявки.']:['Коротко назовите задачу, чтобы её было легко найти.','Напишите, какой результат нужен и какие детали важны.','Команда оценит трудозатраты в часах; решение останется за вами.'];
+  shell('Новая заявка','',`<button class="back" id="back">← К заявкам</button><div class="form-layout"><div class="panel content"><h2>${staff?'Создать заявку для заказчика':'Опишите задачу'}</h2>${staff&&!state.customers.length?'<div class="notice">Нет доступных заказчиков. Менеджер или администратор может создать заявку для любого зарегистрированного заказчика.</div>':''}<form class="form" id="ticket-form">${staff?`<div class="template-bar"><label>Шаблон<select class="field" id="template-select"><option value="">Без шаблона</option></select></label><div class="row"><button type="button" class="button" id="template-save">Сохранить как шаблон</button><button type="button" class="button" id="template-delete" hidden>Удалить шаблон</button></div></div>`:''}${customerField}<label>Тема<input class="field" name="title" required minlength="3" maxlength="140" placeholder="Коротко о задаче"></label><div id="kb-suggest-box" class="kb-suggest-box" style="display:none"></div><label>Описание<textarea name="description" data-draft="new-ticket" required minlength="5" maxlength="10000" placeholder="Что нужно сделать? Укажите важные детали."></textarea></label>${assigneeField}${estimateField}<button class="button primary" ${staff&&!state.customers.length?'disabled':''}>Создать заявку</button></form></div><div class="form-help"><span>ПОДСКАЗКА</span><h2>Чтобы быстрее начать</h2>${help.map((item,index)=>`<div class="help-step"><b>${String(index+1).padStart(2,'0')}</b><p>${item}</p></div>`).join('')}</div></div>`);
   document.querySelector('#ticket-form [name="title"]').parentElement.insertAdjacentHTML('beforebegin',`<label>Тип задачи<select class="field" name="service_type">${Object.entries(serviceNames).map(([key,label])=>`<option value="${key}">${label}</option>`).join('')}</select></label>`);
   document.querySelector('#ticket-form [name="service_type"]').onchange=e=>{document.querySelector('#ticket-form [name="description"]').placeholder=serviceHints[e.target.value];document.querySelector('.form-help h2').textContent=serviceNames[e.target.value];};
   document.querySelector('#ticket-form [name="service_type"]').dispatchEvent(new Event('change'));
@@ -847,21 +928,135 @@ function renderNew() {
       }
     }, 250);
   });
-  document.querySelector('#ticket-form button').insertAdjacentHTML('beforebegin',`<label id="visibility-field" ${!staff&&!state.organizations.length?'hidden':''}>Кому видна заявка<select class="field" name="visibility"><option value="organization">Всей компании</option><option value="private">Только автору</option></select></label><label>Файлы к заявке<input class="field" name="files" type="file" multiple accept=".png,.jpg,.jpeg,.webp,.gif,.pdf,.txt,.doc,.docx,.xls,.xlsx,.csv,.zip"><small>До 10 МБ на файл. Можно приложить после создания.</small></label>`);
+  document.querySelector('#ticket-form > button.primary').insertAdjacentHTML('beforebegin',`<label id="visibility-field" ${!staff&&!state.organizations.length?'hidden':''}>Кому видна заявка<select class="field" name="visibility"><option value="organization">Всей компании</option><option value="private">Только автору</option></select></label><label>Файлы к заявке<input class="field" name="files" type="file" multiple accept=".png,.jpg,.jpeg,.webp,.gif,.pdf,.txt,.doc,.docx,.xls,.xlsx,.csv,.zip"><small>До 10 МБ на файл. Можно приложить после создания.</small></label>`);
   if(!staff&&state.organizations[0]?.members.some(m=>m.user_id===state.user.id&&m.role==='viewer')){document.querySelector('#visibility-field').hidden=true;document.querySelector('#visibility-field select').value='private';}
   if(staff)document.querySelector('#ticket-form [name="customer_id"]').onchange=e=>{const member=state.organizations.some(o=>o.members.some(m=>m.user_id===Number(e.target.value)));document.querySelector('#visibility-field').hidden=!member;document.querySelector('#visibility-field select').value=member?'organization':'private';};
   document.querySelector('#back').onclick=()=>setView('tickets');
-  document.querySelector('#ticket-form').onsubmit=async e=>{e.preventDefault();const files=[...e.target.elements.files.files];const data=Object.fromEntries(new FormData(e.target));delete data.files;if(document.querySelector('#visibility-field').hidden)data.visibility='private';if(staff){data.customer_id=Number(data.customer_id);if(dispatcher)data.assignee_id=data.assignee_id?Number(data.assignee_id):null;}e.target.querySelector('button').disabled=true;try{const ticket=await api('/tickets',{method:'POST',body:JSON.stringify(data)});clearDraft('new-ticket');const failed=[];for(const file of files){try{await upload(`/tickets/${ticket.id}/attachments`,file);}catch(error){failed.push(file.name);}}await refresh();await openTicket(ticket.id);if(failed.length){state.error=`Заявка создана, но файлы не загрузились: ${failed.join(', ')}. Прикрепите их в карточке.`;render();}}catch(error){showError(error);}};
+  if(staff)bindTicketTemplates(document.querySelector('#ticket-form'));
+  document.querySelector('#ticket-form').onsubmit=async e=>{e.preventDefault();const files=[...e.target.elements.files.files];const data=Object.fromEntries(new FormData(e.target));delete data.files;if(document.querySelector('#visibility-field').hidden)data.visibility='private';if(staff){data.customer_id=Number(data.customer_id);if(dispatcher)data.assignee_id=data.assignee_id?Number(data.assignee_id):null;const effort=data.effort_hours;delete data.effort_hours;if(effort){if(dispatcher&&!data.assignee_id){showError(new Error('Чтобы сразу отправить оценку, выберите ответственного'));return;}data.effort_minutes=Math.round(Number(effort)*60);data.assessment_minutes=data.assessment_minutes?Number(data.assessment_minutes):null;}else{delete data.assessment_minutes;delete data.estimate_note;}}e.target.querySelector('button.primary').disabled=true;try{const ticket=await api('/tickets',{method:'POST',body:JSON.stringify(data)});clearDraft('new-ticket');const failed=[];for(const file of files){try{await upload(`/tickets/${ticket.id}/attachments`,file);}catch(error){failed.push(file.name);}}await refresh();await openTicket(ticket.id);if(failed.length){state.error=`Заявка создана, но файлы не загрузились: ${failed.join(', ')}. Прикрепите их в карточке.`;render();}}catch(error){showError(error);}};
+}
+function bindTicketTemplates(form) {
+  const select = form.querySelector('#template-select');
+  const save = form.querySelector('#template-save');
+  const remove = form.querySelector('#template-delete');
+  const current = () => (state.templates || []).find(t => t.id === Number(select.value));
+  const fill = (selected = '') => {
+    select.innerHTML = `<option value="">Без шаблона</option>${(state.templates || []).map(t => `<option value="${t.id}">${esc(t.name)}${t.effort_minutes ? ` · ${hours(t.effort_minutes)}` : ''}</option>`).join('')}`;
+    select.value = selected;
+    remove.hidden = !select.value;
+  };
+  const load = async selected => { try { state.templates = await api('/ticket-templates'); fill(selected); } catch (error) { showError(error); } };
+  select.onchange = () => {
+    remove.hidden = !select.value; remove.textContent = 'Удалить шаблон';
+    const t = current();
+    if (!t) return;
+    form.elements.service_type.value = t.service_type;
+    form.elements.service_type.dispatchEvent(new Event('change'));
+    form.elements.title.value = t.title;
+    form.elements.description.value = t.description;
+    form.elements.effort_hours.value = t.effort_minutes ? t.effort_minutes / 60 : '';
+    form.elements.estimate_note.value = t.estimate_note || '';
+    form.querySelector('.estimate-inline').open = Boolean(t.effort_minutes);
+  };
+  save.onclick = async () => {
+    const title = form.elements.title.value.trim(), description = form.elements.description.value.trim();
+    if (title.length < 3 || description.length < 5) { showError(new Error('Заполните тему и описание — из них получится шаблон')); return; }
+    const effort = form.elements.effort_hours.value;
+    save.disabled = true;
+    try {
+      const created = await api('/ticket-templates', { method: 'POST', body: JSON.stringify({ name: title.slice(0, 80), title, description, service_type: form.elements.service_type.value, effort_minutes: effort ? Math.round(Number(effort) * 60) : null, estimate_note: form.elements.estimate_note.value }) });
+      await load(String(created.id));
+      toast('Шаблон сохранён — он появится в списке у всей команды');
+    } catch (error) { showError(error); } finally { save.disabled = false; }
+  };
+  remove.onclick = async () => {
+    if (remove.textContent !== 'Точно удалить?') { remove.textContent = 'Точно удалить?'; return; }
+    try { await api(`/ticket-templates/${select.value}`, { method: 'DELETE' }); remove.textContent = 'Удалить шаблон'; await load(''); toast('Шаблон удалён'); } catch (error) { showError(error); }
+  };
+  load('');
 }
 async function openTicket(id) {if(state.view!=='detail'||state.current?.ticket?.id!==id)delayedLoading(`Заявка №${id}`,'detail');try{const sameTicket=state.current?.ticket?.id===id;state.current=await api(`/tickets/${id}`);if(!sameTicket)state.detailTab='messages';state.current.assignee_profile=state.current.ticket.assignee_id?await api(`/staff/${state.current.ticket.assignee_id}/profile`).catch(()=>null):null;state.gitLinks=await api(`/tickets/${id}/git-links`).catch(()=>[]);state.view='detail';state.error='';render();}catch(error){showError(error);}}
+/* ---------- Переписка: ответы, прочтение, итоги встреч ---------- */
+const viewerSide = () => state.user.role === 'customer' ? 'customer' : 'team';
+const messageSide = m => m.author_role === 'customer' ? 'customer' : 'team';
+const meetingKindNames = { call: 'созвона', meeting: 'встречи', chat: 'переписки', other: 'обсуждения' };
+function messageHtml(m, { header, extra = '', canReply = false }) {
+  const side = messageSide(m);
+  const quote = m.reply_to_id ? `<button type="button" class="reply-quote" data-jump="${m.reply_to_id}" aria-label="Перейти к исходному сообщению"><strong>${esc(m.reply_author_name || 'Сообщение')}</strong><span>${esc(m.reply_body || 'Сообщение удалено')}</span></button>` : '';
+  const reply = canReply ? `<button type="button" class="msg-reply" data-reply="${m.id}" aria-label="Ответить на сообщение ${esc(m.author_name)}">${icon('reply', 14)}<span>Ответить</span></button>` : '';
+  const status = side === viewerSide() ? '<span class="msg-status" aria-live="off"></span>' : '';
+  return `<div class="message ${m.author_id === state.user.id ? 'mine' : ''}" id="msg-${m.id}" data-msg="${m.id}" data-side="${side}"><div class="msg-head"><small>${header}</small>${reply}</div>${quote}<div class="msg-body">${esc(m.body)}</div>${extra}<div class="msg-foot">${status}</div></div>`;
+}
+function summaryCard(s) {
+  return `<article class="meeting-card" aria-label="Итоги ${meetingKindNames[s.kind] || 'встречи'}"><div class="meeting-head"><span class="meeting-ico">${icon('users', 16)}</span><div><strong>Итоги ${meetingKindNames[s.kind] || 'встречи'} · ${new Date(s.occurred_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}</strong><small>${esc(s.author_name)}</small></div></div><span class="eyebrow">О чём договорились</span><p>${esc(s.client_summary)}</p>${s.client_next_steps ? `<span class="eyebrow">Что дальше</span><p>${esc(s.client_next_steps)}</p>` : ''}</article>`;
+}
+function timeline(messages, summaries, renderMessage) {
+  return [...messages.map(m => ({ at: m.created_at, kind: 'message', item: m })), ...(summaries || []).map(s => ({ at: s.shared_at, kind: 'summary', item: s }))]
+    .sort((a, b) => a.at.localeCompare(b.at))
+    .map(entry => entry.kind === 'summary' ? { at: entry.at, html: summaryCard(entry.item) } : { at: entry.at, html: renderMessage(entry.item) });
+}
+function paintReadTicks(readState) {
+  if (!readState) return;
+  const side = viewerSide();
+  const otherRead = side === 'customer' ? readState.team_read_id : readState.customer_read_id;
+  const who = side === 'customer' ? 'командой' : 'заказчиком';
+  document.querySelectorAll(`.message[data-side="${side}"] .msg-status`).forEach(el => {
+    const read = Number(el.closest('.message').dataset.msg) <= (otherRead || 0);
+    el.className = `msg-status ${read ? 'read' : ''}`;
+    el.innerHTML = `${icon(read ? 'checks' : 'check', 14)}<span>${read ? `Прочитано ${who}` : 'Отправлено'}</span>`;
+  });
+}
+function replyBar(kind, record) {
+  const r = state.replyTo;
+  if (!r || r.kind !== kind || r.record !== record) return '<div class="reply-bar" id="reply-bar" hidden></div>';
+  return `<div class="reply-bar" id="reply-bar">${icon('reply', 15)}<div><strong>Ответ ${esc(r.author)}</strong><span>${esc(r.body.slice(0, 160))}</span></div><button type="button" class="icon-btn" id="cancel-reply" aria-label="Отменить ответ">×</button></div>`;
+}
+function bindConversation(kind, record, messages, readState) {
+  paintReadTicks(readState);
+  document.querySelectorAll('[data-jump]').forEach(el => el.onclick = () => {
+    const target = document.querySelector(`#msg-${el.dataset.jump}`);
+    if (!target) return toast('Исходное сообщение не найдено', 'error');
+    target.scrollIntoView({ block: 'center', behavior: reduceMotion() ? 'auto' : 'smooth' });
+    target.classList.remove('flash'); void target.offsetWidth; target.classList.add('flash');
+  });
+  document.querySelectorAll('[data-reply]').forEach(el => el.onclick = () => {
+    const m = messages.find(x => x.id === Number(el.dataset.reply));
+    if (!m) return;
+    state.replyTo = { kind, record, id: m.id, author: m.author_name, body: m.body };
+    const bar = document.querySelector('#reply-bar');
+    if (bar) { bar.outerHTML = replyBar(kind, record); bindReplyCancel(kind, record); }
+    document.querySelector(kind === 'ticket' ? '#message-body' : '#chat-body')?.focus();
+  });
+  bindReplyCancel(kind, record);
+  markRead(kind, record, messages);
+}
+function bindReplyCancel(kind, record) {
+  document.querySelector('#cancel-reply')?.addEventListener('click', () => { state.replyTo = null; document.querySelector('#reply-bar').outerHTML = replyBar(kind, record); });
+}
+const replyToId = (kind, record) => state.replyTo?.kind === kind && state.replyTo.record === record ? state.replyTo.id : null;
+state.readSent = {};
+async function markRead(kind, record, messages) {
+  const top = messages.reduce((max, m) => Math.max(max, m.id), 0);
+  const key = `${kind}-${record}`;
+  if (document.visibilityState !== 'visible' || (state.readSent[key] || 0) >= top && state.readSent[key] !== undefined) return;
+  state.readSent[key] = top;
+  try {
+    const reads = await api(`/${kind === 'ticket' ? 'tickets' : 'chats'}/${record}/read`, { method: 'POST', body: JSON.stringify({}) });
+    const current = kind === 'ticket' ? state.current : state.currentChat;
+    if (current) current.read_state = reads;
+    loadNotifications().catch(() => {});
+  } catch {}
+}
 function ticketProgress(ticket, estimates) {
+  if (ticket.declined) return `<div class="notice">Заказчик отказался от заявки — работа не выполнялась.</div>`;
   const estimate = estimates[0];
-  const step = ['done', 'closed'].includes(ticket.status) ? 4 : ['working', 'waiting'].includes(ticket.status) ? 3 : estimate?.state === 'approved' ? 2 : estimate ? 1 : 0;
-  const steps = ['Создана', 'Оценка', 'Согласование', 'В работе', 'Готово'];
+  const step = ticket.status === 'closed' ? 5 : ticket.status === 'done' ? 4 : ['working', 'waiting'].includes(ticket.status) ? 3 : estimate?.state === 'approved' ? 2 : estimate ? 1 : 0;
+  const steps = ['Создана', 'Оценка', 'Согласование', 'В работе', 'Приёмка'];
   return `<section class="ticket-progress" aria-label="Этапы заявки"><ol>${steps.map((label, index) => `<li class="${index < step ? 'passed' : index === step ? 'current' : ''}" ${index === step ? 'aria-current="step"' : ''}><span class="step-dot">${index < step ? '✓' : index + 1}</span><span class="step-label">${label}</span></li>`).join('')}</ol></section>`;
 }
 function renderCsat(t, staff) {
-  if (!['done', 'closed'].includes(t.status)) return '';
+  if (!['done', 'closed'].includes(t.status) || t.declined) return '';
+  if (!staff && !t.rating && t.status !== 'closed') return '';
   if (!staff) {
     if (t.rating) {
       return `<div class="csat-box"><div class="csat-title">Ваша оценка работы</div><div class="csat-stars">${[1,2,3,4,5].map(s=>`<span class="csat-star active">${s<=t.rating?'★':'☆'}</span>`).join('')}</div>${t.rating_comment?`<p style="margin:6px 0;font-size:13px">«${esc(t.rating_comment)}»</p>`:''}<div class="csat-result">✓ Спасибо за вашу оценку!</div></div>`;
@@ -1033,20 +1228,24 @@ function renderDetail() {
   const late = ticketSla(t).filter(s => s.tone === 'late');
   const badges = `<span class="badge ${esc(t.status)}">${statusNames[t.status]}</span>${late.map(s => `<span class="sla late">${icon('clock', 13)}${s.label} ${s.label === 'Ответ' ? 'просрочен' : 'просрочена'} на ${formatDuration(-s.diff)}</span>`).join('')}<span class="badge">${serviceNames[t.service_type] || 'Другое'}</span>`;
   const lead = [`№${t.id}`, staff ? (t.customer_company || t.customer_name) : '', `создана ${date(t.created_at)}`, t.organization_id ? (t.visibility === 'organization' ? 'видна всей компании' : 'личная заявка') : ''].filter(Boolean).map(esc).join(' · ');
-  const statusControl = canStatus ? `<label class="select-inline"><span>Статус</span><select id="status">${Object.entries(statusNames).map(([key, label]) => `<option value="${key}">${label}</option>`).join('')}</select></label>` : '';
+  const statusOptions = Object.entries(statusNames).filter(([key]) => key !== 'closed' || dispatcher || t.status === 'closed');
+  const statusControl = canStatus ? `<label class="select-inline"><span>Статус</span><select id="status">${statusOptions.map(([key, label]) => `<option value="${key}">${key === 'done' && t.status !== 'done' ? 'Отправить на проверку' : key === 'closed' && t.status !== 'closed' ? 'Закрыть без приёмки' : label}</option>`).join('')}</select></label>` : '';
   const assignee = dispatcher ? `<select id="assignee" aria-label="Ответственный"><option value="">Без ответственного</option>${state.staff.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select>` : `<span class="meta-person">${t.assignee_id ? avatarOf(t.assignee_id, t.assignee_name) : ''}${esc(t.assignee_name || 'Не назначен')}</span>`;
-  const chat = messages.map(m => `<div class="message ${m.author_id === state.user.id ? 'mine' : ''}"><small>${esc(m.author_name)} · ${date(m.created_at)}</small>${esc(m.body)}</div>`).join('') || '<div class="empty">Сообщений пока нет. Напишите первое сообщение.</div>';
-  const history = events.map(e => `<li><div>${esc(e.actor_name)}: ${e.kind === 'status' ? 'статус изменён на «' + esc(statusNames[e.new_value] || e.new_value) + '»' : 'ответственный изменён'}<small>${date(e.created_at)}</small></div></li>`).join('');
+  const canReply = !viewer && t.status !== 'closed';
+  const chat = timeline(messages, state.current.meeting_summaries, m => messageHtml(m, { header: `${esc(m.author_name)} · ${date(m.created_at)}`, canReply })).map(x => x.html).join('') || '<div class="empty">Сообщений пока нет. Напишите первое сообщение.</div>';
+  const eventText = e => e.kind === 'status' ? 'статус изменён на «' + esc(statusNames[e.new_value] || e.new_value) + '»' : e.kind === 'acceptance' ? (e.new_value === 'accepted' ? 'работа принята' : 'работа возвращена на доработку') : e.kind === 'decline' ? 'заказчик отказался от заявки' : 'ответственный изменён';
+  const history = events.map(e => `<li><div>${esc(e.actor_name)}: ${eventText(e)}<small>${date(e.created_at)}</small></div></li>`).join('');
   const person = state.current.assignee_profile;
   if (!staff && state.detailTab === 'notes') state.detailTab = 'messages';
   const tab = state.detailTab || 'messages';
   const tabButton = (id, label, count, ic = '') => `<button type="button" role="tab" class="tab ${tab === id ? 'active' : ''}" aria-selected="${tab === id}" data-detail-tab="${id}">${ic}${label}${count !== undefined ? ` <i>${count}</i>` : ''}</button>`;
-  const composer = viewer ? '<div class="content muted">У вас доступ только к просмотру заявки.</div>' : t.status !== 'closed' ? `<form class="composer" id="message-form"><label class="visually-hidden" for="message-body">Сообщение</label><textarea id="message-body" data-draft="ticket-${t.id}" name="body" required maxlength="10000" placeholder="${staff ? 'Напишите сообщение заказчику…' : 'Напишите сообщение команде…'}"></textarea><div class="composer-bar"><span class="composer-hint">Ctrl + Enter — отправить</span><button class="button primary">Отправить</button></div></form>` : '<div class="content muted">Заявка закрыта. Переписка доступна для чтения.</div>';
+  const composer = viewer ? '<div class="content muted">У вас доступ только к просмотру заявки.</div>' : t.status !== 'closed' ? `<form class="composer" id="message-form">${replyBar('ticket', t.id)}<label class="visually-hidden" for="message-body">Сообщение</label><textarea id="message-body" data-draft="ticket-${t.id}" name="body" required maxlength="10000" placeholder="${staff ? 'Напишите сообщение заказчику…' : 'Напишите сообщение команде…'}"></textarea><div class="composer-bar"><span class="composer-hint">Ctrl + Enter — отправить</span><button class="button primary">Отправить</button></div></form>` : '<div class="content muted">Заявка закрыта. Переписка доступна для чтения.</div>';
   const meta = `<dl class="meta"><dt>Заказчик</dt><dd>${esc(t.customer_name)}${staff && t.customer_company ? `<small>${esc(t.customer_company)}</small>` : ''}</dd><dt>Ответственный</dt><dd>${assignee}</dd><dt>Тип задачи</dt><dd>${serviceNames[t.service_type] || 'Другое'}</dd>${t.organization_id ? `<dt>Видимость</dt><dd>${t.visibility === 'organization' ? 'Вся компания' : 'Личная заявка'}</dd>` : ''}<dt>Создана</dt><dd>${date(t.created_at)}</dd>${t.created_by_name ? `<dt>Создал</dt><dd>${esc(t.created_by_name)}</dd>` : ''}</dl>`;
   const personCard = person ? `<section class="panel content assigned-person"><div class="person-heading">${avatar(person)}<div><span class="eyebrow">${staff ? 'Ответственный' : 'Ваш специалист'}</span><h2>${esc(person.name)}</h2><p>${esc(person.job_title || 'Сотрудник команды')}</p></div></div>${person.bio ? `<p class="person-bio">${esc(person.bio)}</p>` : ''}</section>` : '';
   const body = `${ticketProgress(t, estimates)}<div class="detail-grid"><div>${t.next_step ? `<div class="next-step"><span>Следующий шаг</span><strong>${esc(t.next_step)}</strong></div>` : ''}<section class="panel content"><h2>Описание задачи</h2><p class="description">${esc(t.description)}</p>${state.current.linked_chat ? `<button class="button linked-chat" id="linked-chat">${icon('chat', 16)}Обсуждение в общем чате</button>` : ''}</section><section class="panel conversation"><div class="tabs" role="tablist" aria-label="Обсуждение заявки">${tabButton('messages', 'Переписка', messages.length)}${staff ? tabButton('notes', 'Заметки команды', undefined, icon('lock', 14)) : ''}${tabButton('history', 'История', events.length)}</div><div class="tab-pane" data-pane="messages" ${tab !== 'messages' ? 'hidden' : ''}><div class="messages">${chat}</div>${composer}</div>${staff ? `<div class="tab-pane" data-pane="notes" ${tab !== 'notes' ? 'hidden' : ''}><div id="internal-notes-container"></div></div>` : ''}<div class="tab-pane" data-pane="history" ${tab !== 'history' ? 'hidden' : ''}>${history ? `<ol class="events">${history}</ol>` : '<div class="empty">Статус и ответственный пока не менялись.</div>'}</div></section>${renderCsat(t, staff)}</div><div><section class="panel content"><h2>Детали</h2>${meta}</section>${personCard}</div></div>`;
   shell(t.title, statusControl, body, { crumbs: `<button class="crumb-link" id="back">Заявки</button><span aria-hidden="true">/</span><span>№${t.id}</span>`, badges, lead });
   renderEstimate(t, estimates, staff);
+  renderAcceptance(t, staff);
   renderOperations();
   document.querySelector('#linked-chat')?.addEventListener('click', () => openChat(state.current.linked_chat.chat_id));
   document.querySelector('#back').onclick = () => setView('tickets');
@@ -1059,7 +1258,7 @@ function renderDetail() {
   document.querySelector('#assignee')?.addEventListener('change', async e => { try { await api(`/tickets/${t.id}/assignee`, { method: 'PATCH', body: JSON.stringify({ assignee_id: e.target.value ? Number(e.target.value) : null }) }); toast('Ответственный обновлён'); await refresh(); await openTicket(t.id); } catch (error) { showError(error); } });
   document.querySelector('#status')?.addEventListener('change', async e => { try { await api(`/tickets/${t.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: e.target.value }) }); toast(`Статус изменён: ${statusNames[e.target.value]}`); await refresh(); await openTicket(t.id); } catch (error) { showError(error); } });
   bindCtrlEnter('#message-form');
-  document.querySelector('#message-form')?.addEventListener('submit', async e => { e.preventDefault(); const body = new FormData(e.target).get('body'); e.target.querySelector('button.primary').disabled = true; try { await api(`/tickets/${t.id}/messages`, { method: 'POST', body: JSON.stringify({ body, request_id: crypto.randomUUID() }) }); clearDraft(`ticket-${t.id}`); state.justSent = true; await refresh(); await openTicket(t.id); } catch (error) { showError(error); } });
+  document.querySelector('#message-form')?.addEventListener('submit', async e => { e.preventDefault(); const body = new FormData(e.target).get('body'); e.target.querySelector('button.primary').disabled = true; try { await api(`/tickets/${t.id}/messages`, { method: 'POST', body: JSON.stringify({ body, request_id: crypto.randomUUID(), reply_to_id: replyToId('ticket', t.id) }) }); clearDraft(`ticket-${t.id}`); state.replyTo = null; state.justSent = true; await refresh(); await openTicket(t.id); } catch (error) { showError(error); } });
   if (staff) {
     loadInternalNotes(t.id);
     if (t.status !== 'closed') renderCannedTrigger();
@@ -1072,6 +1271,26 @@ function renderDetail() {
     await refresh(); await openTicket(t.id);
   });
   attachCsatHandlers(t);
+  bindConversation('ticket', t.id, messages, state.current.read_state);
+}
+function renderAcceptance(t, staff) {
+  if (staff || t.status !== 'done') return;
+  const host = document.querySelector('.detail-grid>div:first-child');
+  if (!t.can_decide) {
+    host.insertAdjacentHTML('afterbegin', `<section class="panel content acceptance-panel"><h2>Работа на проверке</h2><p class="muted">Принять работу или вернуть её на доработку может автор заявки или владелец компании.</p></section>`);
+    return;
+  }
+  host.querySelector('.next-step')?.remove();
+  host.insertAdjacentHTML('afterbegin', `<section class="panel content acceptance-panel needs-action"><div class="eyebrow">Ваше действие</div><h2>Работа готова — проверьте результат</h2><p>Если всё в порядке, примите работу, и заявка закроется. Если что-то нужно поправить, верните её с комментарием: команда продолжит работу.</p><div class="row acceptance-actions"><button class="button primary" id="accept-work">${icon('check', 16)}Принять работу</button><button class="button" id="return-work">Вернуть на доработку</button></div><form class="form" id="return-form" hidden><label>Что нужно доработать<textarea name="comment" data-draft="return-${t.id}" required minlength="3" maxlength="3000" placeholder="Например: заказы с сайта не попадают в CRM"></textarea></label><div class="row"><button class="button primary">Вернуть на доработку</button><button type="button" class="button" id="cancel-return">Отмена</button></div></form></section>`);
+  bindDrafts(host);
+  const send = async (data, message) => {
+    try { await api(`/tickets/${t.id}/acceptance`, { method: 'POST', body: JSON.stringify(data) }); clearDraft(`return-${t.id}`); toast(message); await refresh(); await openTicket(t.id); }
+    catch (error) { showError(error); }
+  };
+  document.querySelector('#accept-work').onclick = e => { e.currentTarget.disabled = true; send({ action: 'accept' }, 'Работа принята, заявка закрыта'); };
+  document.querySelector('#return-work').onclick = () => { const form = document.querySelector('#return-form'); form.hidden = false; form.elements.comment.focus(); };
+  document.querySelector('#cancel-return').onclick = () => { document.querySelector('#return-form').hidden = true; };
+  document.querySelector('#return-form').onsubmit = e => { e.preventDefault(); e.target.querySelector('button.primary').disabled = true; send({ action: 'return', comment: e.target.elements.comment.value }, 'Заявка возвращена на доработку'); };
 }
 function renderEstimate(ticket, estimates, staff) {
   const latest=estimates[0];
@@ -1080,12 +1299,18 @@ function renderEstimate(ticket, estimates, staff) {
   const canDecide=!staff&&(ticket.visibility!=='organization'||!state.organizations.some(o=>o.id===ticket.organization_id&&o.members.some(m=>m.user_id===state.user.id&&m.role==='viewer')))&&(ticket.customer_id===state.user.id||state.organizations.some(o=>o.id===ticket.organization_id&&o.members.some(m=>m.user_id===state.user.id&&m.role==='owner')))&&latest?.state==='pending'&&!legacy&&ticket.status!=='closed';
   const history=estimates.map(e=>`<div class="estimate-version"><div class="row"><strong>Версия ${e.version} · ${e.effort_minutes===null?'Старая оценка без часов':hours(e.effort_minutes)}</strong><span class="badge">${estimateNames[e.state]||'Требуется новая оценка'}</span></div><div class="muted">Оценил ${esc(e.author_name)} · ${date(e.created_at)} · на оценку потрачено ${e.assessment_minutes} мин.</div>${e.note?`<p>${esc(e.note)}</p>`:''}${e.customer_comment?`<p>Комментарий заказчика: ${esc(e.customer_comment)}</p>`:''}${e.proposed_effort_minutes!==null?`<p>Предложение заказчика: ${hours(e.proposed_effort_minutes)}</p>`:''}</div>`).join('');
   const create=canCreate?`<form class="form" id="estimate-form"><label>Плановые трудозатраты, часов<input class="field" name="effort_hours" type="number" min="0.25" max="1666" step="0.25" required></label><label>Потрачено на оценку, минут<input class="field" name="minutes" type="number" min="1" max="100000" step="1" required></label><label>Пояснение к оценке<textarea name="note" maxlength="3000" placeholder="Что входит в работу"></textarea></label><button class="button primary">Отправить оценку заказчику</button></form>`:'';
-  const decide=canDecide?`<div class="row estimate-actions"><button class="button primary" id="approve-estimate">Одобрить</button><button class="button" id="reject-estimate">Отклонить</button></div><form class="form" id="revision-form"><label>Ваш вариант, часов (необязательно)<input class="field" name="effort_hours" type="number" min="0.25" max="1666" step="0.25"></label><label>Что скорректировать<textarea name="comment" maxlength="3000" placeholder="Напишите ваши пожелания"></textarea></label><button class="button">Запросить корректировку</button></form>`:'';
-  document.querySelector('.detail-grid>div:first-child>.panel.content').insertAdjacentHTML('afterend',`<section class="panel content estimate-panel ${canCreate||canDecide?'needs-action':''}">${canCreate||canDecide?'<div class="eyebrow" style="color:var(--accent-ink);margin-bottom:6px">Ваше действие</div>':''}<h2>Оценка трудозатрат</h2>${legacy?'<div class="notice">Старая оценка была указана в деньгах. Нужна новая оценка в часах.</div>':''}${latest?history:'<p class="muted">Оценка ещё не подготовлена.</p>'}${create}${decide}</section>`);
+  const decide=canDecide?`<div class="row estimate-actions"><button class="button primary" id="approve-estimate">Одобрить</button><button class="button" id="revise-estimate">Попросить поправить</button><button class="button" id="reject-estimate">Отклонить</button></div><form class="form" id="revision-form" hidden><label>Ваш вариант, часов (необязательно)<input class="field" name="effort_hours" type="number" min="0.25" max="1666" step="0.25"></label><label>Что скорректировать<textarea name="comment" maxlength="3000" placeholder="Напишите ваши пожелания"></textarea></label><div class="row"><button class="button primary">Запросить корректировку</button><button type="button" class="button" id="cancel-revision">Отмена</button></div></form>`:'';
+  const decline=!staff&&ticket.can_decline?`<div class="decline-box"><p class="muted">Эту заявку создала команда. Если задача не нужна, откажитесь — заявка закроется без работы и оплаты.</p><button type="button" class="button" id="decline-ticket">Заявка не нужна</button><form class="form" id="decline-form" hidden><label>Почему не нужна (необязательно)<textarea name="comment" maxlength="3000" placeholder="Например: уже решили своими силами"></textarea></label><div class="row"><button class="button primary">Отказаться от заявки</button><button type="button" class="button" id="cancel-decline">Отмена</button></div></form></div>`:'';
+  document.querySelector('.detail-grid>div:first-child>.panel.content').insertAdjacentHTML('afterend',`<section class="panel content estimate-panel ${canCreate||canDecide?'needs-action':''}">${canCreate||canDecide?'<div class="eyebrow" style="color:var(--accent-ink);margin-bottom:6px">Ваше действие</div>':''}<h2>Оценка трудозатрат</h2>${legacy?'<div class="notice">Старая оценка была указана в деньгах. Нужна новая оценка в часах.</div>':''}${latest?history:'<p class="muted">Оценка ещё не подготовлена.</p>'}${create}${decide}${decline}</section>`);
+  document.querySelector('#decline-ticket')?.addEventListener('click',()=>{const form=document.querySelector('#decline-form');form.hidden=false;document.querySelector('#decline-ticket').hidden=true;form.elements.comment.focus();});
+  document.querySelector('#cancel-decline')?.addEventListener('click',()=>{document.querySelector('#decline-form').hidden=true;document.querySelector('#decline-ticket').hidden=false;});
+  document.querySelector('#decline-form')?.addEventListener('submit',e=>{e.preventDefault();e.target.querySelector('button.primary').disabled=true;update(`/tickets/${ticket.id}/decline`,{comment:e.target.elements.comment.value},'Заявка закрыта — команда получила уведомление');});
   const update=async(path,data,message)=>{try{await api(path,{method:'POST',body:JSON.stringify(data)});if(message)toast(message);await refresh();await openTicket(ticket.id);}catch(error){showError(error);}};
   document.querySelector('#estimate-form')?.addEventListener('submit',e=>{e.preventDefault();const data=new FormData(e.target);update(`/tickets/${ticket.id}/estimates`,{effort_minutes:Math.round(Number(data.get('effort_hours'))*60),assessment_minutes:Number(data.get('minutes')),note:data.get('note')},'Оценка отправлена заказчику');});
   document.querySelector('#approve-estimate')?.addEventListener('click',()=>update(`/tickets/${ticket.id}/estimates/decision`,{estimate_id:latest.id,action:'approve'},'Оценка одобрена — команда приступит к работе'));
   document.querySelector('#reject-estimate')?.addEventListener('click',()=>update(`/tickets/${ticket.id}/estimates/decision`,{estimate_id:latest.id,action:'reject'},'Оценка отклонена'));
+  document.querySelector('#revise-estimate')?.addEventListener('click',()=>{const form=document.querySelector('#revision-form');form.hidden=false;form.elements.effort_hours.focus();});
+  document.querySelector('#cancel-revision')?.addEventListener('click',()=>{document.querySelector('#revision-form').hidden=true;});
   document.querySelector('#revision-form')?.addEventListener('submit',e=>{e.preventDefault();const data=new FormData(e.target);update(`/tickets/${ticket.id}/estimates/decision`,{estimate_id:latest.id,action:'request_revision',comment:data.get('comment'),proposed_effort_minutes:data.get('effort_hours')===''?null:Math.round(Number(data.get('effort_hours'))*60)},'Запрос на корректировку отправлен');});
 }
 function renderOperations(){
@@ -1126,12 +1351,23 @@ function renderOperations(){
 function serviceEntryItem(e, { showClient = false, canDelete = false } = {}) {
   const billed = e.act_invoice_id ? `<a class="billing-doc-pill act" href="/api/billing/invoices/${e.act_invoice_id}/print" target="_blank" rel="noopener">Акт ${esc(e.act_number || '')}</a>` : '<span class="badge">Ждёт акта</span>';
   const remove = canDelete && !e.act_invoice_id ? `<button class="button small" type="button" data-service-delete="${e.id}" aria-label="Удалить запись">Удалить</button>` : '';
-  return `<div class="time-entry"><div class="row"><strong>${hours(e.minutes)} · ${esc(serviceKindNames[e.kind] || e.kind)}</strong><small>${date(e.occurred_at)}</small></div><p>${esc(e.note)}</p><div class="row"><small>${showClient ? `${esc(e.client_name)} · ` : ''}${esc(e.author_name)}${e.ticket_id ? ` · заявка №${e.ticket_id}` : ''}</small><span class="row">${billed}${remove}</span></div></div>`;
+  const summary = e.client_summary ? `<div class="entry-summary"><span class="eyebrow">Итоги для клиента · ${e.shared_at ? `отправлены ${date(e.shared_at)}` : 'не отправлены'}</span><p>${esc(e.client_summary)}</p>${e.client_next_steps ? `<p><strong>Дальше:</strong> ${esc(e.client_next_steps)}</p>` : ''}</div>` : '';
+  const summaryAction = canDelete && !e.shared_at ? `<button class="button small" type="button" data-summary-edit="${e.id}">${icon('send', 13)}${e.client_summary ? 'Отправить итоги клиенту' : 'Итоги для клиента'}</button>` : '';
+  const summaryForm = canDelete && !e.shared_at ? `<form class="form summary-form" data-summary-form="${e.id}" hidden><label>О чём договорились<textarea name="summary" required minlength="3" maxlength="3000">${esc(e.client_summary || '')}</textarea></label><label>Что дальше<textarea name="next_steps" maxlength="2000">${esc(e.client_next_steps || '')}</textarea></label><small class="muted">Клиент увидит только итоги — без длительности и внутренней заметки.</small><div class="row"><button class="button primary small">Отправить клиенту</button><button class="button small" type="button" data-summary-cancel="${e.id}">Отмена</button></div></form>` : '';
+  return `<div class="time-entry"><div class="row"><strong>${hours(e.minutes)} · ${esc(serviceKindNames[e.kind] || e.kind)}</strong><small>${date(e.occurred_at)}</small></div><p>${esc(e.note)}</p>${summary}<div class="row"><small>${showClient ? `${esc(e.client_name)} · ` : ''}${esc(e.author_name)}${e.ticket_id ? ` · заявка №${e.ticket_id}` : ''}</small><span class="row">${summaryAction}${billed}${remove}</span></div>${summaryForm}</div>`;
 }
 function bindServiceDelete(after) {
   document.querySelectorAll('[data-service-delete]').forEach(btn => btn.onclick = async () => {
     if (!confirm('Удалить запись о времени?')) return;
     try { await api(`/service-entries/${btn.dataset.serviceDelete}`, { method: 'DELETE' }); toast('Запись удалена'); await after(); } catch (error) { showError(error); }
+  });
+  document.querySelectorAll('[data-summary-edit]').forEach(btn => btn.onclick = () => { const form = document.querySelector(`[data-summary-form="${btn.dataset.summaryEdit}"]`); form.hidden = false; form.elements.summary.focus(); });
+  document.querySelectorAll('[data-summary-cancel]').forEach(btn => btn.onclick = () => { document.querySelector(`[data-summary-form="${btn.dataset.summaryCancel}"]`).hidden = true; });
+  document.querySelectorAll('[data-summary-form]').forEach(form => form.onsubmit = async e => {
+    e.preventDefault();
+    form.querySelector('button.primary').disabled = true;
+    try { await api(`/service-entries/${form.dataset.summaryForm}/summary`, { method: 'PATCH', body: JSON.stringify({ summary: form.elements.summary.value, next_steps: form.elements.next_steps.value, share: true }) }); toast('Итоги отправлены клиенту'); await after(); }
+    catch (error) { form.querySelector('button.primary').disabled = false; showError(error); }
   });
 }
 function chatServiceTarget(chat) { return { customer_id: chat.customer_id, customer_name: chat.customer_name, reload: () => openChat(chat.id) }; }
@@ -1147,12 +1383,18 @@ function serviceForm(target, entries) {
   const nowLocal = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
   return `<form class="form chat-ticket-form service-form" id="service-form" hidden>
     <strong>Учёт времени: ${esc(target.customer_name)}${target.ticket_id ? `, заявка №${target.ticket_id}` : ''}</strong>
-    <small class="muted">Клиент не видит эти записи: в акте они идут общей строкой по его ставке.${pending ? ` Сейчас к акту: ${hours(pending)}.` : ''}</small>
+    <small class="muted">Клиент не видит длительность и заметку: в акте записи идут общей строкой по его ставке. Итоги встречи можно отправить ему отдельно.${pending ? ` Сейчас к акту: ${hours(pending)}.` : ''}</small>
     <label>Вид<select class="field" name="kind">${Object.entries(serviceKindNames).map(([k, v]) => `<option value="${k}" ${k === 'call' ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
     <label>Длительность, минут<input class="field" type="number" name="minutes" min="5" max="1440" step="5" required></label>
     <label>Когда<input class="field" type="datetime-local" name="occurred_at" value="${nowLocal}" max="${nowLocal}"></label>
     ${customerTickets.length ? `<label>Заявка (необязательно)<select class="field" name="ticket_id"><option value="">Без заявки</option>${customerTickets.map(t => `<option value="${t.id}">№${t.id} · ${esc(t.title)}</option>`).join('')}</select></label>` : ''}
-    <label>Что обсуждали<textarea name="note" required minlength="3" maxlength="2000" placeholder="Например: созвон по срокам релиза"></textarea></label>
+    <label>Что обсуждали (видно только команде)<textarea name="note" required minlength="3" maxlength="2000" placeholder="Например: созвон по срокам релиза"></textarea></label>
+    <fieldset class="summary-fields"><legend>Итоги для клиента <small>необязательно</small></legend>
+      <label>О чём договорились<textarea name="summary" maxlength="3000" placeholder="Например: обмен заказами запускаем 15 октября, формат — JSON"></textarea></label>
+      <label>Что дальше<textarea name="next_steps" maxlength="2000" placeholder="Например: до пятницы пришлём схему, от вас — доступ к API"></textarea></label>
+      <label class="check-row"><input type="checkbox" name="share">Отправить итоги клиенту</label>
+      <small class="muted">Клиент увидит только итоги — без длительности и внутренней заметки.</small>
+    </fieldset>
     <div class="row"><button class="button primary">Внести время</button><button class="button" type="button" id="cancel-service">Отмена</button></div></form>`;
 }
 function bindServiceForm(target) {
@@ -1160,6 +1402,8 @@ function bindServiceForm(target) {
   if (!form) return;
   document.querySelector('#open-service-form').onclick = () => { const ticketForm = document.querySelector('#chat-ticket-form'); if (ticketForm) ticketForm.hidden = true; form.hidden = false; form.elements.minutes.focus(); };
   document.querySelector('#cancel-service').onclick = () => { form.hidden = true; };
+  form.elements.summary.addEventListener('input', () => { if (form.elements.summary.value.trim().length >= 3 && !form.dataset.shareTouched) form.elements.share.checked = true; });
+  form.elements.share.addEventListener('change', () => { form.dataset.shareTouched = '1'; });
   form.onsubmit = async e => {
     e.preventDefault();
     const button = form.querySelector('button.primary');
@@ -1170,9 +1414,10 @@ function bindServiceForm(target) {
       await api('/service-entries', { method: 'POST', body: JSON.stringify({
         customer_id: target.customer_id, kind: data.get('kind'), minutes: Number(data.get('minutes')), note: data.get('note'),
         occurred_at: data.get('occurred_at') ? new Date(data.get('occurred_at')).toISOString() : null,
-        ticket_id: target.ticket_id || (data.get('ticket_id') ? Number(data.get('ticket_id')) : null), request_id: requestId
+        ticket_id: target.ticket_id || (data.get('ticket_id') ? Number(data.get('ticket_id')) : null), request_id: requestId,
+        summary: data.get('summary') || '', next_steps: data.get('next_steps') || '', share: data.get('share') === 'on'
       }) });
-      toast('Время внесено');
+      toast(data.get('share') === 'on' ? 'Время внесено, итоги отправлены клиенту' : 'Время внесено');
       await target.reload();
     } catch (error) { button.disabled = false; showError(error); }
   };
@@ -1203,29 +1448,31 @@ async function openChat(id) {
   catch(error){showError(error);}
 }
 function renderChatDetail() {
-  const { chat, messages, linked_tickets = [], attachments = [], service_entries = [] } = state.currentChat;
+  const { chat, messages, linked_tickets = [], attachments = [], service_entries = [], meeting_summaries = [] } = state.currentChat;
   const staff = state.user.role !== 'customer';
   const dispatcher = isDispatcher();
   let lastDay = '';
-  const items = messages.map(m => {
-    const day = new Date(m.created_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+  const items = timeline(messages, meeting_summaries, m => messageHtml(m, { canReply: true,
+    header: `${esc(m.author_name)} · ${new Date(m.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`,
+    extra: attachments.filter(a => a.chat_message_id === m.id).map(a => `<a class="attachment-link" href="/api/attachments/${a.id}">${icon('paperclip', 14)}${esc(a.filename)}</a>`).join('') })).map(entry => {
+    const day = new Date(entry.at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
     const separator = day !== lastDay ? `<div class="day-separator">${day}</div>` : '';
     lastDay = day;
-    return `${separator}<div class="message ${m.author_id === state.user.id ? 'mine' : ''}"><small>${esc(m.author_name)} · ${new Date(m.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</small>${esc(m.body)}${attachments.filter(a => a.chat_message_id === m.id).map(a => `<a class="attachment-link" href="/api/attachments/${a.id}">${icon('paperclip', 14)}${esc(a.filename)}</a>`).join('')}</div>`;
+    return separator + entry.html;
   }).join('') || '<div class="empty">Начните разговор. Сообщение увидит наша команда.</div>';
   const otherTickets = state.tickets.filter(t => t.customer_id === chat.customer_id && !['done', 'closed'].includes(t.status) && !linked_tickets.some(l => l.id === t.id));
   const ticketButton = t => `<button class="linked-ticket" data-linked-ticket="${t.id}"><span>№${t.id} · ${esc(t.title)}</span>${t.status ? `<span class="badge ${esc(t.status)}">${statusNames[t.status]}</span>` : ''}</button>`;
   const assigneeSelect = dispatcher ? `<label class="select-inline"><span>Ведёт</span><select id="chat-assignee" aria-label="Ответственный за чат"><option value="">Без ответственного</option>${state.staff.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select></label>` : '';
   const info = `<div class="inbox-info" role="complementary" aria-label="О диалоге"><div class="info-block"><span class="eyebrow">Заказчик</span><strong>${esc(chat.customer_name)}</strong></div><div class="info-block"><span class="eyebrow">Ответственный</span><strong>${esc(chat.assignee_name || 'Не назначен')}</strong></div>${linked_tickets.length ? `<div class="info-block"><span class="eyebrow">Заявки из этого чата <span>${linked_tickets.length}</span></span>${linked_tickets.map(ticketButton).join('')}</div>` : ''}${otherTickets.length ? `<div class="info-block"><span class="eyebrow">Открытые заявки <span>${otherTickets.length}</span></span>${otherTickets.slice(0, 5).map(ticketButton).join('')}</div>` : ''}${staff ? serviceBlock(service_entries) : ''}</div>`;
-  const thread = `<section class="inbox-thread"><div class="inbox-thread-head">${staff ? `<button class="icon-btn thread-back" id="back-chats" aria-label="К списку диалогов">←</button>` : ''}<span class="chat-logo" aria-hidden="true">${initials(staff ? chat.customer_name : 'Линия')}</span><div><strong>${esc(staff ? chat.customer_name : 'Команда поддержки')}</strong><small>${messages.length} ${plural(messages.length, ['сообщение', 'сообщения', 'сообщений'])}</small></div>${staff ? `<button class="button small" type="button" id="open-service-form">${icon('clock', 14)}Учесть время</button>` : ''}${assigneeSelect}</div><div class="messages" id="chat-messages">${items}</div><form class="composer" id="chat-message-form"><label class="visually-hidden" for="chat-body">Сообщение</label><textarea id="chat-body" data-draft="chat-${chat.id}" name="body" required maxlength="10000" placeholder="${staff ? `Ответить: ${esc(chat.customer_name)}` : 'Напишите сообщение команде…'}"></textarea><div class="composer-files" id="chat-files"></div><div class="composer-bar"><label class="upload-label">${icon('paperclip', 15)}Файлы<input name="files" type="file" multiple accept=".png,.jpg,.jpeg,.webp,.gif,.pdf,.txt,.doc,.docx,.xls,.xlsx,.csv,.zip"></label><span class="composer-hint">Ctrl + Enter — отправить</span><button class="button primary">Отправить</button></div></form></section>`;
+  const thread = `<section class="inbox-thread"><div class="inbox-thread-head">${staff ? `<button class="icon-btn thread-back" id="back-chats" aria-label="К списку диалогов">←</button>` : ''}<span class="chat-logo" aria-hidden="true">${initials(staff ? chat.customer_name : 'Линия')}</span><div><strong>${esc(staff ? chat.customer_name : 'Команда поддержки')}</strong><small>${messages.length} ${plural(messages.length, ['сообщение', 'сообщения', 'сообщений'])}</small></div>${staff ? `<button class="button small" type="button" id="open-service-form">${icon('clock', 14)}Учесть время</button>` : ''}${assigneeSelect}</div><div class="messages" id="chat-messages">${items}</div><form class="composer" id="chat-message-form">${replyBar('chat', chat.id)}<label class="visually-hidden" for="chat-body">Сообщение</label><textarea id="chat-body" data-draft="chat-${chat.id}" name="body" required maxlength="10000" placeholder="${staff ? `Ответить: ${esc(chat.customer_name)}` : 'Напишите сообщение команде…'}"></textarea><div class="composer-files" id="chat-files"></div><div class="composer-bar"><label class="upload-label">${icon('paperclip', 15)}Файлы<input name="files" type="file" multiple accept=".png,.jpg,.jpeg,.webp,.gif,.pdf,.txt,.doc,.docx,.xls,.xlsx,.csv,.zip"></label><span class="composer-hint">Ctrl + Enter — отправить</span><button class="button primary">Отправить</button></div></form></section>`;
   shell(staff ? 'Общий чат' : 'Чат с командой', '', `<section class="panel inbox has-thread ${staff ? '' : 'customer'}">${staff ? chatListPanel(chat.id) : ''}${thread}${info}</section>`, { kicker: staff ? 'Переписка без привязки к заявке' : 'Личный кабинет' });
   if (staff) bindChatList();
   document.querySelectorAll('[data-linked-ticket]').forEach(el => el.onclick = () => openTicket(Number(el.dataset.linkedTicket)));
   if (staff) {
-    document.querySelectorAll('#chat-messages .message').forEach((el, index) => {
-      const msg = messages[index];
-      if (msg.author_id === chat.customer_id && !linked_tickets.some(t => t.source_message_id === msg.id)) {
-        el.insertAdjacentHTML('beforeend', `<button class="chat-to-ticket" data-message="${msg.id}">${icon('plus', 13)}Создать заявку из сообщения</button>`);
+    document.querySelectorAll('#chat-messages .message').forEach(el => {
+      const msg = messages.find(m => m.id === Number(el.dataset.msg));
+      if (msg && msg.author_id === chat.customer_id && !linked_tickets.some(t => t.source_message_id === msg.id)) {
+        el.querySelector('.msg-foot').insertAdjacentHTML('beforeend', `<button class="chat-to-ticket" data-message="${msg.id}">${icon('plus', 13)}Создать заявку из сообщения</button>`);
       }
     });
     document.querySelector('#chat-message-form').insertAdjacentHTML('afterend', '<form class="form chat-ticket-form" id="chat-ticket-form" hidden><strong>Новая заявка из чата</strong><label>Тема<input class="field" name="title" required minlength="3" maxlength="140"></label><input type="hidden" name="message_id"><div class="row"><button class="button primary">Создать заявку</button><button class="button" type="button" id="cancel-chat-ticket">Отмена</button></div></form>' + serviceForm(chatServiceTarget(chat), service_entries));
@@ -1237,10 +1484,11 @@ function renderChatDetail() {
   document.querySelector('#back-chats')?.addEventListener('click', () => setView('chats'));
   if (dispatcher) { document.querySelector('#chat-assignee').value = chat.assignee_id || ''; document.querySelector('#chat-assignee').onchange = async e => { try { await api(`/chats/${chat.id}/assignee`, { method: 'PATCH', body: JSON.stringify({ assignee_id: e.target.value ? Number(e.target.value) : null }) }); await refresh(); await openChat(chat.id); } catch (error) { showError(error); } }; }
   bindCtrlEnter('#chat-message-form');
-  document.querySelector('#chat-message-form').onsubmit = async e => { e.preventDefault(); const button = e.target.querySelector('button.primary'); button.disabled = true; const requestId = e.target.dataset.requestId || (e.target.dataset.requestId = crypto.randomUUID()); try { const files = [...e.target.elements.files.files]; const message = await api(`/chats/${chat.id}/messages`, { method: 'POST', body: JSON.stringify({ body: new FormData(e.target).get('body'), request_id: requestId }) }); clearDraft(`chat-${chat.id}`); for (const file of files) await upload(`/chats/${chat.id}/attachments`, file, { message_id: message.id }); state.justSent = true; await refresh(); await openChat(chat.id); } catch (error) { state.error = error.message; button.disabled = false; const alert = document.querySelector('.notice'); if (alert) alert.textContent = state.error; else document.querySelector('main .top').insertAdjacentHTML('afterend', notice()); } };
+  document.querySelector('#chat-message-form').onsubmit = async e => { e.preventDefault(); const button = e.target.querySelector('button.primary'); button.disabled = true; const requestId = e.target.dataset.requestId || (e.target.dataset.requestId = crypto.randomUUID()); try { const files = [...e.target.elements.files.files]; const message = await api(`/chats/${chat.id}/messages`, { method: 'POST', body: JSON.stringify({ body: new FormData(e.target).get('body'), request_id: requestId, reply_to_id: replyToId('chat', chat.id) }) }); clearDraft(`chat-${chat.id}`); state.replyTo = null; for (const file of files) await upload(`/chats/${chat.id}/attachments`, file, { message_id: message.id }); state.justSent = true; await refresh(); await openChat(chat.id); } catch (error) { state.error = error.message; button.disabled = false; const alert = document.querySelector('.notice'); if (alert) alert.textContent = state.error; else document.querySelector('main .top').insertAdjacentHTML('afterend', notice()); } };
   document.querySelector('#chat-messages').scrollTop = document.querySelector('#chat-messages').scrollHeight;
   popLastMessage(document.querySelector('#chat-messages'));
   bindChatFiles();
+  bindConversation('chat', chat.id, messages, state.currentChat.read_state);
 }
 function renderTeam() {
   shell('Команда','',`<div class="detail-grid"><section class="panel content"><h2>Сотрудники</h2>${state.staff.map(x=>`<div class="team-person">${avatar(x)}<span><strong>${esc(x.name)}</strong><small>${esc(x.job_title||x.email)}</small></span><span class="badge">${x.role==='admin'?'Администратор':'Сотрудник'}</span></div>`).join('')}</section><section class="panel content"><h2>Добавить сотрудника</h2><form class="form" id="staff-form"><label>Имя<input class="field" name="name" required minlength="2"></label><label>Email<input class="field" name="email" type="email" required></label><label>Временный пароль<input class="field" name="password" type="password" required minlength="8"></label><button class="button primary">Добавить</button></form></section></div>`);
@@ -1254,10 +1502,10 @@ function renderProfile(){
   const p=state.profile;
   if(!p)return;
   if(state.user.role==='customer'){
-    shell('Мой профиль','',`<div class="profile-layout"><section class="panel content profile-main"><div class="profile-heading customer-profile-heading">${avatar(p,'large')}<div><span class="eyebrow">КАБИНЕТ ЗАКАЗЧИКА</span><h2>${esc(p.name)}</h2><p>${esc(p.company_name||'Добавьте название компании')}</p><small>${esc(p.email)}</small></div></div><form class="form" id="customer-profile-form"><label>Ваше имя<input class="field" name="name" required minlength="2" maxlength="100" autocomplete="name" value="${esc(p.name)}"></label><label>Компания или команда<input class="field" name="company_name" maxlength="150" autocomplete="organization" placeholder="Например, Студия Север" value="${esc(p.company_name)}"></label><label>Контактный телефон<input class="field" name="phone" type="tel" maxlength="40" autocomplete="tel" placeholder="+7 999 123-45-67" value="${esc(p.phone)}"></label><p class="profile-hint">Email для входа: <strong>${esc(p.email)}</strong></p><div class="profile-actions"><button class="button primary">Сохранить изменения</button><span id="profile-saved" role="status"></span></div></form></section><div class="profile-note"><span class="eyebrow">НА СВЯЗИ С КОМАНДОЙ</span><h2>Ваши обращения в одном месте</h2><p>Имя и название компании помогут команде узнавать ваши задачи в заявках и общем чате. Контактный телефон доступен только вам в этом кабинете.</p><div class="profile-facts"><div><strong>${state.tickets.length}</strong><span>заявок</span></div><div><strong>${state.chats.length}</strong><span>общих чатов</span></div></div></div></div>`);
+    shell('Мой профиль','',`<div class="profile-layout"><section class="panel content profile-main"><div class="profile-heading customer-profile-heading">${avatar(p,'large')}<div><span class="eyebrow">КАБИНЕТ ЗАКАЗЧИКА</span><h2>${esc(p.name)}</h2><p>${esc(p.company_name||'Добавьте название компании')}</p><small>${esc(p.email)}</small></div></div><form class="form" id="customer-profile-form"><label>Ваше имя<input class="field" name="name" required minlength="2" maxlength="100" autocomplete="name" value="${esc(p.name)}"></label><label>Компания или команда<input class="field" name="company_name" maxlength="150" autocomplete="organization" placeholder="Например, Студия Север" value="${esc(p.company_name)}"></label><label>Контактный телефон<input class="field" name="phone" type="tel" maxlength="40" autocomplete="tel" placeholder="+7 999 123-45-67" value="${esc(p.phone)}"></label><label>Одобрять оценки автоматически — до, часов<input class="field" name="auto_approve_hours" type="number" min="0" max="1666" step="0.25" placeholder="0" value="${p.auto_approve_minutes?p.auto_approve_minutes/60:''}"><small>Небольшие задачи в пределах лимита уйдут в работу сразу, без вашего подтверждения. Пусто или 0 — всегда спрашивать.</small></label><p class="profile-hint">Email для входа: <strong>${esc(p.email)}</strong></p><div class="profile-actions"><button class="button primary">Сохранить изменения</button><span id="profile-saved" role="status"></span></div></form></section><div class="profile-note"><span class="eyebrow">НА СВЯЗИ С КОМАНДОЙ</span><h2>Ваши обращения в одном месте</h2><p>Имя и название компании помогут команде узнавать ваши задачи в заявках и общем чате. Контактный телефон доступен только вам в этом кабинете.</p><div class="profile-facts"><div><strong>${state.tickets.length}</strong><span>заявок</span></div><div><strong>${state.chats.length}</strong><span>общих чатов</span></div></div></div></div>`);
     if(state.organizations[0]){document.querySelector('.customer-profile-heading p').textContent=state.organizations[0].name;document.querySelector('#customer-profile-form [name="company_name"]').parentElement.innerHTML=`Компания <strong>${esc(state.organizations[0].name)}</strong><input type="hidden" name="company_name" value="${esc(p.company_name)}"><small>Состав компании управляется в разделе «Моя компания».</small>`;}
     mountPushCard();
-    document.querySelector('#customer-profile-form').onsubmit=async e=>{e.preventDefault();const button=e.target.querySelector('button');button.disabled=true;try{state.profile=await api('/customer-profile/me',{method:'PATCH',body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});state.user.name=state.profile.name;state.error='';renderProfile();document.querySelector('#profile-saved').textContent='Изменения сохранены';}catch(error){showError(error);}};
+    document.querySelector('#customer-profile-form').onsubmit=async e=>{e.preventDefault();const button=e.target.querySelector('button');button.disabled=true;try{const data=Object.fromEntries(new FormData(e.target));data.auto_approve_minutes=Math.round(Number(data.auto_approve_hours||0)*60);delete data.auto_approve_hours;state.profile=await api('/customer-profile/me',{method:'PATCH',body:JSON.stringify(data)});state.user.name=state.profile.name;state.error='';renderProfile();document.querySelector('#profile-saved').textContent='Изменения сохранены';}catch(error){showError(error);}};
     return;
   }
   shell('Мой профиль','',`<div class="profile-layout"><section class="panel content profile-main"><div class="profile-heading"><div>${avatar(p,'large')}<label class="avatar-upload" for="avatar-file">Загрузить фото</label><input id="avatar-file" type="file" accept="image/png,image/jpeg,image/webp" hidden>${p.avatar_url?'<button class="avatar-remove" id="avatar-remove">Удалить фото</button>':''}</div><div><span class="eyebrow">ПРОФИЛЬ СОТРУДНИКА</span><h2>${esc(p.name)}</h2><p>${esc(p.job_title||'Укажите должность')}</p><small>${esc(p.email)}</small></div></div><form class="form" id="profile-form"><label>ФИО<input class="field" name="name" required minlength="2" maxlength="100" autocomplete="name" value="${esc(p.name)}"></label><label>Должность<input class="field" name="job_title" maxlength="100" placeholder="Например, ведущий разработчик" value="${esc(p.job_title)}"></label><label>О себе<textarea name="bio" maxlength="1000" placeholder="Чем вы помогаете заказчикам, ваш опыт и специализация">${esc(p.bio)}</textarea></label><div class="profile-actions"><button class="button primary">Сохранить изменения</button><span id="profile-saved" role="status"></span></div></form></section><aside class="profile-note"><span class="eyebrow">КАК ЭТО РАБОТАЕТ</span><h2>Знакомое лицо в каждой заявке</h2><p>Заказчик увидит ваше имя, должность, описание и фотографию в заявках, за которые вы отвечаете. Это помогает понимать, с кем идёт работа.</p><p>Подойдёт PNG, JPEG или WebP до 2 МБ. Изображение автоматически подстроится под кабинет.</p></aside></div>`);
@@ -2602,6 +2850,12 @@ async function start(){
   }
 }
 window.addEventListener('hashchange',()=>openHash());
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState!=='visible'||!state.user)return;
+  if(state.view==='detail'&&state.current)markRead('ticket',state.current.ticket.id,state.current.messages);
+  if(state.view==='chat'&&state.currentChat)markRead('chat',state.currentChat.chat.id,state.currentChat.messages);
+  if(state.user.role==='customer')api('/waiting-on-me').then(w=>{state.waiting=w;}).catch(()=>{});
+});
 themeMedia.addEventListener?.('change',syncThemeUi);
 window.addEventListener('dragover',e=>{if([...(e.dataTransfer?.types||[])].includes('Files'))e.preventDefault();});
 window.addEventListener('drop',e=>{if([...(e.dataTransfer?.types||[])].includes('Files'))e.preventDefault();});

@@ -114,6 +114,38 @@ class Bots(unittest.TestCase):
         self.assertEqual(result.status_code, 201, result.text)
         return result.json()["id"]
 
+    def test_customer_accepts_or_returns_work_in_bot(self):
+        self.link()
+        ticket = self.ticket()
+        estimate = self.estimate(ticket)
+        self.client.post(f"/api/tickets/{ticket}/estimates/decision", json={"estimate_id": estimate, "action": "approve"})
+        self.admin.patch(f"/api/tickets/{ticket}/status", json={"status": "working"})
+        self.admin.post(f"/api/tickets/{ticket}/time-entries", json={"minutes": 60, "note": "Готово"})
+        self.admin.patch(f"/api/tickets/{ticket}/status", json={"status": "done"})
+        self.show_ticket(ticket)
+        self.click("Вернуть на доработку")
+        self.send(text="Не работает экспорт")
+        self.assertEqual(self.sql("SELECT status FROM tickets WHERE id=?", (ticket,))[0]["status"], "working")
+        self.assertEqual(self.sql("SELECT body FROM messages WHERE ticket_id=? ORDER BY id DESC", (ticket,))[0]["body"], "Возврат на доработку: Не работает экспорт")
+        self.admin.patch(f"/api/tickets/{ticket}/status", json={"status": "done"})
+        self.show_ticket(ticket)
+        self.click("Принять работу")
+        self.click("Принять")
+        self.assertEqual(self.sql("SELECT status FROM tickets WHERE id=?", (ticket,))[0]["status"], "closed")
+
+    def test_customer_declines_staff_ticket_in_bot(self):
+        self.link()
+        ticket = self.admin.post("/api/tickets", json={"title": "Продлить домен", "description": "Домен истекает",
+                                                      "customer_id": self.user["id"], "assignee_id": self.staff["id"],
+                                                      "effort_minutes": 30}).json()["id"]
+        own = self.ticket()
+        self.show_ticket(own)
+        self.assertNotIn("Заявка не нужна", [b["text"] for row in self.last_payload()["buttons"] for b in row])
+        self.show_ticket(ticket)
+        self.click("Заявка не нужна")
+        self.click("Да, не нужна")
+        self.assertEqual(self.sql("SELECT status FROM tickets WHERE id=?", (ticket,))[0]["status"], "closed")
+
     def show_ticket(self, ticket, provider="telegram"):
         link = self.sql("SELECT * FROM bot_links WHERE provider=? AND user_id=?", (provider, self.user["id"]))[0]
         with desk.db() as conn:

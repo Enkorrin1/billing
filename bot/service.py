@@ -160,6 +160,11 @@ class BotEngine:
             if e["state"] == "pending" and t["status"] != "closed":
                 buttons += [[self.button(conn, link, label, "decision", ticket=ticket_id, estimate=e["id"], decision=decision)]
                             for label, decision in [("Одобрить", "approve"), ("Запросить корректировку", "request_revision"), ("Отклонить", "reject")]]
+        if t["status"] == "done" and self.desk.customer_can_decide(conn, t, user):
+            buttons += [[self.button(conn, link, "Принять работу", "acceptance", ticket=ticket_id, decision="accept")],
+                        [self.button(conn, link, "Вернуть на доработку", "acceptance", ticket=ticket_id, decision="return")]]
+        if self.desk.customer_can_decline(conn, t, user):
+            buttons.append([self.button(conn, link, "Заявка не нужна", "decline", ticket=ticket_id)])
         buttons.append([self.button(conn, link, "Меню", "menu")])
         self.queue(conn, link, text, buttons, ("ticket", ticket_id))
 
@@ -295,6 +300,34 @@ class BotEngine:
             return self.queue(conn, link, f"{'Одобрить' if data['decision'] == 'approve' else 'Отклонить'} оценку заявки №{data['ticket']}?\nВерсия {estimate['version']} · {hours(estimate['effort_minutes'])}.\nОдобрение часов не списывает деньги.",
                               [[self.button(conn, link, "Подтвердить", "confirm_decision", ticket=data["ticket"], estimate=data["estimate"], decision=data["decision"])],
                                [self.button(conn, link, "Вернуться к заявке", "ticket", record=data["ticket"])]], ("ticket", data["ticket"]))
+        if action in ("acceptance", "confirm_acceptance"):
+            t = self.desk.ticket_for(conn, data["ticket"], user)
+            if t["status"] != "done":
+                self.queue(conn, link, "Работа уже принята или ещё не отправлена на проверку. Показываю актуальное состояние.")
+                return self.ticket(conn, link, user, data["ticket"])
+            if action == "confirm_acceptance":
+                self.desk.accept_work_service(conn, user, data["ticket"], self.desk.AcceptanceDecision(action="accept"))
+                self.set_state(conn, link, {})
+                self.queue(conn, link, f"Работа по заявке №{data['ticket']} принята, заявка закрыта. Спасибо!")
+                return self.ticket(conn, link, user, data["ticket"])
+            if data["decision"] == "return":
+                self.set_state(conn, link, {"mode": "return_comment", "ticket": data["ticket"]})
+                return self.queue(conn, link, "Напишите, что нужно доработать (до 3000 символов). /cancel — отменить.")
+            return self.queue(conn, link, f"Принять работу по заявке №{data['ticket']}? Заявка будет закрыта.",
+                              [[self.button(conn, link, "Принять", "confirm_acceptance", ticket=data["ticket"])],
+                               [self.button(conn, link, "Вернуться к заявке", "ticket", record=data["ticket"])]], ("ticket", data["ticket"]))
+        if action in ("decline", "confirm_decline"):
+            t = self.desk.ticket_for(conn, data["ticket"], user)
+            if not self.desk.customer_can_decline(conn, t, user):
+                self.queue(conn, link, "От этой заявки уже нельзя отказаться. Показываю актуальное состояние.")
+                return self.ticket(conn, link, user, data["ticket"])
+            if action == "confirm_decline":
+                self.desk.decline_ticket_service(conn, user, data["ticket"], self.desk.TicketDecline())
+                self.queue(conn, link, f"Заявка №{data['ticket']} закрыта — команда получила уведомление.")
+                return self.ticket(conn, link, user, data["ticket"])
+            return self.queue(conn, link, f"Отказаться от заявки №{data['ticket']}? Она закроется без работы и оплаты.",
+                              [[self.button(conn, link, "Да, не нужна", "confirm_decline", ticket=data["ticket"])],
+                               [self.button(conn, link, "Вернуться к заявке", "ticket", record=data["ticket"])]], ("ticket", data["ticket"]))
         raise HTTPException(422, "Неизвестное действие. Откройте /start.")
 
     def handle_text(self, conn, link, user, event):
@@ -344,6 +377,13 @@ class BotEngine:
             data = self.desk.EstimateDecision(estimate_id=state["estimate"], action="request_revision", comment=state["comment"], proposed_effort_minutes=minutes)
             self.desk.decide_estimate_service(conn, user, state["ticket"], data)
             self.set_state(conn, link, {})
+            return self.ticket(conn, link, user, state["ticket"])
+        if mode == "return_comment":
+            if len(text) > 3000:
+                raise HTTPException(422, "Комментарий должен быть не длиннее 3000 символов")
+            self.desk.accept_work_service(conn, user, state["ticket"], self.desk.AcceptanceDecision(action="return", comment=text))
+            self.set_state(conn, link, {})
+            self.queue(conn, link, f"Заявка №{state['ticket']} возвращена на доработку. Команда получила ваш комментарий.")
             return self.ticket(conn, link, user, state["ticket"])
         request_id = "bot-" + digest(event.provider + ":" + event.event_id)
         if event.reply_id:
