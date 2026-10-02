@@ -441,6 +441,25 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_billing_tx_customer ON billing_transactions(customer_id, id);
         CREATE INDEX IF NOT EXISTS idx_billing_tx_org ON billing_transactions(organization_id, id);
         CREATE INDEX IF NOT EXISTS idx_tickets_act ON tickets(act_invoice_id);
+
+        CREATE TABLE IF NOT EXISTS service_entries (
+            id INTEGER PRIMARY KEY,
+            customer_id INTEGER NOT NULL REFERENCES users(id),
+            organization_id INTEGER REFERENCES organizations(id),
+            ticket_id INTEGER REFERENCES tickets(id),
+            author_id INTEGER NOT NULL REFERENCES users(id),
+            kind TEXT NOT NULL CHECK(kind IN ('chat','call','meeting','other')),
+            minutes INTEGER NOT NULL CHECK(minutes>0),
+            note TEXT NOT NULL,
+            occurred_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            request_id TEXT,
+            act_invoice_id INTEGER REFERENCES invoices(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_service_entries_customer ON service_entries(customer_id, id);
+        CREATE INDEX IF NOT EXISTS idx_service_entries_org ON service_entries(organization_id, id);
+        CREATE INDEX IF NOT EXISTS idx_service_entries_act ON service_entries(act_invoice_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_service_entries_request ON service_entries(author_id, request_id);
         """)
 
         from bot.storage import init_bot_schema
@@ -557,6 +576,31 @@ def approved_minutes(conn, ticket_id):
 def actual_minutes(conn, ticket_id):
     return conn.execute("SELECT COALESCE(SUM(minutes),0) FROM time_entries WHERE ticket_id=?",
                         (ticket_id,)).fetchone()[0]
+
+
+SERVICE_KIND_NAMES = {"chat": "переписка", "call": "созвон", "meeting": "встреча", "other": "прочее"}
+# Клиент не видит отдельные записи сопровождения: в акте они сворачиваются в одну строку.
+SERVICE_ACT_TITLE = "Консультационное сопровождение и координация работ"
+
+SERVICE_ENTRY_SELECT = """SELECT s.*, a.name AS author_name, t.title AS ticket_title,
+    COALESCE(o.name, NULLIF(cp.company_name,''), c.name) AS client_name, i.number AS act_number
+    FROM service_entries s JOIN users a ON a.id=s.author_id JOIN users c ON c.id=s.customer_id
+    LEFT JOIN customer_profiles cp ON cp.user_id=s.customer_id
+    LEFT JOIN organizations o ON o.id=s.organization_id
+    LEFT JOIN tickets t ON t.id=s.ticket_id
+    LEFT JOIN invoices i ON i.id=s.act_invoice_id"""
+
+
+def client_condition(client_type, client_id, prefix=""):
+    if client_type == "org":
+        return f"{prefix}organization_id = ?", (client_id,)
+    return f"{prefix}customer_id = ? AND {prefix}organization_id IS NULL", (client_id,)
+
+
+def unbilled_service_minutes(conn, client_type, client_id):
+    cond, params = client_condition(client_type, client_id)
+    return conn.execute(f"SELECT COALESCE(SUM(minutes),0) FROM service_entries WHERE {cond} AND act_invoice_id IS NULL",
+                        params).fetchone()[0]
 
 
 def customer_recipients(conn, ticket):
@@ -705,6 +749,16 @@ class TimeEntryCreate(BaseModel):
     request_id: str | None = Field(default=None, min_length=8, max_length=100)
 
 
+class ServiceEntryCreate(BaseModel):
+    customer_id: int
+    ticket_id: int | None = None
+    kind: Literal["chat", "call", "meeting", "other"]
+    minutes: int = Field(ge=1, le=24 * 60)
+    note: str = Field(min_length=3, max_length=2000)
+    occurred_at: datetime | None = None
+    request_id: str | None = Field(default=None, min_length=8, max_length=100)
+
+
 class HourRequestCreate(BaseModel):
     minutes: int = Field(ge=1, le=100_000)
     reason: str = Field(min_length=3, max_length=2000)
@@ -813,6 +867,7 @@ class BillingDocumentCreate(BaseModel):
     period_start: str | None = None
     period_end: str | None = None
     ticket_ids: list[int] | None = None
+    service_entry_ids: list[int] | None = None
     notes: str = Field(default="", max_length=500)
 
 
@@ -845,12 +900,19 @@ def issue_session(conn, user, response):
     return public_user(user)
 
 
+def billing_enabled() -> bool:
+    """Раздел биллинга включается флагом BILLING_ENABLED=1, пока он не готов — выключен."""
+    return os.getenv("BILLING_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
 AUTH_RATE_LIMITS: dict[str, list[float]] = {}
 RATE_LIMIT_MAX = int(os.getenv("RATE_LIMIT_PER_MINUTE", "60"))
 
 
 @app.middleware("http")
 async def same_origin_writes(request: Request, call_next):
+    if request.url.path.startswith("/api/billing") and not billing_enabled():
+        return Response(status_code=404, content=json.dumps({"detail": "Раздел биллинга отключён"}, ensure_ascii=False), media_type="application/json")
     if request.method in ("POST", "PUT", "PATCH", "DELETE"):
         origin = request.headers.get("origin")
         expected = str(request.base_url).rstrip("/")
@@ -975,7 +1037,7 @@ def home(request: Request, desk_session: str | None = Cookie(default=None)):
 
 @app.get("/api/public/settings")
 def public_settings():
-    return {"hourly_rate_rub": int(os.getenv("DEFAULT_HOURLY_RATE_RUB", "3000"))}
+    return {"hourly_rate_rub": int(os.getenv("DEFAULT_HOURLY_RATE_RUB", "3000")), "billing_enabled": billing_enabled()}
 
 
 @app.get("/landing")
@@ -1413,8 +1475,83 @@ def get_chat(chat_id: int, desk_session: str | None = Cookie(default=None)):
                 continue
         files = conn.execute("""SELECT id,filename,size,content_type,author_id,chat_message_id,created_at
             FROM attachments WHERE chat_id=? ORDER BY id DESC""", (chat_id,)).fetchall()
+        service = []
+        if user["role"] != "customer":
+            service = conn.execute(f"{SERVICE_ENTRY_SELECT} WHERE s.customer_id=? ORDER BY s.occurred_at DESC, s.id DESC LIMIT 30",
+                                   (chat["customer_id"],)).fetchall()
     return {"chat": dict(chat), "messages": [dict(row) for row in messages],
-            "linked_tickets": visible_links, "attachments": [dict(row) for row in files]}
+            "linked_tickets": visible_links, "attachments": [dict(row) for row in files],
+            "service_entries": [dict(row) for row in service]}
+
+
+@app.post("/api/service-entries", status_code=201)
+def add_service_entry(data: ServiceEntryCreate, desk_session: str | None = Cookie(default=None)):
+    user = current_user(desk_session)
+    require_staff(user)
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if data.request_id:
+            existing = conn.execute(f"{SERVICE_ENTRY_SELECT} WHERE s.author_id=? AND s.request_id=?",
+                                    (user["id"], data.request_id)).fetchone()
+            if existing:
+                return dict(existing)
+        customer = conn.execute("SELECT id FROM users WHERE id=? AND role='customer'", (data.customer_id,)).fetchone()
+        if not customer:
+            raise HTTPException(404, "Клиент не найден")
+        org = customer_organization(conn, data.customer_id)
+        if data.ticket_id is not None:
+            ticket = conn.execute("SELECT customer_id,organization_id FROM tickets WHERE id=?", (data.ticket_id,)).fetchone()
+            same_client = ticket and (ticket["customer_id"] == data.customer_id or
+                                      (org is not None and ticket["organization_id"] == org["id"]))
+            if not same_client:
+                raise HTTPException(422, "Заявка не относится к этому клиенту")
+        note = data.note.strip()
+        if len(note) < 3:
+            raise HTTPException(422, "Опишите, что обсуждали")
+        stamp = now()
+        occurred = data.occurred_at.astimezone(timezone.utc).isoformat() if data.occurred_at else stamp
+        if occurred > stamp:
+            raise HTTPException(422, "Нельзя внести время за будущую дату")
+        cursor = conn.execute("""INSERT INTO service_entries(customer_id,organization_id,ticket_id,author_id,kind,minutes,
+            note,occurred_at,created_at,request_id) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (data.customer_id, org["id"] if org else None, data.ticket_id, user["id"], data.kind, data.minutes,
+             note, occurred, stamp, data.request_id))
+        return dict(conn.execute(f"{SERVICE_ENTRY_SELECT} WHERE s.id=?", (cursor.lastrowid,)).fetchone())
+
+
+@app.get("/api/service-entries")
+def list_service_entries(client_type: Literal["org", "user"] | None = None, client_id: int | None = None,
+                         unbilled: bool = False, desk_session: str | None = Cookie(default=None)):
+    user = current_user(desk_session)
+    require_staff(user)
+    with db() as conn:
+        conds, params = [], []
+        if client_type and client_id is not None:
+            cond, cond_params = client_condition(client_type, client_id, "s.")
+            conds.append(cond)
+            params.extend(cond_params)
+        if unbilled:
+            conds.append("s.act_invoice_id IS NULL")
+        where = f" WHERE {' AND '.join(conds)}" if conds else ""
+        rows = conn.execute(f"{SERVICE_ENTRY_SELECT}{where} ORDER BY s.occurred_at DESC, s.id DESC LIMIT 200",
+                            params).fetchall()
+        return [dict(row) for row in rows]
+
+
+@app.delete("/api/service-entries/{entry_id}")
+def delete_service_entry(entry_id: int, desk_session: str | None = Cookie(default=None)):
+    user = current_user(desk_session)
+    require_staff(user)
+    with db() as conn:
+        row = conn.execute("SELECT author_id,act_invoice_id FROM service_entries WHERE id=?", (entry_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Запись не найдена")
+        if row["author_id"] != user["id"] and user["role"] != "admin" and not user["is_manager"]:
+            raise HTTPException(403, "Удалить запись может её автор или руководитель")
+        if row["act_invoice_id"] is not None:
+            raise HTTPException(409, "Запись уже включена в акт")
+        conn.execute("DELETE FROM service_entries WHERE id=?", (entry_id,))
+        return {"ok": True}
 
 
 @app.post("/api/chats/{chat_id}/tickets", status_code=201)
@@ -1787,7 +1924,15 @@ def get_ticket(ticket_id: int, desk_session: str | None = Cookie(default=None)):
         hour_rows = conn.execute("""SELECT h.*,u.name AS author_name FROM hour_requests h JOIN users u ON u.id=h.author_id
             WHERE h.ticket_id=? ORDER BY h.id DESC""", (ticket_id,)).fetchall()
         file_rows = conn.execute("SELECT id,filename,size,content_type,author_id,created_at FROM attachments WHERE ticket_id=? ORDER BY id DESC", (ticket_id,)).fetchall()
+        service_rows = []
+        if user["role"] != "customer":
+            service_rows = conn.execute(f"{SERVICE_ENTRY_SELECT} WHERE s.ticket_id=? ORDER BY s.occurred_at DESC, s.id DESC",
+                                        (ticket_id,)).fetchall()
+            item["service_minutes"] = sum(row["minutes"] for row in service_rows)
+            item["service_cost_rub"] = round(item["service_minutes"] / 60.0 * rate_rub)
+            item["total_cost_rub"] = item["cost_rub"] + item["service_cost_rub"]
     return {"ticket": item, "messages": [dict(x) for x in messages],
+            "service_entries": [dict(x) for x in service_rows],
             "events": [dict(x) for x in events], "estimates": [dict(x) for x in estimates],
             "linked_chat": dict(linked) if linked else None,
             "time_entries": [dict(x) for x in time_rows], "hour_requests": [dict(x) for x in hour_rows],
@@ -3394,7 +3539,8 @@ def get_billing_overview(desk_session: str | None = Cookie(default=None)):
             in_progress_minutes = sum(approved_minutes(conn, t["id"]) for t in active_tickets)
 
             unbilled_tickets = conn.execute(f"SELECT id FROM tickets WHERE {cond} AND status IN ('done','closed') AND act_invoice_id IS NULL", params).fetchall()
-            unbilled_minutes = sum(approved_minutes(conn, t["id"]) for t in unbilled_tickets)
+            unbilled_service = unbilled_service_minutes(conn, client_type, client_id)
+            unbilled_minutes = sum(approved_minutes(conn, t["id"]) for t in unbilled_tickets) + unbilled_service
 
             invoices = conn.execute(f"SELECT * FROM invoices WHERE {cond} ORDER BY id DESC LIMIT 50", params).fetchall()
             transactions = conn.execute(f"SELECT * FROM billing_transactions WHERE {cond} ORDER BY id DESC LIMIT 50", params).fetchall()
@@ -3425,7 +3571,8 @@ def get_billing_overview(desk_session: str | None = Cookie(default=None)):
             clients = []
             for o in conn.execute("SELECT * FROM organizations ORDER BY name").fetchall():
                 unb = conn.execute("SELECT id FROM tickets WHERE organization_id=? AND status IN ('done','closed') AND act_invoice_id IS NULL", (o["id"],)).fetchall()
-                unb_mins = sum(approved_minutes(conn, t["id"]) for t in unb)
+                service_mins = unbilled_service_minutes(conn, "org", o["id"])
+                unb_mins = sum(approved_minutes(conn, t["id"]) for t in unb) + service_mins
                 rate = o["hourly_rate_rub"] or 3000
                 bal_m = o["balance_minutes"] or 0
                 open_cnt = conn.execute("SELECT COUNT(*) FROM tickets WHERE organization_id=? AND status NOT IN ('closed')", (o["id"],)).fetchone()[0]
@@ -3439,6 +3586,7 @@ def get_billing_overview(desk_session: str | None = Cookie(default=None)):
                     "balance_rub": round(bal_m / 60.0 * rate),
                     "unbilled_minutes": unb_mins,
                     "unbilled_rub": round(unb_mins / 60.0 * rate),
+                    "unbilled_service_minutes": service_mins,
                     "open_tickets": open_cnt
                 })
 
@@ -3453,7 +3601,8 @@ def get_billing_overview(desk_session: str | None = Cookie(default=None)):
 
             for s in standalone:
                 unb = conn.execute("SELECT id FROM tickets WHERE customer_id=? AND organization_id IS NULL AND status IN ('done','closed') AND act_invoice_id IS NULL", (s["id"],)).fetchall()
-                unb_mins = sum(approved_minutes(conn, t["id"]) for t in unb)
+                service_mins = unbilled_service_minutes(conn, "user", s["id"])
+                unb_mins = sum(approved_minutes(conn, t["id"]) for t in unb) + service_mins
                 rate = s["hourly_rate_rub"] or 3000
                 bal_m = s["balance_minutes"] or 0
                 cname = s["company_name"] if s["company_name"] else s["name"]
@@ -3468,8 +3617,11 @@ def get_billing_overview(desk_session: str | None = Cookie(default=None)):
                     "balance_rub": round(bal_m / 60.0 * rate),
                     "unbilled_minutes": unb_mins,
                     "unbilled_rub": round(unb_mins / 60.0 * rate),
+                    "unbilled_service_minutes": service_mins,
                     "open_tickets": open_cnt
                 })
+
+            service_entries = conn.execute(f"{SERVICE_ENTRY_SELECT} ORDER BY s.occurred_at DESC, s.id DESC LIMIT 100").fetchall()
 
             invoices = conn.execute("""
                 SELECT i.*, 
@@ -3494,6 +3646,7 @@ def get_billing_overview(desk_session: str | None = Cookie(default=None)):
                 "total_paid_rub": paid_sum,
                 "total_active_minutes": total_active_mins,
                 "clients": clients,
+                "service_entries": [dict(r) for r in service_entries],
                 "invoices": [dict(r) for r in invoices],
                 "transactions": [dict(r) for r in transactions]
             }
@@ -3682,17 +3835,25 @@ def create_invoice_document(data: BillingDocumentCreate, desk_session: str | Non
         year = datetime.now(timezone.utc).year
 
         if data.doc_type == "act":
-            if data.ticket_ids:
+            if data.ticket_ids is not None:
                 placeholders = ",".join("?" * len(data.ticket_ids))
-                tickets = conn.execute(f"SELECT * FROM tickets WHERE id IN ({placeholders}) AND act_invoice_id IS NULL", data.ticket_ids).fetchall()
+                tickets = conn.execute(f"SELECT * FROM tickets WHERE id IN ({placeholders}) AND act_invoice_id IS NULL", data.ticket_ids).fetchall() if data.ticket_ids else []
             else:
                 if data.client_type == "org":
                     tickets = conn.execute("SELECT * FROM tickets WHERE organization_id=? AND status IN ('done','closed') AND act_invoice_id IS NULL", (data.client_id,)).fetchall()
                 else:
                     tickets = conn.execute("SELECT * FROM tickets WHERE customer_id=? AND organization_id IS NULL AND status IN ('done','closed') AND act_invoice_id IS NULL", (data.client_id,)).fetchall()
 
-            if not tickets:
-                raise HTTPException(422, "Не найдено завершенных задач с утвержденными часами для формирования акта")
+            service_cond, service_params = client_condition(data.client_type, data.client_id)
+            if data.service_entry_ids is not None:
+                ids = data.service_entry_ids or [0]
+                service_cond += f" AND id IN ({','.join('?' * len(ids))})"
+                service_params += tuple(ids)
+            services = conn.execute(f"""SELECT * FROM service_entries WHERE {service_cond} AND act_invoice_id IS NULL
+                ORDER BY occurred_at, id""", service_params).fetchall()
+
+            if not tickets and not services:
+                raise HTTPException(422, "Не найдено завершенных задач или часов сопровождения для формирования акта")
 
             items = []
             total_mins = 0
@@ -3715,6 +3876,19 @@ def create_invoice_document(data: BillingDocumentCreate, desk_session: str | Non
                     "sum_rub": cost
                 })
 
+            service_mins = sum(s["minutes"] for s in services)
+            if service_mins:
+                cost = round(service_mins / 60.0 * rate)
+                total_mins += service_mins
+                total_rub += cost
+                items.append({
+                    "title": SERVICE_ACT_TITLE,
+                    "minutes": service_mins,
+                    "hours": round(service_mins / 60.0, 2),
+                    "rate": rate,
+                    "sum_rub": cost
+                })
+
             if not items:
                 raise HTTPException(422, "Выбранные задачи не содержат согласованных часов")
 
@@ -3727,7 +3901,11 @@ def create_invoice_document(data: BillingDocumentCreate, desk_session: str | Non
             """, (number, client["customer_id"], client["organization_id"], total_rub, total_mins, rate, data.period_start, data.period_end, json.dumps(items, ensure_ascii=False), data.notes, user["id"], stamp))
             act_id = cursor.lastrowid
 
-            conn.execute(f"UPDATE tickets SET act_invoice_id=? WHERE id IN ({','.join('?'*len(ticket_ids_to_link))})", (act_id, *ticket_ids_to_link))
+            if ticket_ids_to_link:
+                conn.execute(f"UPDATE tickets SET act_invoice_id=? WHERE id IN ({','.join('?'*len(ticket_ids_to_link))})", (act_id, *ticket_ids_to_link))
+            if services:
+                conn.execute(f"UPDATE service_entries SET act_invoice_id=? WHERE id IN ({','.join('?'*len(services))})",
+                             (act_id, *(s["id"] for s in services)))
 
             new_bal = client["balance_minutes"] - total_mins
             update_client_balance(conn, data.client_type, data.client_id, new_bal)
@@ -3852,6 +4030,7 @@ def update_invoice_status(invoice_id: int, data: BillingStatusUpdate, desk_sessi
         elif new_status == "cancelled" and old_status != "cancelled":
             if row["doc_type"] == "act":
                 conn.execute("UPDATE tickets SET act_invoice_id=NULL WHERE act_invoice_id=? ", (invoice_id,))
+                conn.execute("UPDATE service_entries SET act_invoice_id=NULL WHERE act_invoice_id=?", (invoice_id,))
                 c_type = "org" if row["organization_id"] else "user"
                 c_id = row["organization_id"] if row["organization_id"] else row["customer_id"]
                 client = get_client_billing_info(conn, c_type, c_id)

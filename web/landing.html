@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="ru">
+<html lang="ru" class="no-billing">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#122527">
-  <meta name="description" content="Разработка и поддержка с прозрачными часами: заявки, оценка трудозатрат, переписка, SLA и акты в одном кабинете.">
+  <meta name="description" content="Разработка и поддержка с прозрачными сроками: заявки, оценка трудозатрат, переписка с командой и SLA в одном кабинете.">
   <title>Линия · Разработка и поддержка с прозрачными часами</title>
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -353,6 +353,11 @@
       .calc-left, .calc-right { padding: 26px; }
       .hero-cta .btn { flex: 1; }
     }
+    .no-billing [data-billing], html:not(.no-billing) [data-no-billing] { display: none !important; }
+    .no-billing #faq { background: transparent !important; }
+    .file-demo { display: grid; gap: 8px; }
+    .file-demo span { display: inline-flex; align-items: center; gap: 10px; width: fit-content; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; background: #fff; font-size: 13.5px; font-weight: 700; }
+    .file-demo i { display: grid; place-items: center; width: 34px; height: 30px; border-radius: 8px; background: var(--accent-soft); color: var(--accent-ink); font-size: 10px; font-style: normal; font-weight: 800; }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; animation-delay: 0s !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
       .hero h1 .word, .fade-up, .reveal { opacity: 1; transform: none; }
@@ -386,7 +391,7 @@
       <nav class="menu" aria-label="Разделы страницы">
         <a href="#how">Как это работает</a>
         <a href="#features">Возможности</a>
-        <a href="#price">Стоимость</a>
+        <a href="#price" data-billing>Стоимость</a>
         <a href="#faq">Вопросы</a>
       </nav>
       <div class="header-actions">
@@ -403,7 +408,7 @@
         <div>
           <span class="eyebrow fade-up" style="animation-delay:.05s"><i aria-hidden="true"></i>Разработка и поддержка по часам</span>
           <h1 data-split>Каждый час работы — <em>под вашим контролем</em></h1>
-          <p class="lead fade-up" style="animation-delay:.55s">Заявки, оценка трудозатрат, переписка с командой и акты — в одном кабинете. Работа начинается только после того, как вы согласуете часы.</p>
+          <p class="lead fade-up" style="animation-delay:.55s">Заявки, оценка трудозатрат и переписка с командой — в одном кабинете. Работа начинается только после того, как вы согласуете часы.</p>
           <div class="hero-cta fade-up" style="animation-delay:.7s">
             <a class="btn btn-mint" href="/?register">Создать кабинет <svg class="ico" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-arrow"/></svg></a>
             <a class="btn btn-ghost" href="#how">Как это работает</a>
@@ -411,7 +416,7 @@
           <div class="hero-note fade-up" style="animation-delay:.85s">
             <span><svg class="ico" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-check"/></svg>Оценка до начала работ</span>
             <span><svg class="ico" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-check"/></svg>Сроки по SLA</span>
-            <span><svg class="ico" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-check"/></svg>Акты по выполненным задачам</span>
+            <span data-billing><svg class="ico" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-check"/></svg>Акты по выполненным задачам</span><span data-no-billing><svg class="ico" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-check"/></svg>Вся переписка в одном месте</span>
           </div>
         </div>
 
@@ -435,7 +440,7 @@
                 <span class="mtext"><strong>№19 · Перенос кабинета на домен</strong><small>Доработка · 25 сент.</small></span>
                 <span class="badge done">Выполнена</span>
               </div>
-              <div class="mock-hours">
+              <div class="mock-hours" data-billing>
                 <div><span>Депозит часов</span><strong id="dep">12,5 ч</strong></div>
                 <div class="meter"><span id="dep-bar"></span></div>
               </div>
@@ -462,7 +467,7 @@
         <span><svg class="ico" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-life"/></svg>Техническая поддержка</span>
         <span><svg class="ico" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-bulb"/></svg>Консультации</span>
         <span><svg class="ico" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-clock"/></svg>Сроки по SLA</span>
-        <span><svg class="ico" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-wallet"/></svg>Депозит часов и акты</span>
+        <span data-billing><svg class="ico" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-wallet"/></svg>Депозит часов и акты</span>
         <span><svg class="ico" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-send"/></svg>Telegram и MAX</span>
       </div>
     </div>
@@ -470,7 +475,7 @@
     <section class="block" id="how">
       <div class="wrap">
         <span class="kicker reveal">Как это работает</span>
-        <h2 class="title reveal" style="--d:.08s">Пять шагов от задачи до акта</h2>
+        <h2 class="title reveal" style="--d:.08s">Пять шагов от задачи до <span data-billing>акта</span><span data-no-billing>результата</span></h2>
         <p class="subtitle reveal" style="--d:.16s">На каждом этапе видно, что происходит с задачей, кто за неё отвечает и сколько часов на неё согласовано.</p>
         <div class="steps-grid">
           <div class="steps" id="steps">
@@ -479,7 +484,7 @@
             <article class="step reveal" data-n="2" data-scene="1"><h3>Команда оценивает часы</h3><p>Специалист разбирается в задаче и отправляет оценку трудозатрат с пояснением, что входит в работу.</p></article>
             <article class="step reveal" data-n="3" data-scene="2"><h3>Вы согласуете оценку</h3><p>Одобрите её, отклоните или предложите свой вариант. Без вашего решения работа не начинается.</p></article>
             <article class="step reveal" data-n="4" data-scene="3"><h3>Работа идёт по срокам</h3><p>Вы видите статус, ответственного и сроки SLA. Если понадобятся дополнительные часы, команда попросит их согласовать.</p></article>
-            <article class="step reveal" data-n="5" data-scene="4"><h3>Готово — и закрывающие документы</h3><p>Выполненные задачи собираются в акт, часы списываются с депозита. Счета и акты всегда под рукой.</p></article>
+            <article class="step reveal" data-n="5" data-scene="4"><h3 data-billing>Готово — и закрывающие документы</h3><p data-billing>Выполненные задачи собираются в акт, часы списываются с депозита. Счета и акты всегда под рукой.</p><h3 data-no-billing>Работа сдана</h3><p data-no-billing>Вы получаете уведомление о завершении и проверяете результат. Вся история задачи остаётся в кабинете.</p></article>
           </div>
           <div class="step-visual" aria-hidden="true">
             <div class="screen">
@@ -503,10 +508,15 @@
                 <div class="card"><small>Трудозатраты</small><strong>1,5 из 2,5 ч</strong><div class="meter" style="margin-top:10px"><span style="width:60%"></span></div></div>
                 <div class="card"><small>Сдача</small><strong>через 6 ч</strong></div>
               </div>
-              <div class="scene" data-scene="4">
+              <div class="scene" data-scene="4" data-billing>
                 <div class="scene-label">Документы</div>
                 <div class="card doc"><i>АКТ</i><div><strong>Акт за сентябрь</strong><small>14,5 ч · подписан</small></div></div>
                 <div class="card doc"><i style="background:#e8f1fb;color:#245f9c">СЧЁТ</i><div><strong>Пакет 20 часов</strong><small>оплачен · зачислен на депозит</small></div></div>
+              </div>
+              <div class="scene" data-scene="4" data-no-billing>
+                <div class="scene-label">Готово</div>
+                <div class="card"><small>Статус</small><strong>Выполнена · сдана в срок</strong><div class="meter" style="margin-top:10px"><span style="width:100%"></span></div></div>
+                <div class="card"><div class="bubble me">Готово! Проверьте, пожалуйста, результат.</div><div class="bubble">Всё работает, спасибо!</div></div>
               </div>
             </div>
           </div>
@@ -543,10 +553,15 @@
             <p>Создавайте заявки, отвечайте и согласуйте оценки прямо из мессенджера.</p>
             <div class="demo msgr" aria-hidden="true"><span><svg width="16" height="16" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-send"/></svg>Telegram</span><i class="wire"></i><span>Кабинет</span></div>
           </article>
-          <article class="tile t-dep reveal" style="--d:.08s">
+          <article class="tile t-dep reveal" style="--d:.08s" data-billing>
             <h3>Депозит часов</h3>
             <p>Пополняйте пакет часов по счёту. Списание идёт только по актам за выполненные задачи.</p>
             <div class="demo"><div class="big-num"><span data-count="20">0</span> ч</div><div class="meter" style="margin-top:14px"><span data-w="62"></span></div></div>
+          </article>
+          <article class="tile t-dep reveal" style="--d:.08s" data-no-billing>
+            <h3>Файлы в переписке</h3>
+            <p>Прикладывайте ТЗ, скриншоты и документы — просто перетащите файл в окно заявки или чата.</p>
+            <div class="demo file-demo"><span><i>PDF</i>ТЗ_интеграция.pdf</span><span><i>PNG</i>Макет_страницы.png</span></div>
           </article>
           <article class="tile t-roles reveal" style="--d:.16s">
             <h3>Вся компания в кабинете</h3>
@@ -577,7 +592,7 @@
       </div>
     </section>
 
-    <section class="block" id="price">
+    <section class="block" id="price" data-billing>
       <div class="wrap">
         <span class="kicker reveal">Стоимость</span>
         <h2 class="title reveal" style="--d:.08s">Платите за часы, а не за обещания</h2>
@@ -618,7 +633,7 @@
           <div class="qa reveal"><button type="button" aria-expanded="false" aria-controls="a1" id="q1">Что будет, если на задачу понадобится больше часов?<span class="plus" aria-hidden="true"></span></button><div class="answer" id="a1" role="region" aria-labelledby="q1"><div><p>Специалист отправит запрос на дополнительные часы с объяснением причины. Вы одобрите или отклоните его в кабинете — без вашего решения сверх согласованного объёма работа не продолжится.</p></div></div></div>
           <div class="qa reveal" style="--d:.05s"><button type="button" aria-expanded="false" aria-controls="a2" id="q2">Можно ли не согласиться с оценкой?<span class="plus" aria-hidden="true"></span></button><div class="answer" id="a2" role="region" aria-labelledby="q2"><div><p>Да. Оценку можно отклонить или запросить корректировку и предложить свой вариант в часах. Команда пересчитает трудозатраты и пришлёт новую версию.</p></div></div></div>
           <div class="qa reveal" style="--d:.1s"><button type="button" aria-expanded="false" aria-controls="a3" id="q3">Кто из моей компании увидит заявки?<span class="plus" aria-hidden="true"></span></button><div class="answer" id="a3" role="region" aria-labelledby="q3"><div><p>При создании заявки вы выбираете видимость: для всей компании или только для себя. Участникам компании можно назначить роль владельца, участника или наблюдателя.</p></div></div></div>
-          <div class="qa reveal" style="--d:.15s"><button type="button" aria-expanded="false" aria-controls="a4" id="q4">Как оплачиваются часы?<span class="plus" aria-hidden="true"></span></button><div class="answer" id="a4" role="region" aria-labelledby="q4"><div><p>Вы выбираете пакет часов, кабинет формирует счёт. После оплаты часы зачисляются на депозит, а по выполненным задачам формируется акт и часы списываются с баланса.</p></div></div></div>
+          <div class="qa reveal" style="--d:.15s" data-billing><button type="button" aria-expanded="false" aria-controls="a4" id="q4">Как оплачиваются часы?<span class="plus" aria-hidden="true"></span></button><div class="answer" id="a4" role="region" aria-labelledby="q4"><div><p>Вы выбираете пакет часов, кабинет формирует счёт. После оплаты часы зачисляются на депозит, а по выполненным задачам формируется акт и часы списываются с баланса.</p></div></div></div>
           <div class="qa reveal" style="--d:.2s"><button type="button" aria-expanded="false" aria-controls="a5" id="q5">Можно работать без входа на сайт?<span class="plus" aria-hidden="true"></span></button><div class="answer" id="a5" role="region" aria-labelledby="q5"><div><p>Да, подключите бота в Telegram или MAX в разделе «Мессенджеры». В нём можно создавать заявки, отвечать в переписке и согласовывать оценки — всё синхронизируется с кабинетом.</p></div></div></div>
         </div>
       </div>
@@ -639,7 +654,7 @@
   <footer>
     <div class="wrap foot">
       <span>© 2026 Линия · Кабинет заявок</span>
-      <nav aria-label="Ссылки в подвале"><a href="#how">Как это работает</a><a href="#price">Стоимость</a><a href="/?login">Войти</a></nav>
+      <nav aria-label="Ссылки в подвале"><a href="#how">Как это работает</a><a href="#price" data-billing>Стоимость</a><a href="/?login">Войти</a></nav>
     </div>
   </footer>
 
@@ -748,7 +763,7 @@
       const steps = $$('.step'), scenes = $$('.scene'), rail = $('#rail');
       const setStep = index => {
         steps.forEach((s, i) => { s.classList.toggle('active', i === index); s.classList.toggle('passed', i < index); });
-        scenes.forEach((s, i) => s.classList.toggle('active', i === index));
+        scenes.forEach(s => s.classList.toggle('active', Number(s.dataset.scene) === index));
       };
       const stepsBox = $('#steps');
       const onStepsScroll = () => {
@@ -813,6 +828,7 @@
       $$('.presets button').forEach(b => b.addEventListener('click', () => { range.value = b.dataset.h; update(); }));
       update();
       fetch('/api/public/settings').then(r => r.ok ? r.json() : null).then(settings => {
+        document.documentElement.classList.toggle('no-billing', !settings?.billing_enabled);
         if (!settings?.hourly_rate_rub) return;
         RATE = settings.hourly_rate_rub;
         $('#rate').textContent = fmt(RATE);

@@ -11,12 +11,14 @@ from PIL import Image
 
 temp = tempfile.TemporaryDirectory()
 os.environ["APP_DB"] = str(Path(temp.name) / "test.db")
+os.environ["BILLING_ENABLED"] = "1"
 import app as service
 
 
 class Flows(unittest.TestCase):
     def setUp(self):
         with service.db() as conn:
+            conn.execute("DELETE FROM service_entries")
             conn.execute("DELETE FROM billing_transactions")
             conn.execute("DELETE FROM ticket_git_links")
             conn.execute("DELETE FROM attachments")
@@ -437,6 +439,57 @@ class Flows(unittest.TestCase):
         # Balance credited: 480 + 600 = 1080
         final_overview = self.customer.get("/api/billing/overview").json()
         self.assertEqual(final_overview["balance_minutes"], 1080)
+
+    def test_service_hours_go_to_act(self):
+        cust_id = self.customer.get("/api/me").json()["id"]
+        other_id = self.other.get("/api/me").json()["id"]
+        chat_id = self.customer.post("/api/chats").json()["id"]
+        entry = {"customer_id": cust_id, "kind": "call", "minutes": 45, "note": "Созвон по срокам релиза",
+                 "request_id": "service-call-1"}
+        self.assertEqual(self.customer.post("/api/service-entries", json=entry).status_code, 403)
+        call = self.employee.post("/api/service-entries", json=entry)
+        self.assertEqual(call.status_code, 201)
+        self.assertEqual(self.employee.post("/api/service-entries", json=entry).json()["id"], call.json()["id"])
+        chat = self.employee.post("/api/service-entries", json={"customer_id": cust_id, "kind": "chat", "minutes": 30,
+                                                                 "note": "Консультация в чате"}).json()
+        foreign = self.customer.post("/api/tickets", json={"title":"Чужая заявка","description":"Описание"}).json()["id"]
+        self.assertEqual(self.employee.post("/api/service-entries", json={"customer_id": other_id, "ticket_id": foreign,
+            "kind": "chat", "minutes": 10, "note": "Не тот клиент"}).status_code, 422)
+
+        self.assertEqual(len(self.admin.get(f"/api/chats/{chat_id}").json()["service_entries"]), 2)
+        self.assertEqual(self.customer.get(f"/api/chats/{chat_id}").json()["service_entries"], [])
+        self.assertEqual(self.customer.get("/api/service-entries").status_code, 403)
+        overview = self.customer.get("/api/billing/overview").json()
+        self.assertNotIn("service_entries", overview)
+        self.assertEqual(overview["unbilled_minutes"], 75)
+        self.assertEqual(len(self.admin.get("/api/billing/overview").json()["service_entries"]), 2)
+
+        act = self.admin.post("/api/billing/invoices", json={"doc_type": "act", "client_type": "user", "client_id": cust_id,
+                                                             "ticket_ids": [], "service_entry_ids": [call.json()["id"]]})
+        self.assertEqual(act.status_code, 201)
+        self.assertEqual(act.json()["total_minutes"], 45)
+        self.assertEqual(act.json()["total_rub"], 2250)
+        printed = self.customer.get(f"/api/billing/invoices/{act.json()['id']}/print").text
+        self.assertIn(service.SERVICE_ACT_TITLE, printed)
+        self.assertNotIn("Созвон по срокам релиза", printed)
+        self.assertNotIn("Созвон по срокам релиза", str(self.customer.get(f"/api/billing/invoices/{act.json()['id']}").json()))
+        self.assertEqual(self.employee.delete(f"/api/service-entries/{call.json()['id']}").status_code, 409)
+        self.assertEqual(self.customer.get("/api/billing/overview").json()["balance_minutes"], -45)
+
+        self.assertEqual(self.admin.patch(f"/api/billing/invoices/{act.json()['id']}/status", json={"status": "cancelled"}).status_code, 200)
+        unbilled = self.admin.get(f"/api/service-entries?client_type=user&client_id={cust_id}&unbilled=true").json()
+        self.assertEqual({x["id"] for x in unbilled}, {call.json()["id"], chat["id"]})
+        self.assertEqual(self.employee.delete(f"/api/service-entries/{chat['id']}").status_code, 200)
+
+        self.assertEqual(self.employee.post("/api/service-entries", json={"customer_id": cust_id, "ticket_id": foreign,
+            "kind": "meeting", "minutes": 60, "note": "Встреча по заявке"}).status_code, 201)
+        detail = self.admin.get(f"/api/tickets/{foreign}").json()
+        self.assertEqual(detail["ticket"]["service_minutes"], 60)
+        self.assertEqual(detail["ticket"]["service_cost_rub"], 3000)
+        self.assertEqual([e["kind"] for e in detail["service_entries"]], ["meeting"])
+        customer_detail = self.customer.get(f"/api/tickets/{foreign}").json()
+        self.assertEqual(customer_detail["service_entries"], [])
+        self.assertNotIn("service_minutes", customer_detail["ticket"])
 
 
 if __name__ == "__main__":
