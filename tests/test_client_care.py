@@ -188,7 +188,7 @@ Content-Type: text/plain; charset=utf-8
         self.assertEqual(service.process_inbound_email(reply), "duplicate")
         body = self.employee.get(f"/api/tickets/{ticket_id}").json()["messages"][-1]["body"]
         self.assertEqual(body, "Схему пришлю завтра.")
-        spoofed = reply.replace(b"c@example.com>", b"evil@example.com>").replace(b"answer-1", b"answer-2")
+        spoofed = reply.replace(b"<c@example.com>", b"<evil@example.com>", 1).replace(b"Message-ID: <answer-1@mail.example>", b"Message-ID: <answer-2@mail.example>", 1)
         self.assertEqual(service.process_inbound_email(spoofed), "sender_mismatch")
         forbidden = TestClient(service.app).post("/api/email/inbound", content=reply, headers={"X-Inbound-Secret": "wrong"})
         self.assertEqual(forbidden.status_code, 403)

@@ -82,7 +82,9 @@ class FlowReliability(unittest.TestCase):
         activated=next(c for c in self.admin.get('/api/customers').json() if c['id']==access['customer_id'])
         self.assertTrue(activated['can_own_company'])
         self.assertEqual(client.post('/api/account/activate/invite',json={'token':token,'password':'newpassword123'}).status_code,409)
-        self.assertEqual(self.admin.post('/api/customer-invitations',json=data).status_code,409)
+        connected=self.admin.post('/api/customer-invitations',json=data)
+        self.assertEqual(connected.status_code,201)
+        self.assertTrue(connected.json()['registered'])
 
     def test_pending_owner_invitation_does_not_unlock_removal_and_expired_token_is_denied(self):
         org, ticket, quote=self.shared_ticket()

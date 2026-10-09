@@ -2675,6 +2675,20 @@ a.auth-foot:hover { color: #fff; }
 .decline-box p { margin: 0; }
 .decline-box .form { width: 100%; }
 .template-bar { display: grid; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.connection-state { font-size: 11px; max-width: 160px; }
+.current-stage { font-size: 13px; margin: 0 0 14px; color: var(--muted); }
+.ticket-context summary { font-weight: 700; cursor: pointer; min-height: 44px; display: flex; align-items: center; gap: 8px; }
+.ticket-context summary::before { content: '›'; font-size: 22px; }
+.ticket-context[open] summary::before { transform: rotate(90deg); }
+.ticket-context-body { padding-top: 16px; }
+.org-person-actions { flex-wrap: wrap; }
+.invite-result { overflow-wrap: anywhere; }
+@media (max-width: 700px) {
+  .connection-state { display: none; }
+  .organization-card .org-person { flex-wrap: wrap; }
+  .organization-card .org-person-actions { width: 100%; }
+  .organization-card .org-person-actions select { flex: 1; min-width: 0; }
+}
 .template-bar .row { flex-wrap: wrap; gap: 8px; justify-content: flex-start; }
 .waiting-bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 0 0; margin-top: 4px; border-top: 1px solid var(--line); }
 .waiting-bulk > span { flex: 1 1 200px; }

@@ -471,8 +471,10 @@ class Flows(unittest.TestCase):
         }).json()
         self.assertTrue(inv["number"].startswith("СЧ-"))
 
-        # Customer pays invoice online
+        # The customer cannot credit their own balance; the manager confirms receipt.
         pay = self.customer.patch(f"/api/billing/invoices/{inv['id']}/status", json={"status": "paid"})
+        self.assertEqual(pay.status_code, 403)
+        pay = self.admin.patch(f"/api/billing/invoices/{inv['id']}/status", json={"status": "paid"})
         self.assertEqual(pay.status_code, 200)
 
         # Balance credited: 480 + 600 = 1080
@@ -528,7 +530,8 @@ class Flows(unittest.TestCase):
         self.assertEqual([e["kind"] for e in detail["service_entries"]], ["meeting"])
         customer_detail = self.customer.get(f"/api/tickets/{foreign}").json()
         self.assertEqual(customer_detail["service_entries"], [])
-        self.assertNotIn("service_minutes", customer_detail["ticket"])
+        self.assertEqual(customer_detail["ticket"]["service_minutes"], 60)
+        self.assertEqual(customer_detail["ticket"]["service_cost_rub"], 3000)
 
 
 if __name__ == "__main__":

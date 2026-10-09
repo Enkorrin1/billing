@@ -476,6 +476,13 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_service_entries_act ON service_entries(act_invoice_id);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_service_entries_request ON service_entries(author_id, request_id);
         """)
+        invoice_columns = {row['name'] for row in conn.execute('PRAGMA table_info(invoices)')}
+        for column, declaration in {'signed_at': 'TEXT', 'signed_by_id': 'INTEGER REFERENCES users(id)'}.items():
+            if column not in invoice_columns:
+                conn.execute(f'ALTER TABLE invoices ADD COLUMN {column} {declaration}')
+        conn.execute("UPDATE invoices SET signed_at=COALESCE(paid_at,created_at),status='issued',paid_at=NULL WHERE doc_type='act' AND status='paid'")
+        if 'service_limit_minutes' not in {row['name'] for row in conn.execute('PRAGMA table_info(tickets)')}:
+            conn.execute('ALTER TABLE tickets ADD COLUMN service_limit_minutes INTEGER CHECK(service_limit_minutes>=0)')
 
         # Взаимодействие с клиентом: ответы на сообщения, прочтение, приёмка, итоги встреч, напоминания и почта.
         for table in ("messages", "chat_messages"):
@@ -883,6 +890,7 @@ class AccountInvitation(BaseModel):
     email: str = Field(min_length=3, max_length=254)
     organization_id: int | None = None
     role: Literal["owner", "member", "viewer"] = "member"
+    company_name: str | None = Field(default=None, min_length=2, max_length=150)
 
 
 class AccountEmail(BaseModel):
@@ -1141,7 +1149,11 @@ class BillingDocumentCreate(BaseModel):
 
 
 class BillingStatusUpdate(BaseModel):
-    status: Literal["issued", "paid", "cancelled"]
+    status: Literal["issued", "paid", "cancelled", "signed"]
+
+
+class ServiceBudgetUpdate(BaseModel):
+    limit_minutes: int | None = Field(default=None, ge=0, le=100000)
 
 
 def clean_email(email):
@@ -1776,11 +1788,15 @@ def add_service_entry(data: ServiceEntryCreate, desk_session: str | None = Cooki
             raise HTTPException(404, "Клиент не найден")
         org = customer_organization(conn, data.customer_id)
         if data.ticket_id is not None:
-            ticket = conn.execute("SELECT customer_id,organization_id FROM tickets WHERE id=?", (data.ticket_id,)).fetchone()
+            ticket = conn.execute("SELECT customer_id,organization_id,service_limit_minutes FROM tickets WHERE id=?", (data.ticket_id,)).fetchone()
             same_client = ticket and (ticket["customer_id"] == data.customer_id or
                                       (org is not None and ticket["organization_id"] == org["id"]))
             if not same_client:
                 raise HTTPException(422, "Заявка не относится к этому клиенту")
+            if ticket["service_limit_minutes"] is not None:
+                used = conn.execute("SELECT COALESCE(SUM(minutes),0) FROM service_entries WHERE ticket_id=?", (data.ticket_id,)).fetchone()[0]
+                if used + data.minutes > ticket["service_limit_minutes"]:
+                    raise HTTPException(409, "Превышен лимит сопровождения. Согласуйте увеличение с клиентом")
         note = data.note.strip()
         if len(note) < 3:
             raise HTTPException(422, "Опишите, что обсуждали")
@@ -2278,6 +2294,42 @@ def add_ticket_service(conn, user, data: TicketCreate):
     return result
 
 
+@app.patch("/api/tickets/{ticket_id}/service-budget")
+def update_service_budget(ticket_id: int, data: ServiceBudgetUpdate, desk_session: str | None = Cookie(default=None)):
+    user = current_user(desk_session)
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        ticket = ticket_for(conn, ticket_id, user)
+        if user["role"] != "customer" or not customer_can_decide(conn, ticket, user):
+            raise HTTPException(403, "Лимит сопровождения устанавливает заказчик, согласующий работу")
+        if ticket["status"] == "closed":
+            raise HTTPException(409, "Заявка закрыта")
+        used = conn.execute("SELECT COALESCE(SUM(minutes),0) FROM service_entries WHERE ticket_id=?", (ticket_id,)).fetchone()[0]
+        if data.limit_minutes is not None and data.limit_minutes < used:
+            raise HTTPException(409, "Лимит не может быть меньше уже учтённого сопровождения")
+        conn.execute("UPDATE tickets SET service_limit_minutes=? WHERE id=?", (data.limit_minutes, ticket_id))
+        conn.execute("INSERT INTO ticket_events(ticket_id,actor_id,kind,new_value,created_at) VALUES(?,?,?,?,?)", (ticket_id,user["id"],"service_budget",str(data.limit_minutes) if data.limit_minutes is not None else "unlimited",now()))
+        if ticket["assignee_id"]:
+            notify(conn, ticket["assignee_id"], ticket_id, "budget", "Заказчик изменил лимит сопровождения")
+        return {"limit_minutes": data.limit_minutes}
+
+
+@app.post("/api/tickets/{ticket_id}/owner-help")
+def request_owner_help(ticket_id: int, desk_session: str | None = Cookie(default=None)):
+    user = current_user(desk_session)
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        ticket = ticket_for(conn, ticket_id, user)
+        if ticket["visibility"] != "organization" or available_owners(conn, ticket["organization_id"]):
+            raise HTTPException(409, "Для заявки доступно согласование")
+        recent = conn.execute("SELECT 1 FROM ticket_events WHERE ticket_id=? AND kind='owner_help' AND created_at>?", (ticket_id,(datetime.now(timezone.utc)-timedelta(hours=24)).isoformat())).fetchone()
+        if not recent:
+            for dispatcher in conn.execute("SELECT id FROM users WHERE active=1 AND (role='admin' OR is_manager=1)"):
+                notify(conn,dispatcher['id'],ticket_id,'owner_help',f"Нужно восстановить владельца компании для заявки №{ticket_id}")
+            conn.execute("INSERT INTO ticket_events(ticket_id,actor_id,kind,created_at) VALUES(?,?,?,?)", (ticket_id,user['id'],'owner_help',now()))
+        return {"message": "Запрос передан менеджеру. Он назначит владельца или восстановит его доступ"}
+
+
 @app.get("/api/tickets/{ticket_id}")
 def get_ticket(ticket_id: int, desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
@@ -2333,6 +2385,9 @@ def get_ticket(ticket_id: int, desk_session: str | None = Cookie(default=None)):
             WHERE h.ticket_id=? ORDER BY h.id DESC""", (ticket_id,)).fetchall()
         file_rows = conn.execute("SELECT id,filename,size,content_type,author_id,created_at FROM attachments WHERE ticket_id=? ORDER BY id DESC", (ticket_id,)).fetchall()
         service_rows = []
+        item["service_minutes"] = conn.execute("SELECT COALESCE(SUM(minutes),0) FROM service_entries WHERE ticket_id=?", (ticket_id,)).fetchone()[0]
+        item["service_cost_rub"] = round(item["service_minutes"] / 60.0 * rate_rub)
+        item["total_cost_rub"] = item["cost_rub"] + item["service_cost_rub"]
         if user["role"] != "customer":
             service_rows = conn.execute(f"{SERVICE_ENTRY_SELECT} WHERE s.ticket_id=? ORDER BY s.occurred_at DESC, s.id DESC",
                                         (ticket_id,)).fetchall()
@@ -2852,6 +2907,7 @@ def replace_temporary_credentials(data: PermanentCredentials, response: Response
 def issue_account_link(conn, user, kind):
     token = secrets.token_urlsafe(32)
     expires = (datetime.now(timezone.utc) + timedelta(hours=1 if kind == "reset" else 72)).isoformat()
+    conn.execute("UPDATE email_outbox SET state='superseded' WHERE user_id=? AND kind=? AND state='pending'", (user["id"], kind))
     conn.execute("DELETE FROM account_tokens WHERE user_id=? AND kind=?", (user["id"], kind))
     conn.execute("INSERT INTO account_tokens VALUES(?,?,?,?,?)", (token_hash(token), user["id"], kind, expires, now()))
     link = f"{public_base()}/?{kind}={token}"
@@ -2862,36 +2918,82 @@ def issue_account_link(conn, user, kind):
     return {"url": link, "expires_at": expires}
 
 
+def require_company_manager(conn, user, organization_id):
+    if user["role"] == "admin" or user["is_manager"]:
+        return
+    member = conn.execute("SELECT role FROM organization_members WHERE organization_id=? AND user_id=?", (organization_id, user["id"])).fetchone()
+    if user["role"] != "customer" or not member or member["role"] != "owner":
+        raise HTTPException(403, "Участниками управляет владелец компании или менеджер")
+
+
+@app.get("/api/customer-invitations")
+def customer_invitations(desk_session: str | None = Cookie(default=None)):
+    user = current_user(desk_session)
+    with db() as conn:
+        manager = user["role"] == "admin" or bool(user["is_manager"])
+        org = customer_organization(conn, user["id"]) if user["role"] == "customer" else None
+        if not manager:
+            if not org:
+                raise HTTPException(403, "Доступно владельцу компании")
+            require_company_manager(conn, user, org["id"])
+        rows = conn.execute("""SELECT u.id AS customer_id,u.name,u.email,u.must_change_credentials,
+            m.organization_id,m.role,a.expires_at,a.created_at,
+            (SELECT state FROM email_outbox e WHERE e.user_id=u.id AND e.kind='invite' ORDER BY e.id DESC LIMIT 1) AS delivery_state
+            FROM users u LEFT JOIN organization_members m ON m.user_id=u.id
+            LEFT JOIN account_tokens a ON a.user_id=u.id AND a.kind='invite'
+            WHERE u.role='customer' AND (? OR m.organization_id=?)
+            AND (a.token_hash IS NOT NULL OR EXISTS(SELECT 1 FROM email_outbox e WHERE e.user_id=u.id AND e.kind='invite'))
+            ORDER BY u.name""", (manager, org["id"] if org else None)).fetchall()
+        return [{**dict(row), "status": "activated" if not row["must_change_credentials"] else
+                 "expired" if not row["expires_at"] or row["expires_at"] <= now() else "pending"} for row in rows]
+
+
 @app.post("/api/customer-invitations", status_code=201)
 def invite_customer(data: AccountInvitation, response: Response, desk_session: str | None = Cookie(default=None)):
     manager = current_user(desk_session)
-    require_dispatcher(manager)
     email = clean_email(data.email)
+    if data.company_name is not None and len(data.company_name.strip()) < 2:
+        raise HTTPException(422, "Укажите название компании из двух или более символов")
     if len(data.name.strip()) < 2 or email.endswith("@access.local"):
         raise HTTPException(422, "Укажите имя и постоянный email заказчика")
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        if data.organization_id:
+            require_company_manager(conn, manager, data.organization_id)
+        else:
+            require_dispatcher(manager)
+        if data.company_name and data.organization_id:
+            raise HTTPException(422, "Выберите существующую компанию или название новой")
         if data.organization_id and not conn.execute("SELECT 1 FROM organizations WHERE id=?", (data.organization_id,)).fetchone():
             raise HTTPException(404, "Компания не найдена")
         customer = conn.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
         if customer and (customer["role"] != "customer" or not customer["active"]):
             raise HTTPException(409, "Этот email нельзя использовать для приглашения заказчика")
-        if customer and not customer["must_change_credentials"]:
-            raise HTTPException(409, "Заказчик уже зарегистрирован. Добавьте его в компанию по email")
+        registered = bool(customer and not customer["must_change_credentials"])
         if not customer:
             customer = create_user(conn, data.name, email, secrets.token_urlsafe(32), "customer")
             conn.execute("UPDATE users SET must_change_credentials=1,temporary_credentials_expires_at=? WHERE id=?",
                          ((datetime.now(timezone.utc)+timedelta(hours=72)).isoformat(), customer["id"]))
+        if data.company_name:
+            if customer_organization(conn, customer["id"]):
+                raise HTTPException(409, "Заказчик уже состоит в компании")
+            created_org = conn.execute("INSERT INTO organizations(name,created_at) VALUES(?,?)", (data.company_name.strip(), now()))
+            data.organization_id = created_org.lastrowid
+            data.role = "owner"
         existing_org = customer_organization(conn, customer["id"])
+        if existing_org and data.organization_id is None:
+            data.organization_id = existing_org["id"]
         if existing_org and existing_org["id"] != data.organization_id:
             raise HTTPException(409, "Заказчик уже состоит в другой компании")
         if data.organization_id and not existing_org:
             conn.execute("INSERT INTO organization_members(organization_id,user_id,role,joined_at) VALUES(?,?,?,?)",
                          (data.organization_id, customer["id"], data.role, now()))
+        if registered:
+            return {"customer_id": customer["id"], "email": email, "organization_id": data.organization_id, "registered": True}
         conn.execute("UPDATE users SET temporary_credentials_expires_at=? WHERE id=?", ((datetime.now(timezone.utc)+timedelta(hours=72)).isoformat(), customer["id"]))
         access = issue_account_link(conn, customer, "invite")
         response.headers["Cache-Control"] = "no-store"
-        return {"customer_id": customer["id"], "email": email, **access}
+        return {"customer_id": customer["id"], "email": email, "organization_id": data.organization_id, "registered": False, **access}
 
 
 @app.post("/api/account/reset-request")
@@ -2982,9 +3084,9 @@ def create_organization(data: OrganizationCreate, desk_session: str | None = Coo
 def add_organization_member(organization_id: int, data: OrganizationMemberCreate,
                             desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
-    require_dispatcher(user)
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        require_company_manager(conn, user, organization_id)
         if not conn.execute("SELECT 1 FROM organizations WHERE id=?", (organization_id,)).fetchone():
             raise HTTPException(404, "Компания не найдена")
         member = conn.execute("SELECT id FROM users WHERE email=? AND role='customer' AND active=1", (clean_email(data.email),)).fetchone()
@@ -3011,9 +3113,9 @@ def organization_member_to_edit(conn, organization_id, member_id):
 def update_organization_member(organization_id: int, member_id: int, data: OrganizationMemberRole,
                                desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
-    require_dispatcher(user)
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        require_company_manager(conn, user, organization_id)
         current = conn.execute("SELECT * FROM organization_members WHERE organization_id=? AND user_id=?",
                                (organization_id, member_id)).fetchone()
         if not current:
@@ -3029,9 +3131,9 @@ def update_organization_member(organization_id: int, member_id: int, data: Organ
 def remove_organization_member(organization_id: int, member_id: int,
                                desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
-    require_dispatcher(user)
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        require_company_manager(conn, user, organization_id)
         organization_member_to_edit(conn, organization_id, member_id)
         conn.execute("DELETE FROM organization_members WHERE organization_id=? AND user_id=?",
                      (organization_id, member_id))
@@ -4299,7 +4401,7 @@ def get_billing_overview(desk_session: str | None = Cookie(default=None)):
             }
         else:
             require_staff(user)
-            paid_sum = conn.execute("SELECT COALESCE(SUM(total_rub), 0) FROM invoices WHERE status='paid'").fetchone()[0]
+            paid_sum = conn.execute("SELECT COALESCE(SUM(total_rub), 0) FROM invoices WHERE status='paid' AND doc_type='invoice'").fetchone()[0]
 
             active_tickets = conn.execute("SELECT id FROM tickets WHERE status IN ('new','working','waiting')").fetchall()
             total_active_mins = sum(approved_minutes(conn, t["id"]) for t in active_tickets)
@@ -4726,22 +4828,26 @@ def print_invoice_document(invoice_id: int, desk_session: str | None = Cookie(de
 @app.patch("/api/billing/invoices/{invoice_id}/status")
 def update_invoice_status(invoice_id: int, data: BillingStatusUpdate, desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
+    require_dispatcher(user)
     with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT * FROM invoices WHERE id=?", (invoice_id,)).fetchone()
         if not row:
             raise HTTPException(404, "Документ не найден")
 
-        if user["role"] == "customer":
-            if data.status != "paid" or row["status"] != "issued":
-                raise HTTPException(403, "Клиент может только подтвердить оплату выставленного счета")
-            if row["organization_id"]:
-                org = customer_organization(conn, user["id"])
-                if not org or org["id"] != row["organization_id"]:
-                    raise HTTPException(403, "Нет доступа")
-            elif row["customer_id"] != user["id"]:
-                raise HTTPException(403, "Нет доступа")
-        else:
-            require_dispatcher(user)
+        if data.status == 'paid' and row['doc_type'] != 'invoice':
+            raise HTTPException(422, "Акт нужно подписать, а не отмечать оплаченным")
+        if data.status == 'signed':
+            if row['doc_type'] != 'act' or row['status'] != 'issued':
+                raise HTTPException(409, "Подписать можно только действующий акт")
+            conn.execute("UPDATE invoices SET signed_at=COALESCE(signed_at,?),signed_by_id=COALESCE(signed_by_id,?) WHERE id=?", (now(),user['id'],invoice_id))
+            return {"ok": True, "status": "issued", "signature_status": "signed"}
+        if row['status'] == data.status:
+            return {"ok": True, "status": row['status']}
+        if row['status'] == 'cancelled' or data.status == 'issued':
+            raise HTTPException(409, "Завершённый документ нельзя выставить повторно. Создайте новый")
+        if row['doc_type'] == 'invoice' and row['status'] == 'paid':
+            raise HTTPException(409, "Оплаченный счёт нельзя аннулировать без возврата платежа")
 
         old_status = row["status"]
         new_status = data.status
