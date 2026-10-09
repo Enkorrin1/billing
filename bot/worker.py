@@ -91,7 +91,7 @@ def deliver_one(engine, clients):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["run", "register", "status", "retry-failed"])
+    parser.add_argument("command", choices=["run", "register", "check", "status", "retry-failed"])
     parser.add_argument("--provider", choices=["telegram", "max"])
     args = parser.parse_args()
     import app
@@ -115,7 +115,11 @@ def main():
         for p in providers:
             validate_config(p)
             clients[p] = ProviderClient(p)
-        if args.command == "register":
+        if args.command == "check":
+            for p, client in clients.items():
+                client.check_connection()
+                print(f"{p}: bot API and webhook subscription OK; run the worker and verify a real conversation")
+        elif args.command == "register":
             for p, client in clients.items():
                 client.register_webhook()
                 print(f"{p}: webhook registered")

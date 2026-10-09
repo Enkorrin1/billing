@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "demo",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": ["-NoProfile", "-Command", "$env:APP_DB=\"$PWD\\data\\demo.db\"; $env:APP_SECURE_COOKIE='0'; python -m uvicorn app:app --host 127.0.0.1 --port 8766"],
+      "port": 8766
+    },
+    {
+      "name": "care",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": ["-NoProfile", "-Command", "$env:APP_DB=\"$PWD\\output\\tmp\\care.db\"; $env:APP_SECURE_COOKIE='0'; $env:EMAIL_BACKEND='file'; $env:EMAIL_FILE_DIR=\"$PWD\\output\\tmp\\mail\"; $env:EMAIL_REPLY_TO='support@demo.test'; $env:EMAIL_INBOUND_SECRET='demo-inbound'; $env:APP_PUBLIC_URL='http://127.0.0.1:8767'; $env:TMP=\"$PWD\\output\\tmp\"; python -m uvicorn app:app --host 127.0.0.1 --port 8767"],
+      "port": 8767
+    },
+    {
+      "name": "verify",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": ["-NoProfile", "-Command", "$env:APP_DB=\"$PWD\\output\\tmp\\verify.db\"; $env:APP_SECURE_COOKIE='0'; python -m uvicorn app:app --host 127.0.0.1 --port 8768"],
+      "port": 8768
+    }
+  ]
+}

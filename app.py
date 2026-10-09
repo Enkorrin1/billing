@@ -106,6 +106,12 @@ def init_db():
             token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id),
             expires_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS account_tokens (
+            token_hash TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL CHECK(kind IN ('invite','reset')),
+            expires_at TEXT NOT NULL, created_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS staff_profiles (
             user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
             job_title TEXT NOT NULL DEFAULT '', bio TEXT NOT NULL DEFAULT '',
@@ -225,6 +231,13 @@ def init_db():
         user_columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
         if "is_manager" not in user_columns:
             conn.execute("ALTER TABLE users ADD COLUMN is_manager INTEGER NOT NULL DEFAULT 0")
+        for name, declaration in {
+            "team_role": "TEXT CHECK(team_role IN ('programmer','integrator','devops'))",
+            "must_change_credentials": "INTEGER NOT NULL DEFAULT 0",
+            "temporary_credentials_expires_at": "TEXT",
+        }.items():
+            if name not in user_columns:
+                conn.execute(f"ALTER TABLE users ADD COLUMN {name} {declaration}")
         estimate_columns = {row["name"] for row in conn.execute("PRAGMA table_info(estimates)")}
         if "effort_minutes" not in estimate_columns:
             conn.execute("ALTER TABLE estimates ADD COLUMN effort_minutes INTEGER")
@@ -554,10 +567,12 @@ def token_hash(token):
 def public_user(row):
     result = {key: row[key] for key in ("id", "name", "email", "role")}
     result["is_manager"] = bool(row["is_manager"])
+    result["team_role"] = row["team_role"]
+    result["must_change_credentials"] = bool(row["must_change_credentials"])
     return result
 
 
-def current_user(token):
+def current_user(token, allow_temporary=False):
     if not token:
         raise HTTPException(401, "Требуется вход")
     with db() as conn:
@@ -565,6 +580,11 @@ def current_user(token):
             WHERE s.token_hash=? AND s.expires_at>? AND u.active=1""", (token_hash(token), now())).fetchone()
     if not row:
         raise HTTPException(401, "Сессия завершена")
+    if row["must_change_credentials"]:
+        if row["temporary_credentials_expires_at"] <= now():
+            raise HTTPException(401, "Временный доступ истёк. Обратитесь к менеджеру")
+        if not allow_temporary:
+            raise HTTPException(403, "Сначала замените временные логин и пароль")
     return row
 
 
@@ -630,8 +650,10 @@ def customer_can_decline(conn, ticket, user):
 
 
 def customer_can_decide(conn, ticket, user):
-    if ticket["customer_id"] == user["id"] and customer_can_write_ticket(conn, ticket, user):
-        return True
+    if user["role"] != "customer":
+        return False
+    if ticket["visibility"] != "organization" or ticket["organization_id"] is None:
+        return ticket["customer_id"] == user["id"]
     return bool(ticket["visibility"] == "organization" and ticket["organization_id"] is not None and
                 conn.execute("""SELECT 1 FROM organization_members WHERE organization_id=?
                     AND user_id=? AND role='owner'""", (ticket["organization_id"], user["id"])).fetchone())
@@ -727,11 +749,36 @@ def customer_recipients(conn, ticket):
     return recipients
 
 
+def customer_decision_recipients(conn, ticket):
+    if ticket["visibility"] == "organization" and ticket["organization_id"] is not None:
+        return {row["id"] for row in available_owners(conn, ticket["organization_id"])}
+    return {ticket["customer_id"]}
+
+
 def ticket_dict(row):
     return dict(row)
 
 
-def customer_next_step(ticket, estimate):
+def available_owners(conn, organization_id, exclude_id=0):
+    return conn.execute("""SELECT u.id,u.name FROM organization_members m JOIN users u ON u.id=m.user_id
+        WHERE m.organization_id=? AND m.role='owner' AND u.active=1 AND u.id!=?
+        AND (u.must_change_credentials=0 OR u.temporary_credentials_expires_at>?)
+        AND NOT EXISTS (SELECT 1 FROM account_tokens a WHERE a.user_id=u.id AND a.kind='invite')""",
+        (organization_id, exclude_id, now())).fetchall()
+
+
+def customer_next_step(ticket, estimate, conn=None, user=None):
+    if conn is not None and user is not None:
+        can_decide = customer_can_decide(conn, ticket, user)
+        decision_pending = ticket["status"] == "done" or (isinstance(ticket, dict) and ticket.get("pending_hour_request")) or (estimate and estimate["state"] == "pending")
+        if decision_pending and ticket["visibility"] == "organization":
+            owners = available_owners(conn, ticket["organization_id"])
+            if not owners:
+                return "Нет доступного владельца — обратитесь к менеджеру"
+            if not can_decide:
+                return "Ожидаем решения владельца: " + ", ".join(x["name"] for x in owners)
+        if ticket["status"] == "waiting" and not customer_can_write_ticket(conn, ticket, user):
+            return "Ожидаем ответа участника компании"
     if ticket["status"] == "closed":
         return "Заявка закрыта"
     if ticket["status"] == "done":
@@ -756,6 +803,10 @@ def customer_next_step(ticket, estimate):
 
 def auto_approve_estimate(conn, ticket_id, customer_id, estimate_id, effort_minutes):
     """Оценку в пределах лимита заказчика одобряем сразу — его не дёргаем по мелким задачам."""
+    ticket = conn.execute("SELECT * FROM tickets WHERE id=?", (ticket_id,)).fetchone()
+    customer = conn.execute("SELECT * FROM users WHERE id=?", (customer_id,)).fetchone()
+    if not customer or not customer_can_decide(conn, ticket, customer):
+        return False
     row = conn.execute("SELECT auto_approve_minutes FROM customer_profiles WHERE user_id=?", (customer_id,)).fetchone()
     if not row or not row["auto_approve_minutes"] or effort_minutes > row["auto_approve_minutes"]:
         return False
@@ -815,6 +866,36 @@ class Register(Credentials):
 
 class StaffCreate(Register):
     staff_role: Literal["employee", "manager"] = "employee"
+    team_role: Literal["programmer", "integrator", "devops"] | None = None
+
+
+class StaffTeamRoleUpdate(BaseModel):
+    team_role: Literal["programmer", "integrator", "devops"] | None
+
+
+class StaffAvailability(BaseModel):
+    active: bool
+    replacement_id: int | None = None
+
+
+class AccountInvitation(BaseModel):
+    name: str = Field(min_length=2, max_length=100)
+    email: str = Field(min_length=3, max_length=254)
+    organization_id: int | None = None
+    role: Literal["owner", "member", "viewer"] = "member"
+
+
+class AccountEmail(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+
+
+class AccountTokenPassword(BaseModel):
+    token: str = Field(min_length=20, max_length=128)
+    password: str = Field(min_length=8, max_length=128)
+
+
+class ReopenTicket(BaseModel):
+    reason: str = Field(min_length=3, max_length=2000)
 
 
 class ProfileUpdate(BaseModel):
@@ -945,6 +1026,16 @@ class HourRequestCreate(BaseModel):
 
 class HourRequestDecision(BaseModel):
     action: Literal["approve", "reject"]
+
+
+class CompanyOwnerCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=100)
+    organization_id: int | None = Field(default=None, gt=0)
+    company_name: str = Field(default="", max_length=150)
+
+
+class PermanentCredentials(Credentials):
+    current_password: str = Field(min_length=8, max_length=128)
 
 
 class OrganizationCreate(BaseModel):
@@ -1204,7 +1295,7 @@ NO_CACHE = {"Cache-Control": "no-cache"}
 
 @app.get("/")
 def home(request: Request, desk_session: str | None = Cookie(default=None)):
-    wants_cabinet = "login" in request.query_params or "register" in request.query_params
+    wants_cabinet = any(key in request.query_params for key in ("login", "register", "invite", "reset"))
     if not wants_cabinet:
         try:
             current_user(desk_session)
@@ -1373,6 +1464,9 @@ def login(data: Credentials, response: Response):
         user = conn.execute("SELECT * FROM users WHERE email=?", (clean_email(data.email),)).fetchone()
         if not user or not user["active"] or not verify_password(data.password, user["password_hash"]):
             raise HTTPException(401, "Неверный email или пароль")
+        if user["must_change_credentials"] and user["temporary_credentials_expires_at"] <= now():
+            raise HTTPException(401, "Временный доступ истёк. Обратитесь к менеджеру")
+        response.headers["Cache-Control"] = "no-store"
         return issue_session(conn, user, response)
 
 
@@ -1387,14 +1481,14 @@ def logout(response: Response, desk_session: str | None = Cookie(default=None)):
 
 @app.get("/api/me")
 def me(desk_session: str | None = Cookie(default=None)):
-    return public_user(current_user(desk_session))
+    return public_user(current_user(desk_session, allow_temporary=True))
 
 
 def staff_profile(conn, user):
     row = conn.execute("SELECT job_title,bio,avatar_updated_at,updated_at FROM staff_profiles WHERE user_id=?", (user["id"],)).fetchone()
     avatar_url = f"/api/staff/{user['id']}/avatar?v={row['avatar_updated_at']}" if row and row["avatar_updated_at"] else None
     return {"id": user["id"], "name": user["name"], "role": user["role"],
-            "is_manager": bool(user["is_manager"]), "job_title": row["job_title"] if row else "",
+            "is_manager": bool(user["is_manager"]), "team_role": conn.execute("SELECT team_role FROM users WHERE id=?", (user["id"],)).fetchone()["team_role"], "job_title": row["job_title"] if row else "",
             "bio": row["bio"] if row else "", "avatar_url": avatar_url}
 
 
@@ -1889,12 +1983,14 @@ def add_chat_message_service(conn, user, chat_id: int, data: MessageCreate):
 
 
 @app.get("/api/staff")
-def staff(desk_session: str | None = Cookie(default=None)):
+def staff(desk_session: str | None = Cookie(default=None), include_inactive: bool = False):
     user = current_user(desk_session)
     require_staff(user)
+    if include_inactive:
+        require_admin(user)
     with db() as conn:
         if user["role"] == "admin" or user["is_manager"]:
-            rows = conn.execute("SELECT id,name,email,role,is_manager FROM users WHERE role IN ('employee','admin') AND active=1 ORDER BY name").fetchall()
+            rows = conn.execute("SELECT id,name,email,role,is_manager,active FROM users WHERE role IN ('employee','admin') AND (active=1 OR ?) ORDER BY name", (include_inactive,)).fetchall()
         else:
             rows = conn.execute("SELECT id,name,email,role,is_manager FROM users WHERE id=?", (user["id"],)).fetchall()
         return [{**dict(row), **staff_profile(conn, row)} for row in rows]
@@ -1906,10 +2002,59 @@ def add_staff(data: StaffCreate, desk_session: str | None = Cookie(default=None)
     require_admin(user)
     with db() as conn:
         created = create_user(conn, data.name, data.email, data.password, "employee")
+        conn.execute("UPDATE users SET team_role=? WHERE id=?", (data.team_role, created["id"]))
         if data.staff_role == "manager":
             conn.execute("UPDATE users SET is_manager=1 WHERE id=?", (created["id"],))
-            created = conn.execute("SELECT * FROM users WHERE id=?", (created["id"],)).fetchone()
-        return public_user(created)
+        created = conn.execute("SELECT * FROM users WHERE id=?", (created["id"],)).fetchone()
+    return public_user(created)
+
+
+@app.patch("/api/staff/{staff_id}/team-role")
+def update_staff_team_role(staff_id: int, data: StaffTeamRoleUpdate, desk_session: str | None = Cookie(default=None)):
+    require_admin(current_user(desk_session))
+    with db() as conn:
+        person = conn.execute("SELECT * FROM users WHERE id=? AND role IN ('employee','admin')", (staff_id,)).fetchone()
+        if not person:
+            raise HTTPException(404, "Сотрудник не найден")
+        conn.execute("UPDATE users SET team_role=? WHERE id=?", (data.team_role, staff_id))
+        person = conn.execute("SELECT * FROM users WHERE id=?", (staff_id,)).fetchone()
+        return {**public_user(person), **staff_profile(conn, person)}
+
+
+@app.patch("/api/staff/{staff_id}/availability")
+def change_staff_availability(staff_id: int, data: StaffAvailability, desk_session: str | None = Cookie(default=None)):
+    user = current_user(desk_session)
+    require_admin(user)
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        target = conn.execute("SELECT * FROM users WHERE id=? AND role IN ('employee','admin')", (staff_id,)).fetchone()
+        if not target:
+            raise HTTPException(404, "Сотрудник не найден")
+        if not data.active and staff_id == user["id"]:
+            raise HTTPException(409, "Нельзя отключить собственный доступ")
+        if data.replacement_id is not None and (data.replacement_id == staff_id or not conn.execute(
+            "SELECT 1 FROM users WHERE id=? AND role IN ('employee','admin') AND active=1", (data.replacement_id,)).fetchone()):
+            raise HTTPException(422, "Выберите другого активного сотрудника")
+        moved = 0
+        moved_chats = 0
+        if not data.active:
+            tickets = conn.execute("SELECT id FROM tickets WHERE assignee_id=? AND status!='closed'", (staff_id,)).fetchall()
+            for ticket in tickets:
+                conn.execute("UPDATE tickets SET assignee_id=?,updated_at=? WHERE id=?", (data.replacement_id, now(), ticket["id"]))
+                conn.execute("INSERT INTO ticket_events(ticket_id,actor_id,kind,old_value,new_value,created_at) VALUES(?,?,?,?,?,?)",
+                             (ticket["id"], user["id"], "assignment", str(staff_id), str(data.replacement_id or ""), now()))
+                for recipient in ({data.replacement_id} if data.replacement_id else dispatcher_ids(conn)) - {staff_id}:
+                    notify(conn, recipient, ticket["id"], "assignment", f"Заявка №{ticket['id']} передана после отключения сотрудника")
+            moved = len(tickets)
+            chats = conn.execute("SELECT id FROM chats WHERE assignee_id=?", (staff_id,)).fetchall()
+            conn.execute("UPDATE chats SET assignee_id=?,updated_at=? WHERE assignee_id=?", (data.replacement_id, now(), staff_id))
+            for chat in chats:
+                for recipient in ({data.replacement_id} if data.replacement_id else dispatcher_ids(conn)) - {staff_id}:
+                    notify_chat(conn, recipient, chat["id"], "assignment", "Общий чат передан после отключения сотрудника")
+            moved_chats = len(chats)
+            conn.execute("DELETE FROM sessions WHERE user_id=?", (staff_id,))
+        conn.execute("UPDATE users SET active=? WHERE id=?", (data.active, staff_id))
+        return {"id": staff_id, "active": data.active, "transferred_tickets": moved, "transferred_chats": moved_chats}
 
 
 @app.get("/api/customers")
@@ -1917,13 +2062,17 @@ def customers(desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
     require_staff(user)
     with db() as conn:
+        select = """SELECT id,name,email,
+            (NOT EXISTS (SELECT 1 FROM organization_members m WHERE m.user_id=users.id)
+             AND (must_change_credentials=0 OR temporary_credentials_expires_at>?)
+             AND NOT EXISTS (SELECT 1 FROM account_tokens a WHERE a.user_id=users.id AND a.kind='invite')) AS can_own_company
+             FROM users WHERE role='customer' AND active=1"""
         if user["role"] == "admin" or user["is_manager"]:
-            rows = conn.execute("SELECT id,name,email FROM users WHERE role='customer' AND active=1 ORDER BY name,email").fetchall()
+            rows = conn.execute(select + " ORDER BY name,email", (now(),)).fetchall()
         else:
-            rows = conn.execute("""SELECT id,name,email FROM users WHERE role='customer' AND active=1
-                AND (id IN (SELECT customer_id FROM tickets WHERE assignee_id=?)
+            rows = conn.execute(select + """ AND (id IN (SELECT customer_id FROM tickets WHERE assignee_id=?)
                   OR id IN (SELECT customer_id FROM chats WHERE assignee_id=?)) ORDER BY name,email""",
-                (user["id"], user["id"])).fetchall()
+                (now(), user["id"], user["id"])).fetchall()
     return [dict(row) for row in rows]
 
 
@@ -1953,8 +2102,11 @@ def tickets(desk_session: str | None = Cookie(default=None)):
             item["approved_minutes"] = approved_minutes(conn, row["id"])
             item["actual_minutes"] = actual_minutes(conn, row["id"])
             item["pending_hour_request"] = bool(conn.execute("SELECT 1 FROM hour_requests WHERE ticket_id=? AND state='pending'", (row["id"],)).fetchone())
+            item["has_available_owner"] = bool(available_owners(conn, row["organization_id"])) if row["organization_id"] else None
             if user["role"] == "customer":
-                item["next_step"] = customer_next_step(item, estimate)
+                item["next_step"] = customer_next_step(item, estimate, conn, user)
+                item["can_decide"] = customer_can_decide(conn, row, user)
+                item["can_write"] = customer_can_write_ticket(conn, row, user)
             result.append(item)
     return result
 
@@ -2170,9 +2322,11 @@ def get_ticket(ticket_id: int, desk_session: str | None = Cookie(default=None)):
             if act_row:
                 act_info = dict(act_row)
         item["act_invoice"] = act_info
+        item["has_available_owner"] = bool(available_owners(conn, ticket["organization_id"])) if ticket["organization_id"] else None
 
         if user["role"] == "customer":
-            item["next_step"] = customer_next_step(item, estimates[0] if estimates else None)
+            item["pending_hour_request"] = bool(conn.execute("SELECT 1 FROM hour_requests WHERE ticket_id=? AND state='pending'", (ticket_id,)).fetchone())
+            item["next_step"] = customer_next_step(item, estimates[0] if estimates else None, conn, user)
         time_rows = conn.execute("""SELECT w.*,u.name AS author_name FROM time_entries w JOIN users u ON u.id=w.author_id
             WHERE w.ticket_id=? ORDER BY w.id DESC""", (ticket_id,)).fetchall()
         hour_rows = conn.execute("""SELECT h.*,u.name AS author_name FROM hour_requests h JOIN users u ON u.id=h.author_id
@@ -2185,9 +2339,11 @@ def get_ticket(ticket_id: int, desk_session: str | None = Cookie(default=None)):
             item["service_minutes"] = sum(row["minutes"] for row in service_rows)
             item["service_cost_rub"] = round(item["service_minutes"] / 60.0 * rate_rub)
             item["total_cost_rub"] = item["cost_rub"] + item["service_cost_rub"]
-        item["declined"] = any(e["kind"] == "decline" for e in events)
+        latest_reopen = max((e["id"] for e in events if e["kind"] == "reopen"), default=0)
+        item["declined"] = any(e["kind"] == "decline" and e["id"] > latest_reopen for e in events)
         if user["role"] == "customer":
             item["can_decide"] = customer_can_decide(conn, ticket, user)
+            item["can_write"] = customer_can_write_ticket(conn, ticket, user)
             item["can_decline"] = customer_can_decline(conn, ticket, user)
         reads = read_state(conn, "ticket", ticket_id)
     return {"ticket": item, "messages": [message_dict(x) for x in messages],
@@ -2247,7 +2403,7 @@ def decide_estimate_service(conn, user, ticket_id: int, data: EstimateDecision):
         raise HTTPException(422, "Укажите желаемые трудозатраты или комментарий")
     ticket = ticket_for(conn, ticket_id, user)
     if not customer_can_decide(conn, ticket, user):
-        raise HTTPException(403, "Согласовать часы может автор заявки или владелец компании")
+        raise HTTPException(403, "Личную заявку согласует автор, общую — владелец компании")
     if ticket["status"] == "closed":
         raise HTTPException(409, "Заявка закрыта")
     estimate = latest_estimate(conn, ticket_id)
@@ -2391,6 +2547,10 @@ def change_status(ticket_id: int, data: StatusChange, desk_session: str | None =
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         ticket = ticket_for(conn, ticket_id, user)
+        if ticket["status"] == "closed" and data.status != "closed":
+            raise HTTPException(409, "Закрытую заявку возвращает в работу менеджер с указанием причины")
+        if ticket["status"] == data.status:
+            return ticket_dict(ticket)
         dispatcher = user["role"] == "admin" or bool(user["is_manager"])
         if user["role"] != "admin" and ticket["assignee_id"] != user["id"] and not (dispatcher and data.status == "closed"):
             raise HTTPException(403, "Статус меняет ответственный")
@@ -2411,7 +2571,7 @@ def change_status(ticket_id: int, data: StatusChange, desk_session: str | None =
                      (ticket_id, user["id"], "status", ticket["status"], data.status, stamp))
         if ticket["status"] != data.status:
             if data.status == "done":
-                for recipient in customer_recipients(conn, ticket):
+                for recipient in customer_decision_recipients(conn, ticket):
                     notify(conn, recipient, ticket_id, "review", f"Работа по заявке №{ticket_id} готова — проверьте и примите результат")
             elif ticket["customer_id"] != user["id"]:
                 notify(conn, ticket["customer_id"], ticket_id, "status", f"Статус заявки №{ticket_id} изменён")
@@ -2432,7 +2592,7 @@ def accept_work_service(conn, user, ticket_id: int, data: AcceptanceDecision):
         raise HTTPException(403, "Работу принимает заказчик")
     ticket = ticket_for(conn, ticket_id, user)
     if not customer_can_decide(conn, ticket, user):
-        raise HTTPException(403, "Принять работу может автор заявки или владелец компании")
+        raise HTTPException(403, "Личную работу принимает автор заявки, общую — владелец компании")
     if ticket["status"] != "done":
         raise HTTPException(409, "Работа уже принята или ещё не отправлена на проверку")
     comment = data.comment.strip()
@@ -2469,6 +2629,31 @@ def accept_work(ticket_id: int, data: AcceptanceDecision, desk_session: str | No
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         return accept_work_service(conn, user, ticket_id, data)
+
+
+@app.post("/api/tickets/{ticket_id}/reopen")
+def reopen_ticket(ticket_id: int, data: ReopenTicket, desk_session: str | None = Cookie(default=None)):
+    user = current_user(desk_session)
+    require_dispatcher(user)
+    if len(data.reason.strip()) < 3:
+        raise HTTPException(422, "Укажите причину возврата в работу")
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        ticket = ticket_for(conn, ticket_id, user)
+        if ticket["status"] != "closed":
+            raise HTTPException(409, "Заявка уже открыта")
+        if ticket["act_invoice_id"]:
+            raise HTTPException(409, "Работа включена в акт. Сначала согласуйте корректировку акта")
+        estimate = latest_estimate(conn, ticket_id)
+        status = "working" if estimate and estimate["state"] == "approved" else "new"
+        conn.execute("UPDATE tickets SET status=?,accepted_at=NULL,accepted_by_id=NULL,updated_at=? WHERE id=?", (status, now(), ticket_id))
+        if ticket["assignee_id"] and not conn.execute("SELECT 1 FROM users WHERE id=? AND active=1", (ticket["assignee_id"],)).fetchone():
+            conn.execute("UPDATE tickets SET assignee_id=NULL WHERE id=?", (ticket_id,))
+        conn.execute("INSERT INTO ticket_events(ticket_id,actor_id,kind,old_value,new_value,created_at) VALUES(?,?,?,?,?,?)",
+                     (ticket_id, user["id"], "reopen", "closed", data.reason.strip(), now()))
+        for recipient in customer_recipients(conn, ticket) | ({ticket["assignee_id"]} - {None}):
+            notify(conn, recipient, ticket_id, "status", f"Заявка №{ticket_id} возвращена в работу: {data.reason.strip()}")
+        return ticket_dict(ticket_for(conn, ticket_id, user))
 
 
 def decline_ticket_service(conn, user, ticket_id: int, data: TicketDecline):
@@ -2556,7 +2741,7 @@ def request_hours(ticket_id: int, data: HourRequestCreate, desk_session: str | N
         cursor = conn.execute("INSERT INTO hour_requests(ticket_id,author_id,minutes,reason,created_at,request_id) VALUES(?,?,?,?,?,?)",
                               (ticket_id, user["id"], data.minutes, data.reason.strip(), stamp, data.request_id))
         conn.execute("UPDATE tickets SET updated_at=? WHERE id=?", (stamp, ticket_id))
-        for recipient in customer_recipients(conn, ticket):
+        for recipient in customer_decision_recipients(conn, ticket):
             notify(conn, recipient, ticket_id, "extra_hours", f"Согласуйте дополнительные часы по заявке №{ticket_id}")
         return dict(conn.execute("SELECT * FROM hour_requests WHERE id=?", (cursor.lastrowid,)).fetchone())
 
@@ -2575,7 +2760,7 @@ def decide_hours_service(conn, user, ticket_id: int, request_id: int, data: Hour
         raise HTTPException(403, "Решение принимает заказчик")
     ticket = ticket_for(conn, ticket_id, user)
     if not customer_can_decide(conn, ticket, user):
-        raise HTTPException(403, "Согласовать часы может автор заявки или владелец компании")
+        raise HTTPException(403, "Личную заявку согласует автор, общую — владелец компании")
     row = conn.execute("SELECT * FROM hour_requests WHERE id=? AND ticket_id=?", (request_id, ticket_id)).fetchone()
     if not row or row["state"] != "pending":
         raise HTTPException(409, "Запрос уже рассмотрен или не найден")
@@ -2602,6 +2787,161 @@ def set_delivery_deadline(ticket_id: int, data: DeliveryDeadline, desk_session: 
         return {"delivery_due_at": due}
 
 
+@app.post("/api/company-owners", status_code=201)
+def create_company_owner(data: CompanyOwnerCreate, response: Response,
+                         desk_session: str | None = Cookie(default=None)):
+    user = current_user(desk_session)
+    require_dispatcher(user)
+    name = data.name.strip()
+    company_name = data.company_name.strip()
+    if len(name) < 2 or (data.organization_id is None and len(company_name) < 2):
+        raise HTTPException(422, "Укажите имя владельца и название компании")
+    login = f"owner-{secrets.token_hex(10)}@access.local"
+    password = secrets.token_urlsafe(18)
+    expires = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if data.organization_id is not None:
+            organization = conn.execute("SELECT * FROM organizations WHERE id=?", (data.organization_id,)).fetchone()
+            if not organization:
+                raise HTTPException(404, "Компания не найдена")
+            organization_id = organization["id"]
+            company_name = organization["name"]
+        else:
+            organization_id = conn.execute("INSERT INTO organizations(name,created_at) VALUES(?,?)",
+                                           (company_name, now())).lastrowid
+        owner = create_user(conn, name, login, password, "customer")
+        conn.execute("UPDATE users SET must_change_credentials=1,temporary_credentials_expires_at=? WHERE id=?",
+                     (expires, owner["id"]))
+        conn.execute("INSERT INTO organization_members(organization_id,user_id,role,joined_at) VALUES(?,?,?,?)",
+                     (organization_id, owner["id"], "owner", now()))
+    response.headers["Cache-Control"] = "no-store"
+    return {"id": owner["id"], "organization_id": organization_id, "company_name": company_name,
+            "login": login, "temporary_password": password, "expires_at": expires}
+
+
+@app.post("/api/account/credentials")
+def replace_temporary_credentials(data: PermanentCredentials, response: Response,
+                                  desk_session: str | None = Cookie(default=None)):
+    user = current_user(desk_session, allow_temporary=True)
+    email = clean_email(data.email)
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        user = conn.execute("SELECT * FROM users WHERE id=?", (user["id"],)).fetchone()
+        if not user["must_change_credentials"]:
+            raise HTTPException(409, "Временные данные уже заменены")
+        if user["temporary_credentials_expires_at"] <= now():
+            raise HTTPException(401, "Временный доступ истёк")
+        if not verify_password(data.current_password, user["password_hash"]):
+            raise HTTPException(403, "Неверный временный пароль")
+        if email == user["email"] or email.endswith("@access.local"):
+            raise HTTPException(422, "Укажите свой постоянный email")
+        if verify_password(data.password, user["password_hash"]):
+            raise HTTPException(422, "Новый пароль должен отличаться от временного")
+        try:
+            conn.execute("UPDATE users SET email=?,password_hash=?,must_change_credentials=0,temporary_credentials_expires_at=NULL WHERE id=?",
+                         (email, password_hash(data.password), user["id"]))
+        except sqlite3.IntegrityError:
+            raise HTTPException(409, "Email уже используется")
+        conn.execute("DELETE FROM sessions WHERE user_id=?", (user["id"],))
+        user = conn.execute("SELECT * FROM users WHERE id=?", (user["id"],)).fetchone()
+        response.headers["Cache-Control"] = "no-store"
+        return issue_session(conn, user, response)
+
+
+def issue_account_link(conn, user, kind):
+    token = secrets.token_urlsafe(32)
+    expires = (datetime.now(timezone.utc) + timedelta(hours=1 if kind == "reset" else 72)).isoformat()
+    conn.execute("DELETE FROM account_tokens WHERE user_id=? AND kind=?", (user["id"], kind))
+    conn.execute("INSERT INTO account_tokens VALUES(?,?,?,?,?)", (token_hash(token), user["id"], kind, expires, now()))
+    link = f"{public_base()}/?{kind}={token}"
+    subject = "Восстановление доступа" if kind == "reset" else "Приглашение в кабинет заказчика"
+    body = f"{subject}. Откройте ссылку и задайте пароль: {link}\nСсылка действует до {expires}. Если вы не запрашивали доступ, проигнорируйте письмо."
+    queue_email(conn, user["id"], user["email"], kind, subject, body,
+                f'<p>{html.escape(subject)}</p><p><a href="{html.escape(link, quote=True)}">Открыть кабинет и задать пароль</a></p><p>Ссылка действует до {html.escape(expires)}.</p><p>Если вы не запрашивали доступ, проигнорируйте письмо.</p>')
+    return {"url": link, "expires_at": expires}
+
+
+@app.post("/api/customer-invitations", status_code=201)
+def invite_customer(data: AccountInvitation, response: Response, desk_session: str | None = Cookie(default=None)):
+    manager = current_user(desk_session)
+    require_dispatcher(manager)
+    email = clean_email(data.email)
+    if len(data.name.strip()) < 2 or email.endswith("@access.local"):
+        raise HTTPException(422, "Укажите имя и постоянный email заказчика")
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if data.organization_id and not conn.execute("SELECT 1 FROM organizations WHERE id=?", (data.organization_id,)).fetchone():
+            raise HTTPException(404, "Компания не найдена")
+        customer = conn.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
+        if customer and (customer["role"] != "customer" or not customer["active"]):
+            raise HTTPException(409, "Этот email нельзя использовать для приглашения заказчика")
+        if customer and not customer["must_change_credentials"]:
+            raise HTTPException(409, "Заказчик уже зарегистрирован. Добавьте его в компанию по email")
+        if not customer:
+            customer = create_user(conn, data.name, email, secrets.token_urlsafe(32), "customer")
+            conn.execute("UPDATE users SET must_change_credentials=1,temporary_credentials_expires_at=? WHERE id=?",
+                         ((datetime.now(timezone.utc)+timedelta(hours=72)).isoformat(), customer["id"]))
+        existing_org = customer_organization(conn, customer["id"])
+        if existing_org and existing_org["id"] != data.organization_id:
+            raise HTTPException(409, "Заказчик уже состоит в другой компании")
+        if data.organization_id and not existing_org:
+            conn.execute("INSERT INTO organization_members(organization_id,user_id,role,joined_at) VALUES(?,?,?,?)",
+                         (data.organization_id, customer["id"], data.role, now()))
+        conn.execute("UPDATE users SET temporary_credentials_expires_at=? WHERE id=?", ((datetime.now(timezone.utc)+timedelta(hours=72)).isoformat(), customer["id"]))
+        access = issue_account_link(conn, customer, "invite")
+        response.headers["Cache-Control"] = "no-store"
+        return {"customer_id": customer["id"], "email": email, **access}
+
+
+@app.post("/api/account/reset-request")
+def request_password_reset(data: AccountEmail):
+    email = clean_email(data.email)
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        user = conn.execute("SELECT * FROM users WHERE email=? AND active=1 AND must_change_credentials=0", (email,)).fetchone()
+        if user and not email.endswith("@access.local"):
+            recent = conn.execute("SELECT 1 FROM account_tokens WHERE user_id=? AND kind='reset' AND created_at>?",
+                                  (user["id"], (datetime.now(timezone.utc)-timedelta(minutes=5)).isoformat())).fetchone()
+            if not recent:
+                issue_account_link(conn, user, "reset")
+    return {"message": "Если этот email зарегистрирован, мы отправили ссылку для восстановления доступа"}
+
+
+@app.post("/api/account/activate/{kind}")
+def activate_account(kind: Literal["invite", "reset"], data: AccountTokenPassword, response: Response):
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        token = conn.execute("SELECT * FROM account_tokens WHERE token_hash=? AND kind=? AND expires_at>?", (token_hash(data.token), kind, now())).fetchone()
+        if not token:
+            raise HTTPException(409, "Приглашение недействительно или истекло. Попросите менеджера прислать новое" if kind == "invite" else "Ссылка недействительна или истекла. Запросите новую ссылку через «Забыли пароль?»")
+        user = conn.execute("SELECT * FROM users WHERE id=? AND active=1", (token["user_id"],)).fetchone()
+        if not user or (kind == "invite" and not user["must_change_credentials"]):
+            raise HTTPException(409, "Приглашение уже использовано или доступ отключён")
+        conn.execute("UPDATE users SET password_hash=?,must_change_credentials=0,temporary_credentials_expires_at=NULL WHERE id=?", (password_hash(data.password), user["id"]))
+        conn.execute("DELETE FROM sessions WHERE user_id=?", (user["id"],))
+        conn.execute("DELETE FROM account_tokens WHERE user_id=?", (user["id"],))
+        response.headers["Cache-Control"] = "no-store"
+        return issue_session(conn, conn.execute("SELECT * FROM users WHERE id=?", (user["id"],)).fetchone(), response)
+
+
+@app.post("/api/company-owners/{owner_id}/temporary-access")
+def renew_temporary_owner_access(owner_id: int, response: Response, desk_session: str | None = Cookie(default=None)):
+    manager = current_user(desk_session)
+    require_dispatcher(manager)
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        owner = conn.execute("SELECT * FROM users WHERE id=? AND role='customer' AND active=1 AND must_change_credentials=1", (owner_id,)).fetchone()
+        if not owner or not owner["email"].endswith("@access.local"):
+            raise HTTPException(409, "Перевыпуск доступен только владельцу с временным логином")
+        password = secrets.token_urlsafe(18)
+        expires = (datetime.now(timezone.utc)+timedelta(days=7)).isoformat()
+        conn.execute("UPDATE users SET password_hash=?,temporary_credentials_expires_at=? WHERE id=?", (password_hash(password), expires, owner_id))
+        conn.execute("DELETE FROM sessions WHERE user_id=?", (owner_id,))
+        response.headers["Cache-Control"] = "no-store"
+        return {"id": owner_id, "login": owner["email"], "temporary_password": password, "expires_at": expires}
+
+
 @app.get("/api/organizations")
 def organizations(desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
@@ -2613,7 +2953,7 @@ def organizations(desk_session: str | None = Cookie(default=None)):
                 WHERE m.user_id=?""", (user["id"],)).fetchall()
         else:
             rows = []
-        return [{**dict(row), "members": [dict(x) for x in conn.execute("""SELECT m.user_id,m.role,u.name,u.email
+        return [{**dict(row), "has_available_owner": bool(available_owners(conn, row["id"])), "members": [dict(x) for x in conn.execute("""SELECT m.user_id,m.role,u.name,u.email,u.active,u.must_change_credentials,u.temporary_credentials_expires_at
             FROM organization_members m JOIN users u ON u.id=m.user_id WHERE m.organization_id=? ORDER BY m.role,u.name""", (row["id"],))]} for row in rows]
 
 
@@ -2621,9 +2961,13 @@ def organizations(desk_session: str | None = Cookie(default=None)):
 def create_organization(data: OrganizationCreate, desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
     require_dispatcher(user)
+    if len(data.name.strip()) < 2:
+        raise HTTPException(422, "Укажите название компании: минимум 2 символа")
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        owner = conn.execute("SELECT id FROM users WHERE id=? AND role='customer' AND active=1", (data.owner_id,)).fetchone()
+        owner = conn.execute("""SELECT id FROM users WHERE id=? AND role='customer' AND active=1
+            AND (must_change_credentials=0 OR temporary_credentials_expires_at>?)
+            AND NOT EXISTS (SELECT 1 FROM account_tokens a WHERE a.user_id=users.id AND a.kind='invite')""", (data.owner_id, now())).fetchone()
         if not owner:
             raise HTTPException(422, "Заказчик не найден")
         if customer_organization(conn, data.owner_id):
@@ -2658,10 +3002,8 @@ def organization_member_to_edit(conn, organization_id, member_id):
                        (organization_id, member_id)).fetchone()
     if not row:
         raise HTTPException(404, "Участник не найден")
-    if row["role"] == "owner" and conn.execute(
-        "SELECT COUNT(*) FROM organization_members WHERE organization_id=? AND role='owner'",
-        (organization_id,)).fetchone()[0] <= 1:
-        raise HTTPException(409, "У компании должен остаться владелец")
+    if row["role"] == "owner" and not available_owners(conn, organization_id, member_id):
+        raise HTTPException(409, "Сначала назначьте другого активного владельца с действующим доступом")
     return row
 
 

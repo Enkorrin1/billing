@@ -50,6 +50,45 @@ class Flows(unittest.TestCase):
         self.staff = self.admin.post("/api/staff", json={"name":"Worker","email":"w@example.com","password":"password123"}).json()
         self.assertEqual(self.employee.post("/api/login", json={"email":"w@example.com","password":"password123"}).status_code, 200)
 
+    def test_manual_company_owner_temporary_credentials(self):
+        payload = {"name": "Manual Owner", "company_name": "Manual Company"}
+        for client in (self.customer, self.employee, TestClient(service.app)):
+            self.assertIn(client.post("/api/company-owners", json=payload).status_code, (401, 403))
+        response = self.admin.post("/api/company-owners", json=payload)
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        access = response.json()
+        owner = TestClient(service.app)
+        login = {"email": access["login"], "password": access["temporary_password"]}
+        self.assertTrue(owner.post("/api/login", json=login).json()["must_change_credentials"])
+        self.assertTrue(owner.get("/api/me").json()["must_change_credentials"])
+        self.assertEqual(owner.get("/api/tickets").status_code, 403)
+        stale = TestClient(service.app)
+        stale.post("/api/login", json=login)
+        credentials = {"email": "permanent@example.com", "password": "NewPassword123!",
+                       "current_password": access["temporary_password"]}
+        self.assertEqual(owner.post("/api/account/credentials", json={**credentials, "email": "c@example.com"}).status_code, 409)
+        self.assertEqual(owner.post("/api/account/credentials", json={**credentials, "current_password": "wrongpassword"}).status_code, 403)
+        self.assertEqual(owner.post("/api/account/credentials", json={**credentials, "password": access["temporary_password"]}).status_code, 422)
+        self.assertEqual(owner.post("/api/account/credentials", json={**credentials, "email": access["login"]}).status_code, 422)
+        result = owner.post("/api/account/credentials", json=credentials)
+        self.assertEqual(result.status_code, 200)
+        self.assertFalse(result.json()["must_change_credentials"])
+        self.assertEqual(stale.get("/api/me").status_code, 401)
+        self.assertEqual(owner.get("/api/tickets").status_code, 200)
+        company = owner.get("/api/organizations").json()[0]
+        self.assertEqual(company["id"], access["organization_id"])
+        self.assertEqual(company["members"][0]["role"], "owner")
+        self.assertEqual(owner.post("/api/login", json=login).status_code, 401)
+        self.assertEqual(owner.post("/api/login", json={"email": credentials["email"], "password": credentials["password"]}).status_code, 200)
+        second = self.admin.post("/api/company-owners", json={"name": "Second Owner", "organization_id": company["id"]})
+        self.assertEqual(second.status_code, 201)
+        with service.db() as conn:
+            conn.execute("UPDATE users SET temporary_credentials_expires_at='2000-01-01' WHERE id=?", (second.json()["id"],))
+        self.assertEqual(TestClient(service.app).post("/api/login", json={"email":second.json()["login"], "password":second.json()["temporary_password"]}).status_code, 401)
+        self.assertEqual(self.admin.post("/api/company-owners", json={"name":"Missing Owner","organization_id":999999}).status_code, 404)
+        self.assertEqual(self.admin.post("/api/company-owners", json={"name":"  ","company_name":"  "}).status_code, 422)
+
     def test_staff_profile_avatar_and_customer_visibility(self):
         self.assertEqual(self.customer.get("/api/profile/me").status_code, 403)
         self.assertEqual(self.customer.patch("/api/profile/me", json={"name":"Client","job_title":"Wrong","bio":""}).status_code, 403)

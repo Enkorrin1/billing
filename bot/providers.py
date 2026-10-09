@@ -12,6 +12,7 @@ import httpx
 
 
 PROVIDERS = ("telegram", "max")
+MAX_UPDATE_TYPES = ("message_created", "message_callback", "bot_started", "bot_stopped")
 
 
 def config(provider):
@@ -134,7 +135,7 @@ class ProviderClient:
     def close(self):
         self.client.close()
 
-    def request(self, method, payload, params=None):
+    def request(self, method, payload=None, params=None, http_method="POST"):
         if not self.token:
             raise DeliveryError("not_configured", retry_after=300)
         if self.provider == "telegram":
@@ -142,7 +143,7 @@ class ProviderClient:
         else:
             url, headers = f"https://platform-api2.max.ru/{method}", {"Authorization": self.token}
         try:
-            response = self.client.post(url, json=payload, params=params, headers=headers)
+            response = self.client.request(http_method, url, json=payload, params=params, headers=headers)
             data = response.json()
         except (httpx.HTTPError, ValueError):
             raise DeliveryError("network_or_invalid_response") from None
@@ -159,6 +160,35 @@ class ProviderClient:
                 delay = 0
             raise DeliveryError(f"api_{status}", delay, permanent=status in (400, 403, 404), blocked=status == 403)
         return data
+
+    def check_connection(self):
+        """Read-only check; never print provider responses or webhook secrets."""
+        validate_config(self.provider)
+        expected = public_url() + "/webhooks/" + self.provider
+        if self.provider == "telegram":
+            profile = self.request("getMe", {})
+            if not (profile.get("result") or {}).get("is_bot"):
+                raise DeliveryError("invalid_bot_profile", permanent=True)
+            webhook = self.request("getWebhookInfo", {}).get("result") or {}
+            if webhook.get("url") != expected:
+                raise DeliveryError("webhook_not_registered", permanent=True)
+            if webhook.get("last_error_message"):
+                raise DeliveryError("webhook_delivery_error", permanent=True)
+        else:
+            profile = self.request("me", http_method="GET")
+            if not profile.get("is_bot"):
+                raise DeliveryError("invalid_bot_profile", permanent=True)
+            subscriptions = self.request("subscriptions", http_method="GET").get("subscriptions")
+            if not isinstance(subscriptions, list):
+                raise DeliveryError("invalid_response", permanent=True)
+            matching = [s for s in subscriptions if isinstance(s, dict) and s.get("url") == expected]
+            if not matching:
+                raise DeliveryError("webhook_not_registered", permanent=True)
+            if not any(s.get("update_types") in (None, []) or
+                       (isinstance(s.get("update_types"), list) and
+                        all(kind in s["update_types"] for kind in MAX_UPDATE_TYPES)) for s in matching):
+                raise DeliveryError("webhook_missing_event_types", permanent=True)
+        return True
 
     def deliver(self, chat_id, payload):
         if payload.get("ack"):
@@ -187,4 +217,4 @@ class ProviderClient:
             return self.request("setWebhook", {"url": url, "secret_token": c["secret"],
                                                "allowed_updates": ["message", "callback_query"]})
         return self.request("subscriptions", {"url": url, "secret": c["secret"],
-                                               "update_types": ["message_created", "message_callback", "bot_started", "bot_stopped"]})
+                                               "update_types": list(MAX_UPDATE_TYPES)})
