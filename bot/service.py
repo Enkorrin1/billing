@@ -171,7 +171,8 @@ class BotEngine:
     def chat(self, conn, link, user):
         chat = self.desk.create_chat_service(conn, user)
         self.set_state(conn, link, {"mode": "reply", "kind": "chat", "record": chat["id"]})
-        self.queue(conn, link, "Общий чат с компанией. Напишите сообщение. /cancel — отменить.",
+        audience = "Все участники вашей компании и команда поддержки видят переписку." if chat["organization_id"] else "Личный диалог с командой поддержки."
+        self.queue(conn, link, f"Общий чат: {chat['customer_name']}. {audience} Напишите сообщение. /cancel — отменить.",
                    [[self.button(conn, link, "История чата", "history", kind="chat", record=chat["id"])]], ("chat", chat["id"]))
 
     def check_context(self, conn, user, kind, record):
@@ -182,7 +183,7 @@ class BotEngine:
         raise HTTPException(422, "Неизвестный диалог")
 
     def history(self, conn, link, user, kind, record, before=None):
-        self.check_context(conn, user, kind, record)
+        record = self.check_context(conn, user, kind, record)["id"]
         table, key = ("messages", "ticket_id") if kind == "ticket" else ("chat_messages", "chat_id")
         rows = conn.execute(f"""SELECT m.*,u.name FROM {table} m JOIN users u ON u.id=m.author_id
             WHERE m.{key}=? AND m.id<? ORDER BY m.id DESC LIMIT 6""", (record, before or 9223372036854775807)).fetchall()

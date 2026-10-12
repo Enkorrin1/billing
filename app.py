@@ -28,6 +28,8 @@ from pydantic import BaseModel, Field
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 import mailer
+import team_management
+import company_chat
 from web_push import WebPush, b64url_decode
 
 
@@ -547,6 +549,8 @@ def init_db():
 
         from bot.storage import init_bot_schema
         init_bot_schema(conn)
+        team_management.init_schema(conn)
+        company_chat.init_schema(conn)
 
 
 init_db()
@@ -610,7 +614,17 @@ def require_dispatcher(user):
         raise HTTPException(403, "Недостаточно прав")
 
 
-def ticket_for(conn, ticket_id, user):
+def require_finance(user, write=False):
+    require_staff(user)
+    with db() as conn:
+        allowed = team_management.has_permission(conn,user,"billing_manage")
+        if not write:
+            allowed = allowed or team_management.has_permission(conn,user,"billing_read")
+        if not allowed:
+            raise HTTPException(403,"Нет разрешения на финансовые данные" if not write else "Нет разрешения на финансовые операции")
+
+
+def ticket_for(conn, ticket_id, user, write=True):
     row = conn.execute("""SELECT t.*, c.name AS customer_name, COALESCE(o.name,cp.company_name) AS customer_company, a.name AS assignee_name,
         creator.name AS created_by_name
         FROM tickets t JOIN users c ON c.id=t.customer_id
@@ -620,6 +634,8 @@ def ticket_for(conn, ticket_id, user):
         LEFT JOIN users creator ON creator.id=t.created_by_id WHERE t.id=?""", (ticket_id,)).fetchone()
     if not row or (user["role"] == "customer" and not customer_can_view_ticket(conn, row, user)) or (
         user["role"] == "employee" and not user["is_manager"] and row["assignee_id"] != user["id"]
+        and not (team_management.ticket_participation(conn, ticket_id, user["id"]) in (("executor",) if write else ("executor","reviewer","observer"))
+                 and (not write or team_management.has_permission(conn, user, "tasks")))
     ):
         raise HTTPException(404, "Заявка не найдена")
     return row
@@ -678,6 +694,15 @@ def approved_minutes(conn, ticket_id):
 def actual_minutes(conn, ticket_id):
     return conn.execute("SELECT COALESCE(SUM(minutes),0) FROM time_entries WHERE ticket_id=?",
                         (ticket_id,)).fetchone()[0]
+
+
+def contractor_time_summary(conn, ticket_id, work_minutes):
+    assessment = conn.execute("SELECT COALESCE(SUM(assessment_minutes),0) FROM estimates WHERE ticket_id=?",
+                              (ticket_id,)).fetchone()[0]
+    service = conn.execute("SELECT COALESCE(SUM(minutes),0) FROM service_entries WHERE is_billable=1 AND ticket_id=?",
+                           (ticket_id,)).fetchone()[0]
+    return {"assessment_minutes": assessment,
+            "contractor_total_minutes": work_minutes + assessment + service}
 
 
 SERVICE_KIND_NAMES = {"chat": "переписка", "call": "созвон", "meeting": "встреча", "other": "прочее"}
@@ -743,7 +768,7 @@ def client_condition(client_type, client_id, prefix=""):
 
 def unbilled_service_minutes(conn, client_type, client_id):
     cond, params = client_condition(client_type, client_id)
-    return conn.execute(f"SELECT COALESCE(SUM(minutes),0) FROM service_entries WHERE {cond} AND act_invoice_id IS NULL",
+    return conn.execute(f"SELECT COALESCE(SUM(minutes),0) FROM service_entries WHERE {cond} AND is_billable=1 AND act_invoice_id IS NULL",
                         params).fetchone()[0]
 
 
@@ -842,14 +867,29 @@ def notify(conn, user_id, ticket_id, kind, message):
 
 
 def chat_for(conn, chat_id, user):
-    row = conn.execute("""SELECT c.*,u.name AS customer_name,a.name AS assignee_name
-        FROM chats c JOIN users u ON u.id=c.customer_id
-        LEFT JOIN users a ON a.id=c.assignee_id WHERE c.id=?""", (chat_id,)).fetchone()
-    if not row or (user["role"] == "customer" and row["customer_id"] != user["id"]) or (
+    chat_id = company_chat.resolve(conn, chat_id)
+    row = conn.execute(company_chat.SELECT + " WHERE c.id=?", (chat_id,)).fetchone()
+    if row and row["organization_id"] is None:
+        org = customer_organization(conn, row["customer_id"])
+        if org:
+            chat_id = company_chat.sync_organization(conn, org["id"])
+            row = conn.execute(company_chat.SELECT + " WHERE c.id=?", (chat_id,)).fetchone()
+    if not row or (user["role"] == "customer" and not company_chat.can_access(conn, row, user)) or (
         user["role"] == "employee" and not user["is_manager"] and row["assignee_id"] != user["id"]
     ):
         raise HTTPException(404, "Чат не найден")
     return row
+
+
+def chat_recipients(conn, chat):
+    return company_chat.customers(conn, chat)
+
+
+def chat_message_recipients(conn, chat, user):
+    recipients = chat_recipients(conn, chat) - {user["id"]}
+    if user["role"] == "customer":
+        recipients |= {chat["assignee_id"]} if chat["assignee_id"] else dispatcher_ids(conn)
+    return recipients
 
 
 def notify_chat(conn, user_id, chat_id, kind, message):
@@ -874,6 +914,7 @@ class Register(Credentials):
 class StaffCreate(Register):
     staff_role: Literal["employee", "manager"] = "employee"
     team_role: Literal["programmer", "integrator", "devops"] | None = None
+    functions: list[str] = Field(default_factory=list, max_length=30)
 
 
 class StaffTeamRoleUpdate(BaseModel):
@@ -883,6 +924,7 @@ class StaffTeamRoleUpdate(BaseModel):
 class StaffAvailability(BaseModel):
     active: bool
     replacement_id: int | None = None
+    transfer_work: bool = False
 
 
 class AccountInvitation(BaseModel):
@@ -930,7 +972,7 @@ class TicketCreate(BaseModel):
     customer_id: int | None = None
     assignee_id: int | None = None
     visibility: Literal["private", "organization"] = "private"
-    service_type: Literal["development", "integration", "support", "consultation", "other"] = "other"
+    service_type: str = Field(default="other", max_length=87, pattern=r"^(development|new_development|integration|support|maintenance|consultation|other|custom:\S[^\r\n]{0,79})$")
     # Сотрудник может сразу приложить оценку: заказчику останется только согласовать её.
     effort_minutes: int | None = Field(default=None, ge=1, le=100_000)
     assessment_minutes: int | None = Field(default=None, ge=1, le=100_000)
@@ -945,7 +987,7 @@ class TicketTemplateCreate(BaseModel):
     name: str = Field(min_length=2, max_length=80)
     title: str = Field(min_length=3, max_length=140)
     description: str = Field(min_length=5, max_length=10000)
-    service_type: Literal["development", "integration", "support", "consultation", "other"] = "other"
+    service_type: str = Field(default="other", max_length=87, pattern=r"^(development|new_development|integration|support|maintenance|consultation|other|custom:\S[^\r\n]{0,79})$")
     effort_minutes: int | None = Field(default=None, ge=1, le=100_000)
     estimate_note: str = Field(default="", max_length=3000)
 
@@ -1346,6 +1388,16 @@ def script():
     return FileResponse(ROOT / "web" / "main.js", media_type="text/javascript", headers=NO_CACHE)
 
 
+@app.get("/team.js")
+def team_script():
+    return FileResponse(ROOT / "web" / "team.js", media_type="text/javascript", headers=NO_CACHE)
+
+
+@app.get("/tasks.js")
+def tasks_script():
+    return FileResponse(ROOT / "web" / "tasks.js", media_type="text/javascript", headers=NO_CACHE)
+
+
 @app.get("/manifest.json")
 def manifest():
     return FileResponse(ROOT / "web" / "manifest.json", media_type="application/manifest+json")
@@ -1501,7 +1553,8 @@ def staff_profile(conn, user):
     avatar_url = f"/api/staff/{user['id']}/avatar?v={row['avatar_updated_at']}" if row and row["avatar_updated_at"] else None
     return {"id": user["id"], "name": user["name"], "role": user["role"],
             "is_manager": bool(user["is_manager"]), "team_role": conn.execute("SELECT team_role FROM users WHERE id=?", (user["id"],)).fetchone()["team_role"], "job_title": row["job_title"] if row else "",
-            "bio": row["bio"] if row else "", "avatar_url": avatar_url}
+            "bio": row["bio"] if row else "", "avatar_url": avatar_url, "functions": team_management.function_codes(conn, user["id"]),
+            "function_names": [r[0] for r in conn.execute("SELECT f.name FROM staff_functions sf JOIN team_functions f ON f.code=sf.function_code WHERE sf.user_id=? ORDER BY f.name", (user["id"],))]}
 
 
 def visible_staff(conn, staff_id, viewer):
@@ -1512,8 +1565,10 @@ def visible_staff(conn, staff_id, viewer):
         allowed = conn.execute("""SELECT 1 FROM tickets t WHERE t.assignee_id=? AND
             ((t.visibility!='organization' AND t.customer_id=?) OR (t.visibility='organization' AND t.organization_id IN
             (SELECT organization_id FROM organization_members WHERE user_id=?)))
-            UNION SELECT 1 FROM chats WHERE customer_id=? AND assignee_id=?""",
-            (staff_id, viewer["id"], viewer["id"], viewer["id"], staff_id)).fetchone()
+            UNION SELECT 1 FROM chats WHERE assignee_id=? AND
+            ((organization_id IS NULL AND customer_id=?) OR organization_id IN
+             (SELECT organization_id FROM organization_members WHERE user_id=?))""",
+            (staff_id, viewer["id"], viewer["id"], staff_id, viewer["id"], viewer["id"])).fetchone()
         if not allowed:
             raise HTTPException(404, "Сотрудник не найден")
     return person
@@ -1655,7 +1710,7 @@ def notifications(desk_session: str | None = Cookie(default=None)):
         visible = []
         for row in rows:
             try:
-                ticket_for(conn, row["ticket_id"], user)
+                ticket_for(conn, row["ticket_id"], user, write=False)
                 visible.append(dict(row))
             except HTTPException:
                 continue
@@ -1708,11 +1763,15 @@ def read_chat_notification(notification_id: int, desk_session: str | None = Cook
 def chats(desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
     with db() as conn:
-        sql = """SELECT c.*,u.name AS customer_name,a.name AS assignee_name,
+        for org in conn.execute("SELECT id FROM organizations").fetchall():
+            company_chat.sync_organization(conn, org["id"])
+        sql = company_chat.SELECT.replace("FROM chats c", """ ,
             (SELECT body FROM chat_messages WHERE chat_id=c.id ORDER BY id DESC LIMIT 1) AS last_message
-            FROM chats c JOIN users u ON u.id=c.customer_id LEFT JOIN users a ON a.id=c.assignee_id"""
+            FROM chats c""", 1)
         if user["role"] == "customer":
-            rows = conn.execute(sql + " WHERE c.customer_id=? ORDER BY c.updated_at DESC", (user["id"],)).fetchall()
+            rows = conn.execute(sql + """ WHERE (c.organization_id IS NULL AND c.customer_id=?) OR
+                c.organization_id IN (SELECT organization_id FROM organization_members WHERE user_id=?)
+                ORDER BY c.updated_at DESC""", (user["id"], user["id"])).fetchall()
         elif user["role"] == "employee" and not user["is_manager"]:
             rows = conn.execute(sql + " WHERE c.assignee_id=? ORDER BY c.updated_at DESC", (user["id"],)).fetchall()
         else:
@@ -1731,14 +1790,18 @@ def create_chat(desk_session: str | None = Cookie(default=None)):
 def create_chat_service(conn, user):
     if user["role"] != "customer":
         raise HTTPException(403, "Общий чат создаёт заказчик")
-    existing = conn.execute("SELECT id FROM chats WHERE customer_id=?", (user["id"],)).fetchone()
-    if existing:
-        return dict(chat_for(conn, existing["id"], user))
+    org = customer_organization(conn, user["id"])
+    existing_id = company_chat.sync_organization(conn, org["id"]) if org else None
+    if not org:
+        existing = conn.execute("SELECT id FROM chats WHERE customer_id=? AND organization_id IS NULL", (user["id"],)).fetchone()
+        existing_id = existing["id"] if existing else None
+    if existing_id:
+        return dict(chat_for(conn, existing_id, user))
     stamp = now()
-    cursor = conn.execute("INSERT INTO chats(customer_id,created_at,updated_at) VALUES(?,?,?)",
-                          (user["id"], stamp, stamp))
-    for dispatcher in conn.execute("SELECT id FROM users WHERE (role='admin' OR is_manager=1) AND active=1"):
-        notify_chat(conn, dispatcher["id"], cursor.lastrowid, "new_chat", f"Новый общий чат с {user['name']}")
+    cursor = conn.execute("INSERT INTO chats(customer_id,organization_id,created_at,updated_at) VALUES(?,?,?,?)",
+                          (user["id"], org["id"] if org else None, stamp, stamp))
+    for dispatcher in dispatcher_ids(conn):
+        notify_chat(conn, dispatcher, cursor.lastrowid, "new_chat", f"Новый общий чат с {org['name'] if org else user['name']}")
     return dict(chat_for(conn, cursor.lastrowid, user))
 
 
@@ -1747,15 +1810,18 @@ def get_chat(chat_id: int, desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
     with db() as conn:
         chat = chat_for(conn, chat_id, user)
+        chat_id = chat["id"]
         messages = conn.execute(f"{CHAT_MESSAGE_SELECT} WHERE m.chat_id=? ORDER BY m.id", (chat_id,)).fetchall()
-        summaries = conn.execute(f"""{MEETING_SUMMARY_SELECT} WHERE s.customer_id=? AND s.ticket_id IS NULL
-            AND s.shared_at IS NOT NULL ORDER BY s.shared_at""", (chat["customer_id"],)).fetchall()
+        scope = "s.organization_id=?" if chat["organization_id"] else "s.customer_id=? AND s.organization_id IS NULL"
+        scope_id = chat["organization_id"] or chat["customer_id"]
+        summaries = conn.execute(f"""{MEETING_SUMMARY_SELECT} WHERE {scope} AND s.ticket_id IS NULL
+            AND s.shared_at IS NOT NULL ORDER BY s.shared_at""", (scope_id,)).fetchall()
         linked = conn.execute("""SELECT l.source_message_id,t.id,t.title,t.status FROM chat_ticket_links l
             JOIN tickets t ON t.id=l.ticket_id WHERE l.chat_id=? ORDER BY l.id DESC""", (chat_id,)).fetchall()
         visible_links = []
         for row in linked:
             try:
-                ticket_for(conn, row["id"], user)
+                ticket_for(conn, row["id"], user, write=False)
                 visible_links.append(dict(row))
             except HTTPException:
                 continue
@@ -1763,10 +1829,13 @@ def get_chat(chat_id: int, desk_session: str | None = Cookie(default=None)):
             FROM attachments WHERE chat_id=? ORDER BY id DESC""", (chat_id,)).fetchall()
         service = []
         if user["role"] != "customer":
-            service = conn.execute(f"{SERVICE_ENTRY_SELECT} WHERE s.customer_id=? ORDER BY s.occurred_at DESC, s.id DESC LIMIT 30",
-                                   (chat["customer_id"],)).fetchall()
+            service = conn.execute(f"{SERVICE_ENTRY_SELECT} WHERE s.is_billable=1 AND {scope} ORDER BY s.occurred_at DESC, s.id DESC LIMIT 30",
+                                   (scope_id,)).fetchall()
         reads = read_state(conn, "chat", chat_id)
-    return {"chat": dict(chat), "messages": [message_dict(row) for row in messages],
+        member_ids = chat_recipients(conn, chat)
+        participants = [dict(r) for r in conn.execute("SELECT id,name FROM users WHERE id IN (" +
+            ",".join("?" for _ in member_ids) + ") ORDER BY name", tuple(member_ids))]
+    return {"chat": dict(chat), "participants": participants, "messages": [message_dict(row) for row in messages],
             "linked_tickets": visible_links, "attachments": [dict(row) for row in files],
             "service_entries": [dict(row) for row in service],
             "meeting_summaries": [dict(row) for row in summaries], "read_state": reads}
@@ -1793,8 +1862,12 @@ def add_service_entry(data: ServiceEntryCreate, desk_session: str | None = Cooki
                                       (org is not None and ticket["organization_id"] == org["id"]))
             if not same_client:
                 raise HTTPException(422, "Заявка не относится к этому клиенту")
+            membership = team_management.ticket_participation(conn,data.ticket_id,user["id"])
+            assigned = conn.execute("SELECT assignee_id FROM tickets WHERE id=?",(data.ticket_id,)).fetchone()[0]
+            if user["role"] == "employee" and not user["is_manager"] and assigned != user["id"] and membership in ("observer","reviewer"):
+                raise HTTPException(403,"Участник с доступом к просмотру не вносит платное сопровождение")
             if ticket["service_limit_minutes"] is not None:
-                used = conn.execute("SELECT COALESCE(SUM(minutes),0) FROM service_entries WHERE ticket_id=?", (data.ticket_id,)).fetchone()[0]
+                used = conn.execute("SELECT COALESCE(SUM(minutes),0) FROM service_entries WHERE is_billable=1 AND ticket_id=?", (data.ticket_id,)).fetchone()[0]
                 if used + data.minutes > ticket["service_limit_minutes"]:
                     raise HTTPException(409, "Превышен лимит сопровождения. Согласуйте увеличение с клиентом")
         note = data.note.strip()
@@ -1832,12 +1905,22 @@ def share_meeting_summary(conn, entry_id):
             notify(conn, recipient, ticket["id"], "meeting_summary", f"Итоги {label} {when} по заявке №{ticket['id']}")
         realtime_bus.broadcast(customer_recipients(conn, ticket), {"type": "meeting_summary", "ticket_id": ticket["id"]})
         return
-    chat = conn.execute("SELECT id FROM chats WHERE customer_id=?", (entry["customer_id"],)).fetchone()
-    chat_id = chat["id"] if chat else conn.execute("INSERT INTO chats(customer_id,created_at,updated_at) VALUES(?,?,?)",
-                                                   (entry["customer_id"], stamp, stamp)).lastrowid
+    customer = conn.execute("SELECT * FROM users WHERE id=?", (entry["customer_id"],)).fetchone()
+    if entry["organization_id"] is not None:
+        chat_id = company_chat.sync_organization(conn, entry["organization_id"])
+        if not chat_id:
+            chat_id = conn.execute("INSERT INTO chats(customer_id,organization_id,created_at,updated_at) VALUES(?,?,?,?)",
+                                   (entry["customer_id"], entry["organization_id"], stamp, stamp)).lastrowid
+        chat = conn.execute(company_chat.SELECT + " WHERE c.id=?", (chat_id,)).fetchone()
+    else:
+        chat = create_chat_service(conn, customer)
+        chat_id = chat["id"]
     conn.execute("UPDATE chats SET updated_at=? WHERE id=?", (stamp, chat_id))
-    notify_chat(conn, entry["customer_id"], chat_id, "meeting_summary", f"Итоги {label} {when}")
-    realtime_bus.publish(entry["customer_id"], {"type": "meeting_summary", "chat_id": chat_id})
+    for recipient in chat_recipients(conn, chat):
+        notify_chat(conn, recipient, chat_id, "meeting_summary", f"Итоги {label} {when}")
+    realtime_bus.broadcast(chat_recipients(conn, chat) | dispatcher_ids(conn) | ({chat["assignee_id"]} - {None}),
+                           {"type": "meeting_summary", "chat_id": chat_id})
+
 
 
 @app.patch("/api/service-entries/{entry_id}/summary")
@@ -1849,9 +1932,11 @@ def update_meeting_summary(entry_id: int, data: MeetingSummaryUpdate, desk_sessi
         raise HTTPException(422, "Напишите, о чём договорились")
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute("SELECT author_id FROM service_entries WHERE id=?", (entry_id,)).fetchone()
+        row = conn.execute("SELECT author_id,is_billable FROM service_entries WHERE id=?", (entry_id,)).fetchone()
         if not row:
             raise HTTPException(404, "Запись не найдена")
+        if "is_billable" in row.keys() and not row["is_billable"]:
+            raise HTTPException(409, "Опубликованные итоги встречи сохраняются в истории")
         if row["author_id"] != user["id"] and user["role"] != "admin" and not user["is_manager"]:
             raise HTTPException(403, "Итоги добавляет автор записи или руководитель")
         conn.execute("UPDATE service_entries SET client_summary=?,client_next_steps=? WHERE id=?",
@@ -1867,7 +1952,7 @@ def list_service_entries(client_type: Literal["org", "user"] | None = None, clie
     user = current_user(desk_session)
     require_staff(user)
     with db() as conn:
-        conds, params = [], []
+        conds, params = ["s.is_billable=1"], []
         if client_type and client_id is not None:
             cond, cond_params = client_condition(client_type, client_id, "s.")
             conds.append(cond)
@@ -1885,9 +1970,11 @@ def delete_service_entry(entry_id: int, desk_session: str | None = Cookie(defaul
     user = current_user(desk_session)
     require_staff(user)
     with db() as conn:
-        row = conn.execute("SELECT author_id,act_invoice_id FROM service_entries WHERE id=?", (entry_id,)).fetchone()
+        row = conn.execute("SELECT author_id,act_invoice_id,is_billable FROM service_entries WHERE id=?", (entry_id,)).fetchone()
         if not row:
             raise HTTPException(404, "Запись не найдена")
+        if "is_billable" in row.keys() and not row["is_billable"]:
+            raise HTTPException(409, "Опубликованные итоги встречи сохраняются в истории")
         if row["author_id"] != user["id"] and user["role"] != "admin" and not user["is_manager"]:
             raise HTTPException(403, "Удалить запись может её автор или руководитель")
         if row["act_invoice_id"] is not None:
@@ -1902,11 +1989,13 @@ def ticket_from_chat(chat_id: int, data: ChatTicketCreate, desk_session: str | N
     require_staff(user)
     with db() as conn:
         chat = chat_for(conn, chat_id, user)
+        chat_id = chat["id"]
         message = conn.execute("SELECT id,body,author_id FROM chat_messages WHERE id=? AND chat_id=?",
                                (data.message_id, chat_id)).fetchone()
         if not message:
             raise HTTPException(404, "Сообщение не найдено")
-        if message["author_id"] != chat["customer_id"]:
+        author = conn.execute("SELECT * FROM users WHERE id=?", (message["author_id"],)).fetchone()
+        if author["role"] != "customer":
             raise HTTPException(422, "Выберите сообщение заказчика")
         existing = conn.execute("SELECT ticket_id FROM chat_ticket_links WHERE chat_id=? AND source_message_id=?",
                                 (chat_id, data.message_id)).fetchone()
@@ -1916,10 +2005,10 @@ def ticket_from_chat(chat_id: int, data: ChatTicketCreate, desk_session: str | N
         if not title:
             raise HTTPException(422, "Укажите тему")
         stamp = now()
-        org = customer_organization(conn, chat["customer_id"])
+        org = conn.execute("SELECT id FROM organizations WHERE id=?", (chat["organization_id"],)).fetchone()
         cursor = conn.execute("""INSERT INTO tickets(customer_id,assignee_id,created_by_id,title,description,status,
             created_at,updated_at,organization_id,visibility,response_due_at,estimate_due_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", (chat["customer_id"], chat["assignee_id"], user["id"], title,
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", (message["author_id"], chat["assignee_id"], user["id"], title,
                 message["body"], "new", stamp, stamp, org["id"] if org else None,
                 "organization" if org else "private", (datetime.now(timezone.utc)+timedelta(hours=24)).isoformat(),
                 (datetime.now(timezone.utc)+timedelta(days=3)).isoformat()))
@@ -1928,8 +2017,9 @@ def ticket_from_chat(chat_id: int, data: ChatTicketCreate, desk_session: str | N
             WHERE chat_id=? AND chat_message_id=?""", (cursor.lastrowid, stamp, chat_id, data.message_id))
         conn.execute("""INSERT INTO chat_ticket_links(chat_id,ticket_id,source_message_id,created_by,created_at)
             VALUES(?,?,?,?,?)""", (chat_id, cursor.lastrowid, data.message_id, user["id"], stamp))
-        notify_chat(conn, chat["customer_id"], chat_id, "ticket_created",
-                    f"Из общего чата создана заявка №{cursor.lastrowid}: {title}")
+        for recipient in chat_recipients(conn, chat):
+            notify_chat(conn, recipient, chat_id, "ticket_created",
+                        f"Из общего чата создана заявка №{cursor.lastrowid}: {title}")
         if chat["assignee_id"]:
             notify(conn, chat["assignee_id"], cursor.lastrowid, "new_ticket", f"Новая заявка №{cursor.lastrowid}: {title}")
         else:
@@ -1944,6 +2034,7 @@ def assign_chat(chat_id: int, data: Assignment, desk_session: str | None = Cooki
     require_dispatcher(user)
     with db() as conn:
         chat = chat_for(conn, chat_id, user)
+        chat_id = chat["id"]
         if data.assignee_id is not None:
             target = conn.execute("SELECT id FROM users WHERE id=? AND role IN ('employee','admin') AND active=1",
                                   (data.assignee_id,)).fetchone()
@@ -1968,6 +2059,7 @@ def add_chat_message_service(conn, user, chat_id: int, data: MessageCreate):
     if not body:
         raise HTTPException(422, "Введите сообщение")
     chat = chat_for(conn, chat_id, user)
+    chat_id = chat["id"]
     existing = conn.execute(f"{CHAT_MESSAGE_SELECT} WHERE m.chat_id=? AND m.author_id=? AND m.request_id=?",
                             (chat_id, user["id"], data.request_id)).fetchone()
     if existing:
@@ -1978,16 +2070,10 @@ def add_chat_message_service(conn, user, chat_id: int, data: MessageCreate):
                           (chat_id, user["id"], body, data.request_id, stamp, reply_to))
     conn.execute("UPDATE chats SET updated_at=? WHERE id=?", (stamp, chat_id))
     mark_read(conn, "chat", chat_id, user["id"], cursor.lastrowid)
-    if user["role"] == "customer":
-        if chat["assignee_id"]:
-            notify_chat(conn, chat["assignee_id"], chat_id, "message", f"Новое сообщение в общем чате с {user['name']}")
-        else:
-            for dispatcher in conn.execute("SELECT id FROM users WHERE (role='admin' OR is_manager=1) AND active=1"):
-                notify_chat(conn, dispatcher["id"], chat_id, "message", f"Новое сообщение в общем чате с {user['name']}")
-    else:
-        notify_chat(conn, chat["customer_id"], chat_id, "message", "Новое сообщение в общем чате")
+    for recipient in chat_message_recipients(conn, chat, user):
+        notify_chat(conn, recipient, chat_id, "message", f"Новое сообщение в общем чате: {user['name']}")
     message_payload = message_dict(conn.execute(f"{CHAT_MESSAGE_SELECT} WHERE m.id=?", (cursor.lastrowid,)).fetchone())
-    chat_participants = {chat["customer_id"]}
+    chat_participants = chat_recipients(conn, chat)
     if chat["assignee_id"]:
         chat_participants.add(chat["assignee_id"])
     for dispatcher in conn.execute("SELECT id FROM users WHERE (role='admin' OR is_manager=1) AND active=1"):
@@ -2018,7 +2104,12 @@ def add_staff(data: StaffCreate, desk_session: str | None = Cookie(default=None)
     require_admin(user)
     with db() as conn:
         created = create_user(conn, data.name, data.email, data.password, "employee")
+        codes = set(data.functions) | ({data.team_role} if data.team_role else set())
+        if any(not conn.execute("SELECT 1 FROM team_functions WHERE code=? AND active=1", (code,)).fetchone() for code in codes):
+            raise HTTPException(422, "Неизвестная функция команды")
         conn.execute("UPDATE users SET team_role=? WHERE id=?", (data.team_role, created["id"]))
+        conn.execute("INSERT INTO staff_settings(user_id,updated_at) VALUES(?,?)", (created["id"],now()))
+        conn.executemany("INSERT INTO staff_functions VALUES(?,?)", [(created["id"],code) for code in codes])
         if data.staff_role == "manager":
             conn.execute("UPDATE users SET is_manager=1 WHERE id=?", (created["id"],))
         created = conn.execute("SELECT * FROM users WHERE id=?", (created["id"],)).fetchone()
@@ -2032,6 +2123,10 @@ def update_staff_team_role(staff_id: int, data: StaffTeamRoleUpdate, desk_sessio
         person = conn.execute("SELECT * FROM users WHERE id=? AND role IN ('employee','admin')", (staff_id,)).fetchone()
         if not person:
             raise HTTPException(404, "Сотрудник не найден")
+        conn.execute("DELETE FROM staff_functions WHERE user_id=? AND function_code IN ('programmer','integrator','devops')", (staff_id,))
+        if data.team_role:
+            conn.execute("INSERT OR IGNORE INTO staff_functions VALUES(?,?)", (staff_id,data.team_role))
+        conn.execute("UPDATE staff_settings SET updated_at=? WHERE user_id=?", (now(),staff_id))
         conn.execute("UPDATE users SET team_role=? WHERE id=?", (data.team_role, staff_id))
         person = conn.execute("SELECT * FROM users WHERE id=?", (staff_id,)).fetchone()
         return {**public_user(person), **staff_profile(conn, person)}
@@ -2053,7 +2148,7 @@ def change_staff_availability(staff_id: int, data: StaffAvailability, desk_sessi
             raise HTTPException(422, "Выберите другого активного сотрудника")
         moved = 0
         moved_chats = 0
-        if not data.active:
+        if not data.active or data.transfer_work:
             tickets = conn.execute("SELECT id FROM tickets WHERE assignee_id=? AND status!='closed'", (staff_id,)).fetchall()
             for ticket in tickets:
                 conn.execute("UPDATE tickets SET assignee_id=?,updated_at=? WHERE id=?", (data.replacement_id, now(), ticket["id"]))
@@ -2068,7 +2163,9 @@ def change_staff_availability(staff_id: int, data: StaffAvailability, desk_sessi
                 for recipient in ({data.replacement_id} if data.replacement_id else dispatcher_ids(conn)) - {staff_id}:
                     notify_chat(conn, recipient, chat["id"], "assignment", "Общий чат передан после отключения сотрудника")
             moved_chats = len(chats)
-            conn.execute("DELETE FROM sessions WHERE user_id=?", (staff_id,))
+            team_management.handover(conn, sys.modules[__name__], user, staff_id, data.replacement_id)
+            if not data.active:
+                conn.execute("DELETE FROM sessions WHERE user_id=?", (staff_id,))
         conn.execute("UPDATE users SET active=? WHERE id=?", (data.active, staff_id))
         return {"id": staff_id, "active": data.active, "transferred_tickets": moved, "transferred_chats": moved_chats}
 
@@ -2087,8 +2184,9 @@ def customers(desk_session: str | None = Cookie(default=None)):
             rows = conn.execute(select + " ORDER BY name,email", (now(),)).fetchall()
         else:
             rows = conn.execute(select + """ AND (id IN (SELECT customer_id FROM tickets WHERE assignee_id=?)
-                  OR id IN (SELECT customer_id FROM chats WHERE assignee_id=?)) ORDER BY name,email""",
-                (now(), user["id"], user["id"])).fetchall()
+                  OR id IN (SELECT customer_id FROM chats WHERE assignee_id=? AND organization_id IS NULL)
+                  OR id IN (SELECT m.user_id FROM organization_members m JOIN chats c ON c.organization_id=m.organization_id WHERE c.assignee_id=?)) ORDER BY name,email""",
+                (now(), user["id"], user["id"], user["id"])).fetchall()
     return [dict(row) for row in rows]
 
 
@@ -2106,7 +2204,7 @@ def tickets(desk_session: str | None = Cookie(default=None)):
         if user["role"] == "customer":
             rows = conn.execute(sql + " WHERE (t.customer_id=? AND t.visibility!='organization') OR (t.visibility='organization' AND t.organization_id IN (SELECT organization_id FROM organization_members WHERE user_id=?)) ORDER BY t.updated_at DESC,t.id DESC", (user["id"], user["id"])).fetchall()
         elif user["role"] == "employee" and not user["is_manager"]:
-            rows = conn.execute(sql + " WHERE t.assignee_id=? ORDER BY t.updated_at DESC,t.id DESC", (user["id"],)).fetchall()
+            rows = conn.execute(sql + " WHERE t.assignee_id=? OR t.id IN (SELECT ticket_id FROM ticket_participants WHERE user_id=?) ORDER BY t.updated_at DESC,t.id DESC", (user["id"], user["id"])).fetchall()
         else:
             rows = conn.execute(sql + " ORDER BY t.updated_at DESC,t.id DESC").fetchall()
         result = []
@@ -2117,6 +2215,8 @@ def tickets(desk_session: str | None = Cookie(default=None)):
             item["effort_minutes"] = estimate["effort_minutes"] if estimate else None
             item["approved_minutes"] = approved_minutes(conn, row["id"])
             item["actual_minutes"] = actual_minutes(conn, row["id"])
+            if user["role"] != "customer":
+                item.update(contractor_time_summary(conn, row["id"], item["actual_minutes"]))
             item["pending_hour_request"] = bool(conn.execute("SELECT 1 FROM hour_requests WHERE ticket_id=? AND state='pending'", (row["id"],)).fetchone())
             item["has_available_owner"] = bool(available_owners(conn, row["organization_id"])) if row["organization_id"] else None
             if user["role"] == "customer":
@@ -2142,12 +2242,14 @@ def work_queue(desk_session: str | None = Cookie(default=None)):
             (SELECT MAX(count) FROM customer_reminders WHERE ticket_id=t.id
                 AND kind=CASE t.status WHEN 'waiting' THEN 'answer' WHEN 'done' THEN 'acceptance' END) AS reminders_sent
             FROM tickets t JOIN users c ON c.id=t.customer_id LEFT JOIN users a ON a.id=t.assignee_id
-            WHERE t.status!='closed' AND (?=1 OR t.assignee_id=?)""",
-            (int(user["role"] == "admin" or user["is_manager"]), user["id"])).fetchall()
+            WHERE t.status!='closed' AND (?=1 OR t.assignee_id=? OR EXISTS (SELECT 1 FROM ticket_participants p WHERE p.ticket_id=t.id AND p.user_id=?))""",
+            (int(user["role"] == "admin" or user["is_manager"]), user["id"], user["id"])).fetchall()
         chat_rows = conn.execute("""SELECT c.id,c.customer_id,c.assignee_id,c.updated_at,
-            u.name AS customer_name,a.name AS assignee_name,
-            (SELECT author_id FROM chat_messages WHERE chat_id=c.id ORDER BY id DESC LIMIT 1) AS last_author_id
+            COALESCE(o.name,u.name) AS customer_name,a.name AS assignee_name,
+            (SELECT author_id FROM chat_messages WHERE chat_id=c.id ORDER BY id DESC LIMIT 1) AS last_author_id,
+            (SELECT u.role FROM chat_messages m JOIN users u ON u.id=m.author_id WHERE m.chat_id=c.id ORDER BY m.id DESC LIMIT 1) AS last_author_role
             FROM chats c JOIN users u ON u.id=c.customer_id LEFT JOIN users a ON a.id=c.assignee_id
+            LEFT JOIN organizations o ON o.id=c.organization_id
             WHERE (?=1 OR c.assignee_id=?)""",
             (int(user["role"] == "admin" or user["is_manager"]), user["id"])).fetchall()
     items = []
@@ -2192,7 +2294,7 @@ def work_queue(desk_session: str | None = Cookie(default=None)):
     for row in chat_rows:
         if row["assignee_id"] is None:
             action, priority = "Назначить ответственного", 0
-        elif row["last_author_id"] == row["customer_id"]:
+        elif row["last_author_role"] == "customer":
             action, priority = "Ответить заказчику", 1
         else:
             action, priority = "Ожидаем ответа заказчика", 3
@@ -2227,8 +2329,10 @@ def add_ticket_service(conn, user, data: TicketCreate):
             raise HTTPException(422, "Заказчик не найден")
         if user["role"] == "employee" and not user["is_manager"]:
             accessible = conn.execute("""SELECT 1 FROM tickets WHERE customer_id=? AND assignee_id=?
-                UNION SELECT 1 FROM chats WHERE customer_id=? AND assignee_id=? LIMIT 1""",
-                (data.customer_id, user["id"], data.customer_id, user["id"])).fetchone()
+                UNION SELECT 1 FROM chats WHERE assignee_id=? AND
+                ((organization_id IS NULL AND customer_id=?) OR organization_id IN
+                 (SELECT organization_id FROM organization_members WHERE user_id=?)) LIMIT 1""",
+                (data.customer_id, user["id"], user["id"], data.customer_id, data.customer_id)).fetchone()
             if not accessible:
                 raise HTTPException(403, "Нет доступа к этому заказчику")
             if data.assignee_id not in (None, user["id"]):
@@ -2304,7 +2408,7 @@ def update_service_budget(ticket_id: int, data: ServiceBudgetUpdate, desk_sessio
             raise HTTPException(403, "Лимит сопровождения устанавливает заказчик, согласующий работу")
         if ticket["status"] == "closed":
             raise HTTPException(409, "Заявка закрыта")
-        used = conn.execute("SELECT COALESCE(SUM(minutes),0) FROM service_entries WHERE ticket_id=?", (ticket_id,)).fetchone()[0]
+        used = conn.execute("SELECT COALESCE(SUM(minutes),0) FROM service_entries WHERE is_billable=1 AND ticket_id=?", (ticket_id,)).fetchone()[0]
         if data.limit_minutes is not None and data.limit_minutes < used:
             raise HTTPException(409, "Лимит не может быть меньше уже учтённого сопровождения")
         conn.execute("UPDATE tickets SET service_limit_minutes=? WHERE id=?", (data.limit_minutes, ticket_id))
@@ -2334,7 +2438,7 @@ def request_owner_help(ticket_id: int, desk_session: str | None = Cookie(default
 def get_ticket(ticket_id: int, desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
     with db() as conn:
-        ticket = ticket_for(conn, ticket_id, user)
+        ticket = ticket_for(conn, ticket_id, user, write=False)
         messages = conn.execute(f"{TICKET_MESSAGE_SELECT} WHERE m.ticket_id=? ORDER BY m.id", (ticket_id,)).fetchall()
         summaries = conn.execute(f"{MEETING_SUMMARY_SELECT} WHERE s.ticket_id=? AND s.shared_at IS NOT NULL ORDER BY s.shared_at",
                                  (ticket_id,)).fetchall()
@@ -2349,10 +2453,18 @@ def get_ticket(ticket_id: int, desk_session: str | None = Cookie(default=None)):
             except HTTPException:
                 linked = None
         item = ticket_dict(ticket)
+        if user["role"] != "customer":
+            membership = team_management.ticket_participation(conn, ticket_id, user["id"])
+            item["participation"] = membership
+            item["can_write"] = (user["role"] == "admin" or bool(user["is_manager"]) or ticket["assignee_id"] == user["id"]
+                                 or (membership == "executor" and team_management.has_permission(conn, user, "tasks")))
+            item["participants"] = [dict(r) for r in conn.execute("SELECT p.user_id,p.participation,u.name FROM ticket_participants p JOIN users u ON u.id=p.user_id WHERE p.ticket_id=?", (ticket_id,))]
         item["estimate_state"] = estimates[0]["state"] if estimates else None
         item["effort_minutes"] = estimates[0]["effort_minutes"] if estimates else None
         item["approved_minutes"] = approved_minutes(conn, ticket_id)
         item["actual_minutes"] = actual_minutes(conn, ticket_id)
+        if user["role"] != "customer":
+            item.update(contractor_time_summary(conn, ticket_id, item["actual_minutes"]))
         item["pending_hour_request"] = bool(conn.execute("SELECT 1 FROM hour_requests WHERE ticket_id=? AND state='pending'", (ticket_id,)).fetchone())
 
         client_org = customer_organization(conn, ticket["customer_id"])
@@ -2385,11 +2497,11 @@ def get_ticket(ticket_id: int, desk_session: str | None = Cookie(default=None)):
             WHERE h.ticket_id=? ORDER BY h.id DESC""", (ticket_id,)).fetchall()
         file_rows = conn.execute("SELECT id,filename,size,content_type,author_id,created_at FROM attachments WHERE ticket_id=? ORDER BY id DESC", (ticket_id,)).fetchall()
         service_rows = []
-        item["service_minutes"] = conn.execute("SELECT COALESCE(SUM(minutes),0) FROM service_entries WHERE ticket_id=?", (ticket_id,)).fetchone()[0]
+        item["service_minutes"] = conn.execute("SELECT COALESCE(SUM(minutes),0) FROM service_entries WHERE is_billable=1 AND ticket_id=?", (ticket_id,)).fetchone()[0]
         item["service_cost_rub"] = round(item["service_minutes"] / 60.0 * rate_rub)
         item["total_cost_rub"] = item["cost_rub"] + item["service_cost_rub"]
         if user["role"] != "customer":
-            service_rows = conn.execute(f"{SERVICE_ENTRY_SELECT} WHERE s.ticket_id=? ORDER BY s.occurred_at DESC, s.id DESC",
+            service_rows = conn.execute(f"{SERVICE_ENTRY_SELECT} WHERE s.is_billable=1 AND s.ticket_id=? ORDER BY s.occurred_at DESC, s.id DESC",
                                         (ticket_id,)).fetchall()
             item["service_minutes"] = sum(row["minutes"] for row in service_rows)
             item["service_cost_rub"] = round(item["service_minutes"] / 60.0 * rate_rub)
@@ -2560,7 +2672,7 @@ def mark_record_read(conn, user, kind, record_id, last_id, participants):
 def read_ticket(ticket_id: int, data: ReadMark, desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
     with db() as conn:
-        ticket = ticket_for(conn, ticket_id, user)
+        ticket = ticket_for(conn, ticket_id, user, write=False)
         participants = customer_recipients(conn, ticket) | dispatcher_ids(conn) | ({ticket["assignee_id"]} - {None})
         return mark_record_read(conn, user, "ticket", ticket_id, data.last_id, participants)
 
@@ -2570,7 +2682,8 @@ def read_chat(chat_id: int, data: ReadMark, desk_session: str | None = Cookie(de
     user = current_user(desk_session)
     with db() as conn:
         chat = chat_for(conn, chat_id, user)
-        participants = {chat["customer_id"]} | dispatcher_ids(conn) | ({chat["assignee_id"]} - {None})
+        chat_id = chat["id"]
+        participants = chat_recipients(conn, chat) | dispatcher_ids(conn) | ({chat["assignee_id"]} - {None})
         return mark_record_read(conn, user, "chat", chat_id, data.last_id, participants)
 
 
@@ -3189,20 +3302,24 @@ async def add_chat_attachment(chat_id: int, file: UploadFile = File(...),
     user = current_user(desk_session)
     with db() as conn:
         chat = chat_for(conn, chat_id, user)
+        chat_id = chat["id"]
         if message_id is not None and not conn.execute("""SELECT 1 FROM chat_messages WHERE id=? AND chat_id=?
             AND author_id=?""", (message_id, chat_id, user["id"])).fetchone():
             raise HTTPException(403, "Сообщение не найдено")
     filename, stored_name, content_type, size = await save_attachment(file)
     try:
         with db() as conn:
-            chat_for(conn, chat_id, user)
+            chat = chat_for(conn, chat_id, user)
+            chat_id = chat["id"]
             cursor = conn.execute("""INSERT INTO attachments(chat_id,chat_message_id,author_id,filename,stored_name,
                 content_type,size,created_at) VALUES(?,?,?,?,?,?,?,?)""",
                 (chat_id, message_id, user["id"], filename, stored_name, content_type, size, now()))
             conn.execute("UPDATE chats SET updated_at=? WHERE id=?", (now(), chat_id))
-            recipient = chat["assignee_id"] if user["role"] == "customer" else chat["customer_id"]
-            if recipient and recipient != user["id"]:
+            chat = chat_for(conn, chat_id, user)
+            for recipient in chat_message_recipients(conn, chat, user):
                 notify_chat(conn, recipient, chat_id, "attachment", "Новый файл в общем чате")
+            realtime_bus.broadcast(chat_recipients(conn, chat) | dispatcher_ids(conn) | ({chat["assignee_id"]} - {None}),
+                                   {"type": "chat_message", "chat_id": chat_id})
             return {"id": cursor.lastrowid, "filename": filename, "size": size}
     except Exception:
         (ATTACHMENT_DIR / stored_name).unlink(missing_ok=True)
@@ -3217,7 +3334,7 @@ def download_attachment(attachment_id: int, desk_session: str | None = Cookie(de
         if not row:
             raise HTTPException(404, "Файл не найден")
         if row["ticket_id"] is not None:
-            ticket_for(conn, row["ticket_id"], user)
+            ticket_for(conn, row["ticket_id"], user, write=False)
         else:
             chat_for(conn, row["chat_id"], user)
     path = ATTACHMENT_DIR / row["stored_name"]
@@ -3373,7 +3490,7 @@ def get_internal_notes(ticket_id: int, desk_session: str | None = Cookie(default
     user = current_user(desk_session)
     require_staff(user)
     with db() as conn:
-        ticket_for(conn, ticket_id, user)
+        ticket_for(conn, ticket_id, user, write=False)
         rows = conn.execute("""
             SELECT n.*, u.name AS author_name, u.role AS author_role
             FROM ticket_internal_notes n
@@ -3912,7 +4029,7 @@ def test_webhook(webhook_id: int, desk_session: str | None = Cookie(default=None
 def get_ticket_git_links(ticket_id: int, desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
     with db() as conn:
-        ticket_for(conn, ticket_id, user)
+        ticket_for(conn, ticket_id, user, write=False)
         rows = conn.execute("""
             SELECT g.*, u.name AS author_name
             FROM ticket_git_links g
@@ -4349,6 +4466,8 @@ def generate_document_html(doc: dict, client: dict, items: list[dict]) -> str:
 @app.get("/api/billing/overview")
 def get_billing_overview(desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
+    if user["role"] != "customer":
+        require_finance(user)
     with db() as conn:
         if user["role"] == "customer":
             org = customer_organization(conn, user["id"])
@@ -4400,7 +4519,6 @@ def get_billing_overview(desk_session: str | None = Cookie(default=None)):
                 "transactions": [dict(r) for r in transactions]
             }
         else:
-            require_staff(user)
             paid_sum = conn.execute("SELECT COALESCE(SUM(total_rub), 0) FROM invoices WHERE status='paid' AND doc_type='invoice'").fetchone()[0]
 
             active_tickets = conn.execute("SELECT id FROM tickets WHERE status IN ('new','working','waiting')").fetchall()
@@ -4459,7 +4577,7 @@ def get_billing_overview(desk_session: str | None = Cookie(default=None)):
                     "open_tickets": open_cnt
                 })
 
-            service_entries = conn.execute(f"{SERVICE_ENTRY_SELECT} ORDER BY s.occurred_at DESC, s.id DESC LIMIT 100").fetchall()
+            service_entries = conn.execute(f"{SERVICE_ENTRY_SELECT} WHERE s.is_billable=1 ORDER BY s.occurred_at DESC, s.id DESC LIMIT 100").fetchall()
 
             invoices = conn.execute("""
                 SELECT i.*, 
@@ -4493,7 +4611,7 @@ def get_billing_overview(desk_session: str | None = Cookie(default=None)):
 @app.get("/api/billing/clients")
 def get_billing_clients(desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
-    require_staff(user)
+    require_finance(user)
     with db() as conn:
         clients = []
         for o in conn.execute("SELECT * FROM organizations ORDER BY name").fetchall():
@@ -4542,7 +4660,7 @@ def update_client_balance(conn, client_type: str, client_id: int, new_balance_mi
 @app.patch("/api/billing/clients/{client_type}/{client_id}")
 def update_billing_client(client_type: str, client_id: int, data: BillingRateUpdate, desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
-    require_dispatcher(user)
+    require_finance(user, write=True)
     with db() as conn:
         if client_type == "org":
             conn.execute("""
@@ -4568,7 +4686,7 @@ def update_billing_client(client_type: str, client_id: int, data: BillingRateUpd
 @app.post("/api/billing/deposit")
 def create_billing_deposit(data: BillingDepositCreate, desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
-    require_dispatcher(user)
+    require_finance(user, write=True)
     with db() as conn:
         client = get_client_billing_info(conn, data.client_type, data.client_id)
         rate = client["hourly_rate_rub"]
@@ -4596,7 +4714,7 @@ def create_billing_deposit(data: BillingDepositCreate, desk_session: str | None 
 @app.get("/api/billing/unbilled-tickets")
 def get_unbilled_tickets(client_type: str, client_id: int, desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
-    require_staff(user)
+    require_finance(user)
     with db() as conn:
         client = get_client_billing_info(conn, client_type, client_id)
         rate = client["hourly_rate_rub"]
@@ -4635,6 +4753,8 @@ def get_unbilled_tickets(client_type: str, client_id: int, desk_session: str | N
 @app.get("/api/billing/invoices")
 def list_invoices(doc_type: str | None = None, status: str | None = None, desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
+    if user["role"] != "customer":
+        require_finance(user)
     with db() as conn:
         query = "SELECT i.*, CASE WHEN i.organization_id IS NOT NULL THEN o.name ELSE u.name END AS client_name FROM invoices i LEFT JOIN organizations o ON o.id = i.organization_id LEFT JOIN users u ON u.id = i.customer_id"
         conds = []
@@ -4665,7 +4785,7 @@ def list_invoices(doc_type: str | None = None, status: str | None = None, desk_s
 @app.post("/api/billing/invoices", status_code=201)
 def create_invoice_document(data: BillingDocumentCreate, desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
-    require_dispatcher(user)
+    require_finance(user, write=True)
     with db() as conn:
         client = get_client_billing_info(conn, data.client_type, data.client_id)
         rate = client["hourly_rate_rub"]
@@ -4687,7 +4807,7 @@ def create_invoice_document(data: BillingDocumentCreate, desk_session: str | Non
                 ids = data.service_entry_ids or [0]
                 service_cond += f" AND id IN ({','.join('?' * len(ids))})"
                 service_params += tuple(ids)
-            services = conn.execute(f"""SELECT * FROM service_entries WHERE {service_cond} AND act_invoice_id IS NULL
+            services = conn.execute(f"""SELECT * FROM service_entries WHERE {service_cond} AND is_billable=1 AND act_invoice_id IS NULL
                 ORDER BY occurred_at, id""", service_params).fetchall()
 
             if not tickets and not services:
@@ -4786,6 +4906,8 @@ def create_invoice_document(data: BillingDocumentCreate, desk_session: str | Non
 @app.get("/api/billing/invoices/{invoice_id}")
 def get_invoice_detail(invoice_id: int, desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
+    if user["role"] != "customer":
+        require_finance(user)
     with db() as conn:
         row = conn.execute("SELECT * FROM invoices WHERE id=?", (invoice_id,)).fetchone()
         if not row:
@@ -4805,6 +4927,8 @@ def get_invoice_detail(invoice_id: int, desk_session: str | None = Cookie(defaul
 @app.get("/api/billing/invoices/{invoice_id}/print")
 def print_invoice_document(invoice_id: int, desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
+    if user["role"] != "customer":
+        require_finance(user)
     with db() as conn:
         row = conn.execute("SELECT * FROM invoices WHERE id=?", (invoice_id,)).fetchone()
         if not row:
@@ -4828,7 +4952,7 @@ def print_invoice_document(invoice_id: int, desk_session: str | None = Cookie(de
 @app.patch("/api/billing/invoices/{invoice_id}/status")
 def update_invoice_status(invoice_id: int, data: BillingStatusUpdate, desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
-    require_dispatcher(user)
+    require_finance(user, write=True)
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT * FROM invoices WHERE id=?", (invoice_id,)).fetchone()
@@ -5276,6 +5400,7 @@ def render_outbox_email(conn, job):
         record = ticket_for(conn, record_id, user) if target == "ticket" else chat_for(conn, record_id, user)
     except HTTPException:
         return None
+    record_id = record["id"]
     customer = user["role"] == "customer"
     if target == "ticket":
         heading = f"Заявка №{record_id}: {record['title']}"
@@ -5664,6 +5789,8 @@ def bootstrap_admin():
         create_user(conn, name, email, password, "admin")
     print("Admin created")
 
+
+team_management.install_routes(app, sys.modules[__name__])
 
 from bot.service import BotEngine
 from bot.routes import install_bot_routes

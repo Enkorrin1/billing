@@ -1,9 +1,11 @@
-const CACHE_NAME = 'linea-v6';
+const CACHE_NAME = 'linea-v8';
 const STATIC_ASSETS = [
   '/?login',
   '/landing',
   '/design.css',
   '/main.js',
+  '/team.js',
+  '/tasks.js',
   '/manifest.json',
   '/icon.svg',
   '/icons/icon-192.png',

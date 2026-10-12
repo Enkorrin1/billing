@@ -18,6 +18,7 @@ import app as service
 class Flows(unittest.TestCase):
     def setUp(self):
         with service.db() as conn:
+            conn.execute("DELETE FROM ticket_templates")
             conn.execute("DELETE FROM service_entries")
             conn.execute("DELETE FROM billing_transactions")
             conn.execute("DELETE FROM ticket_git_links")
@@ -139,6 +140,25 @@ class Flows(unittest.TestCase):
         self.assertEqual(detail["customer_name"], "Александр Волков")
         self.assertNotIn("phone", detail)
         self.assertEqual(self.other.get(f"/api/tickets/{ticket['id']}").status_code, 404)
+
+    def test_new_and_custom_ticket_service_types(self):
+        for service_type in ("development", "new_development", "maintenance", "other", "custom:Аудит системы", "custom:<Аудит & проверка>"):
+            with self.subTest(service_type=service_type):
+                payload = {"title": "Проверка типа задачи", "description": "Описание тестовой задачи", "service_type": service_type}
+                created = self.customer.post("/api/tickets", json=payload)
+                self.assertEqual(created.status_code, 201, created.text)
+                detail = self.customer.get(f"/api/tickets/{created.json()['id']}").json()
+                self.assertEqual(detail["ticket"]["service_type"], service_type)
+                template = self.admin.post("/api/ticket-templates", json={**payload, "name": "Тестовый шаблон"})
+                self.assertEqual(template.status_code, 201, template.text)
+                self.assertEqual(template.json()["service_type"], service_type)
+
+    def test_custom_ticket_service_type_validation(self):
+        for service_type in ("unknown", "custom:", "custom:   ", "custom:А\nБ", "custom:" + "А" * 81):
+            with self.subTest(service_type=service_type):
+                payload = {"title": "Проверка типа задачи", "description": "Описание тестовой задачи", "service_type": service_type}
+                self.assertEqual(self.customer.post("/api/tickets", json=payload).status_code, 422)
+                self.assertEqual(self.admin.post("/api/ticket-templates", json={**payload, "name": "Тестовый шаблон"}).status_code, 422)
 
     def test_ticket_conversation_and_access(self):
         created = self.customer.post("/api/tickets", json={"title":"Тестовая задача","description":"Нужна помощь с услугой"})
@@ -532,6 +552,119 @@ class Flows(unittest.TestCase):
         self.assertEqual(customer_detail["service_entries"], [])
         self.assertEqual(customer_detail["ticket"]["service_minutes"], 60)
         self.assertEqual(customer_detail["ticket"]["service_cost_rub"], 3000)
+
+    def test_company_chat_shared_history_notifications_and_revocation(self):
+        from unittest.mock import patch
+        owner_id = self.customer.get("/api/me").json()["id"]
+        member_id = self.other.get("/api/me").json()["id"]
+        org = self.admin.post("/api/organizations", json={"name": "Компания чата", "owner_id": owner_id}).json()
+        self.assertEqual(self.admin.post(f"/api/organizations/{org['id']}/members", json={"email": "o@example.com", "role": "viewer"}).status_code, 201)
+        outsider = TestClient(service.app)
+        outsider.post("/api/register", json={"name": "Чужой", "email": "outsider@example.com", "password": "password123"})
+        chat = self.other.post("/api/chats").json()
+        chat_id = chat["id"]
+        self.assertEqual(chat["organization_id"], org["id"])
+        self.assertEqual(chat["customer_name"], "Компания чата")
+        self.assertEqual(self.customer.post("/api/chats").json()["id"], chat_id)
+        self.assertEqual(len(self.customer.get("/api/chats").json()), 1)
+        self.assertEqual(outsider.get(f"/api/chats/{chat_id}").status_code, 404)
+        self.assertEqual(self.employee.get(f"/api/chats/{chat_id}").status_code, 404)
+        self.admin.patch(f"/api/chats/{chat_id}/assignee", json={"assignee_id": self.staff["id"]})
+        with patch.object(service.realtime_bus, "broadcast") as broadcast:
+            message = self.customer.post(f"/api/chats/{chat_id}/messages", json={"body": "Вопрос владельца", "request_id": "owner-msg"}).json()
+            self.assertTrue({owner_id, member_id, self.staff["id"]}.issubset(broadcast.call_args.args[0]))
+        self.assertEqual(self.other.get(f"/api/chats/{chat_id}").json()["messages"][0]["body"], "Вопрос владельца")
+        self.assertEqual(len(self.other.get("/api/chat-notifications").json()), 1)
+        detail = self.customer.get(f"/api/chats/{chat_id}").json()
+        self.assertEqual({p["id"] for p in detail["participants"]}, {owner_id, member_id})
+        file = self.customer.post(f"/api/chats/{chat_id}/attachments", data={"message_id": message["id"]}, files={"file": ("shared.txt", b"company file", "text/plain")}).json()
+        self.assertEqual(self.other.get(f"/api/attachments/{file['id']}").content, b"company file")
+        self.assertEqual(outsider.get(f"/api/attachments/{file['id']}").status_code, 404)
+        self.other.post(f"/api/chats/{chat_id}/messages", json={"body": "Ответ коллеги", "request_id": "member-msg", "reply_to_id": message["id"]})
+        self.employee.post(f"/api/chats/{chat_id}/messages", json={"body": "Ответ поддержки", "request_id": "staff-msg"})
+        self.assertTrue(any(n["kind"] == "message" for n in self.customer.get("/api/chat-notifications").json()))
+        self.assertEqual(len(self.other.get(f"/api/chats/{chat_id}").json()["messages"]), 3)
+        ticket = self.employee.post(f"/api/chats/{chat_id}/tickets", json={"title": "Заявка владельца", "message_id": message["id"]})
+        self.assertEqual(ticket.status_code, 201)
+        self.assertEqual(ticket.json()["customer_id"], owner_id)
+        self.assertEqual(ticket.json()["organization_id"], org["id"])
+        self.assertEqual(self.other.get(f"/api/tickets/{ticket.json()['id']}").status_code, 200)
+        self.assertEqual(self.employee.get("/api/work-queue").json()[-1]["source"] in ("chat", "ticket"), True)
+        self.assertEqual(self.admin.delete(f"/api/organizations/{org['id']}/members/{member_id}").status_code, 200)
+        for endpoint in (f"/api/chats/{chat_id}", f"/api/attachments/{file['id']}"):
+            self.assertEqual(self.other.get(endpoint).status_code, 404)
+        self.assertEqual(self.other.post(f"/api/chats/{chat_id}/messages", json={"body": "Нет доступа", "request_id": "revoked-company-message"}).status_code, 404)
+        self.assertEqual(self.other.get("/api/chat-notifications").json(), [])
+        self.assertNotEqual(self.other.post("/api/chats").json()["id"], chat_id)
+
+    def test_company_chat_merges_legacy_threads_without_losing_links(self):
+        owner_id = self.customer.get("/api/me").json()["id"]
+        first = self.customer.post("/api/chats").json()["id"]
+        second = self.other.post("/api/chats").json()["id"]
+        m1 = self.customer.post(f"/api/chats/{first}/messages", json={"body": "История владельца", "request_id": "before-company-merge"}).json()
+        m2 = self.other.post(f"/api/chats/{second}/messages", json={"body": "История коллеги", "request_id": "before-company-merge"}).json()
+        file = self.other.post(f"/api/chats/{second}/attachments", data={"message_id": m2["id"]}, files={"file": ("legacy.txt", b"legacy file", "text/plain")}).json()
+        ticket = self.admin.post(f"/api/chats/{second}/tickets", json={"title": "Из старого чата", "message_id": m2["id"]}).json()
+        org = self.admin.post("/api/organizations", json={"name": "Объединённая компания", "owner_id": owner_id}).json()
+        self.admin.post(f"/api/organizations/{org['id']}/members", json={"email": "o@example.com", "role": "member"})
+        shared = self.other.post("/api/chats").json()
+        self.assertEqual(shared["id"], first)
+        detail = self.other.get(f"/api/chats/{second}").json()
+        self.assertEqual(detail["chat"]["id"], first)
+        self.assertEqual([m["id"] for m in detail["messages"]], [m1["id"], m2["id"]])
+        self.assertEqual(self.customer.get(f"/api/attachments/{file['id']}").content, b"legacy file")
+        self.assertEqual(self.admin.get(f"/api/chats/{first}").json()["linked_tickets"][0]["id"], ticket["id"])
+        self.assertEqual(self.other.post(f"/api/chats/{second}/messages", json={"body": "По старой ссылке", "request_id": "after-company-merge"}).status_code, 201)
+        self.assertEqual(self.other.post(f"/api/chats/{second}/read", json={"last_id": 0}).status_code, 200)
+        service.init_db()
+        service.init_db()
+        self.assertEqual(len(self.admin.get("/api/chats").json()), 1)
+        self.assertEqual(len(self.customer.get(f"/api/chats/{first}").json()["messages"]), 3)
+        with service.db() as conn:
+            self.assertEqual(conn.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_company_chat_migrates_old_database_schema(self):
+        import sqlite3
+        original_path = service.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            legacy_path = Path(folder) / "legacy.db"
+            with service.db() as source:
+                target = sqlite3.connect(legacy_path)
+                source.backup(target)
+                target.close()
+            service.DB_PATH = legacy_path
+            try:
+                with service.db() as conn:
+                    conn.execute("PRAGMA foreign_keys=OFF")
+                    conn.executescript("""DROP TABLE chat_aliases;
+                        DROP TABLE chats;
+                        CREATE TABLE chats (id INTEGER PRIMARY KEY,
+                            customer_id INTEGER NOT NULL UNIQUE REFERENCES users(id),
+                            assignee_id INTEGER REFERENCES users(id),
+                            created_at TEXT NOT NULL,updated_at TEXT NOT NULL);""")
+                    owner = conn.execute("SELECT id FROM users WHERE email='c@example.com'").fetchone()[0]
+                    member = conn.execute("SELECT id FROM users WHERE email='o@example.com'").fetchone()[0]
+                    org = conn.execute("INSERT INTO organizations(name,created_at) VALUES('Legacy company',?)", (service.now(),)).lastrowid
+                    for cid, role, chat_id in ((owner, 'owner', 41), (member, 'member', 42)):
+                        conn.execute("INSERT INTO organization_members VALUES(?,?,?,?)", (org,cid,role,service.now()))
+                        conn.execute("INSERT INTO chats VALUES(?,?,NULL,?,?)", (chat_id,cid,service.now(),service.now()))
+                        conn.execute("INSERT INTO chat_messages(chat_id,author_id,body,request_id,created_at) VALUES(?,?,?,?,?)",
+                                     (chat_id,cid,role,'legacy-request-'+role,service.now()))
+                service.init_db()
+                service.init_db()
+                with service.db() as conn:
+                    chat = conn.execute("SELECT * FROM chats").fetchone()
+                    self.assertEqual(chat['id'],41)
+                    self.assertEqual(chat['organization_id'],org)
+                    self.assertEqual(conn.execute("SELECT COUNT(*) FROM chat_messages WHERE chat_id=41").fetchone()[0],2)
+                    self.assertEqual(service.company_chat.resolve(conn,42),41)
+                    self.assertEqual(conn.execute("PRAGMA foreign_key_check").fetchall(),[])
+                    # New IDs must never reuse a legacy alias.
+                    conn.execute("DELETE FROM organization_members WHERE user_id=?",(member,))
+                    person = conn.execute("SELECT * FROM users WHERE id=?",(member,)).fetchone()
+                    self.assertGreater(service.create_chat_service(conn,person)['id'],42)
+            finally:
+                service.DB_PATH = original_path
 
 
 if __name__ == "__main__":
