@@ -357,8 +357,8 @@ button:disabled { cursor: not-allowed; opacity: .6; }
   display: flex;
   align-items: center;
   gap: 12px;
-  height: 64px;
-  padding: 0 clamp(16px, 2.6vw, 40px);
+  height: calc(64px + env(safe-area-inset-top, 0px));
+  padding: env(safe-area-inset-top, 0px) max(clamp(16px, 2.6vw, 40px), env(safe-area-inset-right, 0px)) 0 max(clamp(16px, 2.6vw, 40px), env(safe-area-inset-left, 0px));
   background: var(--topbar-bg);
   border-bottom: 1px solid var(--line);
   backdrop-filter: blur(8px);
@@ -2533,6 +2533,7 @@ a.auth-foot:hover { color: #fff; }
     bottom: 0;
     width: 280px;
     height: auto;
+    padding-top: calc(24px + env(safe-area-inset-top, 0px));
     transform: translateX(-100%);
     transition: transform .2s ease;
   }
@@ -2590,7 +2591,7 @@ a.auth-foot:hover { color: #fff; }
   .auth-mobile-brand { display: flex; align-items: center; gap: 10px; color: var(--ink); font-size: 20px; font-weight: 800; letter-spacing: -.04em; }
 }
 @media (max-width: 600px) {
-  .topbar { padding: 0 12px; }
+  .topbar { padding: env(safe-area-inset-top, 0px) max(12px, env(safe-area-inset-right, 0px)) 0 max(12px, env(safe-area-inset-left, 0px)); }
   .top-profile { width: 40px; padding: 0; justify-content: center; }
   .top-profile .ico { display: none; }
   .global-search { padding-right: 4px; }
@@ -2848,3 +2849,15 @@ a.auth-foot:hover { color: #fff; }
 .org-create .customer-invite-form>label,.org-create .customer-invite-form>.button {width:100%;min-width:0}
 
 .task-check-line{display:flex;align-items:center;gap:10px}.task-check-line .task-check-item{flex:1;min-width:0}.task-check-line>button{opacity:0;font-size:10px;flex-shrink:0}.task-check-line:hover>button,.task-check-line:focus-within>button{opacity:1}@media(max-width:800px){.task-check-line>button{opacity:1}}
+
+/* Customers see service progress without an individual assignee column. */
+.customer-ticket-list :is(.table-head, .trow) {
+  grid-template-columns: 40px minmax(0, 1fr) 140px 160px 64px 104px;
+}
+@media (max-width: 1240px) {
+  .customer-ticket-list :is(.table-head, .trow) { grid-template-columns: 48px minmax(0, 1fr) 140px 160px 120px; }
+}
+@media (max-width: 900px) {
+  .customer-ticket-list .trow { grid-template-columns: minmax(0, 1fr) auto; }
+  .customer-ticket-list .trow > :nth-child(6) { display: block; }
+}

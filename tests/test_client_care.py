@@ -61,6 +61,52 @@ class ClientCare(unittest.TestCase):
         service.deliver_emails()
         return [BytesParser(policy=policy.default).parsebytes(p.read_bytes()) for p in sorted(Path(self.mail_dir.name).glob("*.eml"))]
 
+    def test_customer_sees_service_identity_and_staff_keeps_attribution(self):
+        ticket_id = self.approved_ticket()
+        customer_queue = service.realtime_bus.subscribe(self.customer_user["id"])
+        staff_queue = service.realtime_bus.subscribe(self.staff["id"])
+        try:
+            question = self.employee.post(f"/api/tickets/{ticket_id}/messages", json={"body": "Уточните формат", "request_id": "privacy-question"}).json()
+            live = [customer_queue.get_nowait() for _ in range(customer_queue.qsize())]
+            message = next(x["message"] for x in live if x["type"] == "ticket_message")
+            self.assertEqual(message["author_name"], service.SUPPORT_NAME)
+            self.assertNotIn("author_id", message)
+            live_staff = [staff_queue.get_nowait() for _ in range(staff_queue.qsize())]
+            self.assertEqual(next(x["message"] for x in live_staff if x["type"] == "ticket_message")["author_name"], "Инженер")
+            reply = self.customer.post(f"/api/tickets/{ticket_id}/messages", json={"body": "JSON", "request_id": "privacy-answer", "reply_to_id": question["id"]}).json()
+            self.assertEqual(reply["reply_author_name"], service.SUPPORT_NAME)
+            repeated = self.customer.post(f"/api/tickets/{ticket_id}/messages", json={"body": "JSON", "request_id": "privacy-answer", "reply_to_id": question["id"]}).json()
+            self.assertEqual(repeated["reply_author_name"], service.SUPPORT_NAME)
+            detail = self.customer.get(f"/api/tickets/{ticket_id}").json()
+            self.assertNotIn("assignee_id", detail["ticket"])
+            self.assertNotIn("assignee_name", detail["ticket"])
+            self.assertNotIn("assignment", {e["kind"] for e in detail["events"]})
+            for key in ("estimates", "time_entries"):
+                self.assertEqual(detail[key][0]["author_name"], service.SUPPORT_NAME)
+                self.assertNotIn("author_id", detail[key][0])
+            self.assertNotIn("assignee_id", self.customer.get("/api/tickets").json()[0])
+            staff_detail = self.employee.get(f"/api/tickets/{ticket_id}").json()
+            self.assertEqual(staff_detail["ticket"]["assignee_name"], "Инженер")
+            self.assertIn("assignment", {e["kind"] for e in staff_detail["events"]})
+            chat = self.customer.post("/api/chats").json()
+            self.admin.patch(f"/api/chats/{chat['id']}/assignee", json={"assignee_id": self.staff["id"]})
+            self.employee.post(f"/api/chats/{chat['id']}/messages", json={"body": "Проверяем", "request_id": "privacy-chat"})
+            chat_detail = self.customer.get(f"/api/chats/{chat['id']}").json()
+            self.assertNotIn("assignee_id", chat_detail["chat"])
+            self.assertEqual(chat_detail["messages"][0]["author_name"], service.SUPPORT_NAME)
+            self.assertNotIn("assignee_id", self.customer.post("/api/chats").json())
+            self.assertNotIn("assignee_id", self.customer.get("/api/chats").json()[0])
+            self.assertEqual(self.employee.get(f"/api/chats/{chat['id']}").json()["chat"]["assignee_name"], "Инженер")
+            self.assertNotIn("Инженер", str(self.customer.get("/api/chat-notifications").json()))
+            self.assertEqual(self.customer.get(f"/api/staff/{self.staff['id']}/profile").status_code, 404)
+            mail = self.sent_mail()
+            customer_mail = [m.as_string() for m in mail if m["To"] == "c@example.com"]
+            self.assertTrue(customer_mail)
+            self.assertTrue(all("Инженер" not in m for m in customer_mail))
+        finally:
+            service.realtime_bus.unsubscribe(self.customer_user["id"], customer_queue)
+            service.realtime_bus.unsubscribe(self.staff["id"], staff_queue)
+
     def test_reply_to_message_and_read_receipts(self):
         ticket_id = self.ticket()
         question = self.employee.post(f"/api/tickets/{ticket_id}/messages", json={"body": "Какая у вас CRM?", "request_id": "staff-question"}).json()
@@ -70,7 +116,7 @@ class ClientCare(unittest.TestCase):
         answer = self.customer.post(f"/api/tickets/{ticket_id}/messages", json={"body": "Битрикс24", "request_id": "customer-answer", "reply_to_id": question["id"]})
         self.assertEqual(answer.status_code, 201)
         self.assertEqual(answer.json()["reply_body"], "Какая у вас CRM?")
-        self.assertEqual(answer.json()["reply_author_name"], "Инженер")
+        self.assertEqual(answer.json()["reply_author_name"], "Служба поддержки")
         self.assertEqual(self.employee.get(f"/api/tickets/{ticket_id}").json()["read_state"]["customer_read_id"], answer.json()["id"])
         self.assertEqual(self.customer.get(f"/api/tickets/{ticket_id}").json()["read_state"]["team_read_id"], question["id"])
         self.assertEqual(self.employee.post(f"/api/tickets/{ticket_id}/read", json={}).json()["team_read_id"], answer.json()["id"])

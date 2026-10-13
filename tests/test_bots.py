@@ -93,6 +93,23 @@ class Bots(unittest.TestCase):
             rows = conn.execute("SELECT payload FROM bot_outbox WHERE provider=? ORDER BY id DESC", (provider,)).fetchall()
             return next(json.loads(r["payload"]) for r in rows if not json.loads(r["payload"]).get("ack"))
 
+    def test_customer_bot_uses_support_identity_in_history_and_notifications(self):
+        for provider in ("telegram", "max"):
+            link = self.link(provider)
+            with desk.db() as conn:
+                conn.execute("UPDATE bot_preferences SET channel='both' WHERE user_id=?", (self.user["id"],))
+            ticket = self.client.post("/api/tickets", json={"title": "Проверка подписи", "description": "Ответ службы поддержки"}).json()
+            self.admin.post(f"/api/tickets/{ticket['id']}/messages", json={"body": "Проверяем заявку", "request_id": f"privacy-{provider}"})
+            payload = self.last_payload(provider)
+            self.assertIn("Служба поддержки", payload["text"])
+            self.assertNotIn("Менеджер", payload["text"])
+            with desk.db() as conn:
+                self.engine.history(conn, link, self.user, "ticket", ticket["id"])
+                payloads = [json.loads(r["payload"]) for r in conn.execute("SELECT payload FROM bot_outbox WHERE provider=?", (provider,))]
+            history = [p["text"] for p in payloads if "Проверяем заявку" in p.get("text", "")]
+            self.assertTrue(history)
+            self.assertTrue(all("Служба поддержки" in text and "Менеджер" not in text for text in history))
+
     def button(self, text, provider="telegram"):
         return next(b["token"] for row in self.last_payload(provider)["buttons"] for b in row if b["text"] == text)
 

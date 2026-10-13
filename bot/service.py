@@ -185,9 +185,12 @@ class BotEngine:
     def history(self, conn, link, user, kind, record, before=None):
         record = self.check_context(conn, user, kind, record)["id"]
         table, key = ("messages", "ticket_id") if kind == "ticket" else ("chat_messages", "chat_id")
-        rows = conn.execute(f"""SELECT m.*,u.name FROM {table} m JOIN users u ON u.id=m.author_id
+        rows = conn.execute(f"""SELECT m.*,u.name,u.role AS author_role FROM {table} m JOIN users u ON u.id=m.author_id
             WHERE m.{key}=? AND m.id<? ORDER BY m.id DESC LIMIT 6""", (record, before or 9223372036854775807)).fetchall()
         for row in reversed(rows[:5]):
+            row = dict(row)
+            if user["role"] == "customer" and row["author_role"] != "customer":
+                row["name"] = self.desk.SUPPORT_NAME
             self.queue(conn, link, f"{'Заявка №' + str(record) if kind == 'ticket' else 'Общий чат'}\n{row['name']} · {row['created_at'][:16]}\n{row['body']}", context=(kind, record))
         buttons = [[self.button(conn, link, "Ответить", "reply", kind=kind, record=record)]]
         if len(rows) > 5:
@@ -231,7 +234,7 @@ class BotEngine:
                     self.check_context(conn, user, kind, row[key])
                 except HTTPException:
                     continue
-                result.append((row["created_at"], row["text"], kind, row[key]))
+                result.append((row["created_at"], self.desk.customer_notification_text(row["text"], user), kind, row[key]))
         buttons = [[self.button(conn, link, item[1][:65], "ticket" if item[2] == "ticket" else "history", kind=item[2], record=item[3])]
                    for item in sorted(result, reverse=True)[:8]]
         self.queue(conn, link, "Последние уведомления:" if result else "Уведомлений пока нет.", buttons)
@@ -456,10 +459,13 @@ class BotEngine:
             return
         if event_kind == "message":
             table, key = ("messages", "ticket_id") if kind == "ticket" else ("chat_messages", "chat_id")
-            msg = conn.execute(f"SELECT m.body,m.author_id,u.name FROM {table} m JOIN users u ON u.id=m.author_id WHERE {key}=? ORDER BY m.id DESC LIMIT 1", (record,)).fetchone()
+            msg = conn.execute(f"SELECT m.body,m.author_id,u.name,u.role AS author_role FROM {table} m JOIN users u ON u.id=m.author_id WHERE {key}=? ORDER BY m.id DESC LIMIT 1", (record,)).fetchone()
             if msg and msg["author_id"] == user_id:
                 return
             if msg:
+                msg = dict(msg)
+                if user["role"] == "customer" and msg["author_role"] != "customer":
+                    msg["name"] = self.desk.SUPPORT_NAME
                 text += f"\n{msg['name']}:\n{msg['body']}"
         if event_kind == "estimate":
             e = self.desk.latest_estimate(conn, record)

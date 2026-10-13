@@ -719,18 +719,46 @@ SERVICE_ENTRY_SELECT = """SELECT s.*, a.name AS author_name, t.title AS ticket_t
 
 
 MESSAGE_SELECT = """SELECT m.id,m.body,m.created_at,m.author_id,u.name AS author_name,u.role AS author_role,
-    m.reply_to_id,r.body AS reply_body,ru.name AS reply_author_name
+    m.reply_to_id,r.body AS reply_body,ru.name AS reply_author_name,ru.role AS reply_author_role
     FROM {table} m JOIN users u ON u.id=m.author_id
     LEFT JOIN {table} r ON r.id=m.reply_to_id LEFT JOIN users ru ON ru.id=r.author_id"""
 TICKET_MESSAGE_SELECT = MESSAGE_SELECT.format(table="messages")
 CHAT_MESSAGE_SELECT = MESSAGE_SELECT.format(table="chat_messages")
 # Клиенту видны только дата, вид и итоги встречи — без минут и внутренней заметки.
 MEETING_SUMMARY_SELECT = """SELECT s.id,s.kind,s.ticket_id,s.occurred_at,s.shared_at,s.client_summary,s.client_next_steps,
-    a.name AS author_name FROM service_entries s JOIN users a ON a.id=s.author_id"""
+    s.author_id,a.name AS author_name FROM service_entries s JOIN users a ON a.id=s.author_id"""
 
 
-def message_dict(row):
+SUPPORT_NAME = "Служба поддержки"
+
+
+def customer_record(conn, row, viewer):
+    """Expose service identities to customers; retain staff attribution internally."""
     item = dict(row)
+    if viewer["role"] != "customer":
+        return item
+    for key in ("assignee_id", "assignee_name", "assignee_profile", "participants"):
+        item.pop(key, None)
+    for prefix in ("author", "actor", "created_by"):
+        identity = item.get(f"{prefix}_id")
+        person = conn.execute("SELECT role FROM users WHERE id=?", (identity,)).fetchone() if identity else None
+        if person and person["role"] != "customer":
+            item.pop(f"{prefix}_id", None)
+            if f"{prefix}_name" in item:
+                item[f"{prefix}_name"] = SUPPORT_NAME
+    return item
+
+
+def message_dict(row, viewer=None):
+    item = dict(row)
+    if viewer is not None and viewer["role"] == "customer":
+        if item.get("author_role") != "customer":
+            item["author_name"] = SUPPORT_NAME
+            item.pop("author_id", None)
+            item["author_role"] = "support"
+        if item.get("reply_author_role") and item["reply_author_role"] != "customer":
+            item["reply_author_name"] = SUPPORT_NAME
+            item["reply_author_role"] = "support"
     if item.get("reply_body") and len(item["reply_body"]) > 240:
         item["reply_body"] = item["reply_body"][:240].rstrip() + "…"
     return item
@@ -822,15 +850,15 @@ def customer_next_step(ticket, estimate, conn=None, user=None):
             return "Согласуйте дополнительные часы"
         return "Работа идёт"
     if not ticket["assignee_id"]:
-        return "Назначаем ответственного"
+        return "Ожидает обработки"
     if not estimate or estimate["effort_minutes"] is None:
-        return "Сотрудник готовит оценку"
+        return "Готовим оценку"
     return {
         "pending": "Одобрите оценку трудозатрат",
         "approved": "Работа согласована и скоро начнётся",
         "rejected": "Ожидаем новую оценку",
-        "revision_requested": "Сотрудник пересчитывает трудозатраты",
-    }.get(estimate["state"], "Сотрудник готовит оценку")
+        "revision_requested": "Пересчитываем трудозатраты",
+    }.get(estimate["state"], "Готовим оценку")
 
 
 def auto_approve_estimate(conn, ticket_id, customer_id, estimate_id, effort_minutes):
@@ -853,6 +881,12 @@ def auto_approve_estimate(conn, ticket_id, customer_id, estimate_id, effort_minu
 def latest_estimate(conn, ticket_id):
     return conn.execute("""SELECT e.*,u.name AS author_name FROM estimates e JOIN users u ON u.id=e.author_id
         WHERE e.ticket_id=? ORDER BY e.version DESC LIMIT 1""", (ticket_id,)).fetchone()
+
+
+def customer_notification_text(text, viewer):
+    if viewer["role"] == "customer" and text.startswith("Новое сообщение в общем чате:"):
+        return "Новое сообщение в общем чате"
+    return text
 
 
 def notify(conn, user_id, ticket_id, kind, message):
@@ -1558,19 +1592,11 @@ def staff_profile(conn, user):
 
 
 def visible_staff(conn, staff_id, viewer):
+    if viewer["role"] == "customer":
+        raise HTTPException(404, "Сотрудник не найден")
     person = conn.execute("SELECT * FROM users WHERE id=? AND role IN ('employee','admin') AND active=1", (staff_id,)).fetchone()
     if not person:
         raise HTTPException(404, "Сотрудник не найден")
-    if viewer["role"] == "customer":
-        allowed = conn.execute("""SELECT 1 FROM tickets t WHERE t.assignee_id=? AND
-            ((t.visibility!='organization' AND t.customer_id=?) OR (t.visibility='organization' AND t.organization_id IN
-            (SELECT organization_id FROM organization_members WHERE user_id=?)))
-            UNION SELECT 1 FROM chats WHERE assignee_id=? AND
-            ((organization_id IS NULL AND customer_id=?) OR organization_id IN
-             (SELECT organization_id FROM organization_members WHERE user_id=?))""",
-            (staff_id, viewer["id"], viewer["id"], staff_id, viewer["id"], viewer["id"])).fetchone()
-        if not allowed:
-            raise HTTPException(404, "Сотрудник не найден")
     return person
 
 
@@ -1711,7 +1737,7 @@ def notifications(desk_session: str | None = Cookie(default=None)):
         for row in rows:
             try:
                 ticket_for(conn, row["ticket_id"], user, write=False)
-                visible.append(dict(row))
+                visible.append({**dict(row), "text": customer_notification_text(row["text"], user)})
             except HTTPException:
                 continue
     return visible
@@ -1740,7 +1766,7 @@ def chat_notifications(desk_session: str | None = Cookie(default=None)):
         for row in rows:
             try:
                 chat_for(conn, row["chat_id"], user)
-                visible.append(dict(row))
+                visible.append({**dict(row), "text": customer_notification_text(row["text"], user)})
             except HTTPException:
                 continue
     return visible
@@ -1776,7 +1802,7 @@ def chats(desk_session: str | None = Cookie(default=None)):
             rows = conn.execute(sql + " WHERE c.assignee_id=? ORDER BY c.updated_at DESC", (user["id"],)).fetchall()
         else:
             rows = conn.execute(sql + " ORDER BY c.updated_at DESC").fetchall()
-    return [dict(row) for row in rows]
+        return [customer_record(conn, row, user) for row in rows]
 
 
 @app.post("/api/chats", status_code=201)
@@ -1784,7 +1810,7 @@ def create_chat(desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        return create_chat_service(conn, user)
+        return customer_record(conn, create_chat_service(conn, user), user)
 
 
 def create_chat_service(conn, user):
@@ -1835,10 +1861,10 @@ def get_chat(chat_id: int, desk_session: str | None = Cookie(default=None)):
         member_ids = chat_recipients(conn, chat)
         participants = [dict(r) for r in conn.execute("SELECT id,name FROM users WHERE id IN (" +
             ",".join("?" for _ in member_ids) + ") ORDER BY name", tuple(member_ids))]
-    return {"chat": dict(chat), "participants": participants, "messages": [message_dict(row) for row in messages],
-            "linked_tickets": visible_links, "attachments": [dict(row) for row in files],
+        return {"chat": customer_record(conn, chat, user), "participants": participants, "messages": [message_dict(row, user) for row in messages],
+            "linked_tickets": visible_links, "attachments": [customer_record(conn, row, user) for row in files],
             "service_entries": [dict(row) for row in service],
-            "meeting_summaries": [dict(row) for row in summaries], "read_state": reads}
+            "meeting_summaries": [customer_record(conn, row, user) for row in summaries], "read_state": reads}
 
 
 @app.post("/api/service-entries", status_code=201)
@@ -2043,7 +2069,7 @@ def assign_chat(chat_id: int, data: Assignment, desk_session: str | None = Cooki
         conn.execute("UPDATE chats SET assignee_id=?,updated_at=? WHERE id=?", (data.assignee_id, now(), chat_id))
         if data.assignee_id and data.assignee_id != chat["assignee_id"]:
             notify_chat(conn, data.assignee_id, chat_id, "assignment", f"Вам назначен общий чат с {chat['customer_name']}")
-        return dict(chat_for(conn, chat_id, user))
+        return customer_record(conn, chat_for(conn, chat_id, user), user)
 
 
 @app.post("/api/chats/{chat_id}/messages", status_code=201)
@@ -2063,7 +2089,7 @@ def add_chat_message_service(conn, user, chat_id: int, data: MessageCreate):
     existing = conn.execute(f"{CHAT_MESSAGE_SELECT} WHERE m.chat_id=? AND m.author_id=? AND m.request_id=?",
                             (chat_id, user["id"], data.request_id)).fetchone()
     if existing:
-        return message_dict(existing)
+        return message_dict(existing, user)
     reply_to = checked_reply(conn, "chat_messages", "chat_id", chat_id, data.reply_to_id)
     stamp = now()
     cursor = conn.execute("INSERT INTO chat_messages(chat_id,author_id,body,request_id,created_at,reply_to_id) VALUES(?,?,?,?,?,?)",
@@ -2071,17 +2097,21 @@ def add_chat_message_service(conn, user, chat_id: int, data: MessageCreate):
     conn.execute("UPDATE chats SET updated_at=? WHERE id=?", (stamp, chat_id))
     mark_read(conn, "chat", chat_id, user["id"], cursor.lastrowid)
     for recipient in chat_message_recipients(conn, chat, user):
-        notify_chat(conn, recipient, chat_id, "message", f"Новое сообщение в общем чате: {user['name']}")
+        notify_chat(conn, recipient, chat_id, "message", "Новое сообщение в общем чате" if user["role"] != "customer" else f"Новое сообщение в общем чате: {user['name']}")
     message_payload = message_dict(conn.execute(f"{CHAT_MESSAGE_SELECT} WHERE m.id=?", (cursor.lastrowid,)).fetchone())
     chat_participants = chat_recipients(conn, chat)
     if chat["assignee_id"]:
         chat_participants.add(chat["assignee_id"])
     for dispatcher in conn.execute("SELECT id FROM users WHERE (role='admin' OR is_manager=1) AND active=1"):
         chat_participants.add(dispatcher["id"])
-    realtime_bus.broadcast(chat_participants, {
-        "type": "chat_message", "chat_id": chat_id, "message": message_payload
-    })
-    return message_payload
+    for recipient_id in chat_participants:
+        viewer = conn.execute("SELECT role FROM users WHERE id=?", (recipient_id,)).fetchone()
+        if viewer:
+            realtime_bus.publish(recipient_id, {
+                "type": "chat_message", "chat_id": chat_id,
+                "message": message_dict(message_payload, viewer)
+            })
+    return message_dict(message_payload, user)
 
 
 @app.get("/api/staff")
@@ -2223,7 +2253,7 @@ def tickets(desk_session: str | None = Cookie(default=None)):
                 item["next_step"] = customer_next_step(item, estimate, conn, user)
                 item["can_decide"] = customer_can_decide(conn, row, user)
                 item["can_write"] = customer_can_write_ticket(conn, row, user)
-            result.append(item)
+            result.append(customer_record(conn, item, user))
     return result
 
 
@@ -2385,7 +2415,7 @@ def add_ticket_service(conn, user, data: TicketCreate):
         if assignee_id is None:
             for admin in conn.execute("SELECT id FROM users WHERE (role='admin' OR is_manager=1) AND active=1 AND id!=?", (user["id"],)):
                 notify(conn, admin["id"], cursor.lastrowid, "new_ticket", f"Новая заявка №{cursor.lastrowid}: {data.title.strip()}")
-    result = ticket_dict(ticket_for(conn, cursor.lastrowid, user))
+    result = customer_record(conn, ticket_for(conn, cursor.lastrowid, user), user)
     dispatch_webhooks("ticket.created", {
         "event": "ticket.created",
         "ticket_id": cursor.lastrowid,
@@ -2513,13 +2543,13 @@ def get_ticket(ticket_id: int, desk_session: str | None = Cookie(default=None)):
             item["can_write"] = customer_can_write_ticket(conn, ticket, user)
             item["can_decline"] = customer_can_decline(conn, ticket, user)
         reads = read_state(conn, "ticket", ticket_id)
-    return {"ticket": item, "messages": [message_dict(x) for x in messages],
-            "meeting_summaries": [dict(x) for x in summaries], "read_state": reads,
+        return {"ticket": customer_record(conn, item, user), "messages": [message_dict(x, user) for x in messages],
+            "meeting_summaries": [customer_record(conn, x, user) for x in summaries], "read_state": reads,
             "service_entries": [dict(x) for x in service_rows],
-            "events": [dict(x) for x in events], "estimates": [dict(x) for x in estimates],
+            "events": [customer_record(conn, x, user) for x in events if user["role"] != "customer" or x["kind"] != "assignment"], "estimates": [customer_record(conn, x, user) for x in estimates],
             "linked_chat": dict(linked) if linked else None,
-            "time_entries": [dict(x) for x in time_rows], "hour_requests": [dict(x) for x in hour_rows],
-            "attachments": [dict(x) for x in file_rows]}
+            "time_entries": [customer_record(conn, x, user) for x in time_rows], "hour_requests": [customer_record(conn, x, user) for x in hour_rows],
+            "attachments": [customer_record(conn, x, user) for x in file_rows]}
 
 
 @app.post("/api/tickets/{ticket_id}/estimates", status_code=201)
@@ -2614,7 +2644,7 @@ def add_message_service(conn, user, ticket_id: int, data: MessageCreate):
     existing = conn.execute(f"{TICKET_MESSAGE_SELECT} WHERE m.ticket_id=? AND m.author_id=? AND m.request_id=?",
                             (ticket_id, user["id"], data.request_id)).fetchone()
     if existing:
-        return message_dict(existing)
+        return message_dict(existing, user)
     if ticket["status"] == "closed":
         raise HTTPException(409, "Заявка закрыта")
     reply_to = checked_reply(conn, "messages", "ticket_id", ticket_id, data.reply_to_id)
@@ -2641,10 +2671,14 @@ def add_message_service(conn, user, ticket_id: int, data: MessageCreate):
         ticket_participants.add(ticket["assignee_id"])
     for dispatcher in conn.execute("SELECT id FROM users WHERE (role='admin' OR is_manager=1) AND active=1"):
         ticket_participants.add(dispatcher["id"])
-    realtime_bus.broadcast(ticket_participants, {
-        "type": "ticket_message", "ticket_id": ticket_id, "message": message_payload
-    })
-    return message_payload
+    for recipient_id in ticket_participants:
+        viewer = conn.execute("SELECT role FROM users WHERE id=?", (recipient_id,)).fetchone()
+        if viewer:
+            realtime_bus.publish(recipient_id, {
+                "type": "ticket_message", "ticket_id": ticket_id,
+                "message": message_dict(message_payload, viewer)
+            })
+    return message_dict(message_payload, user)
 
 
 def dispatcher_ids(conn):
@@ -2705,7 +2739,7 @@ def assign(ticket_id: int, data: Assignment, desk_session: str | None = Cookie(d
                       str(data.assignee_id) if data.assignee_id else None, stamp))
         if data.assignee_id and data.assignee_id != ticket["assignee_id"]:
             notify(conn, data.assignee_id, ticket_id, "assignment", f"Вам назначена заявка №{ticket_id}")
-        return ticket_dict(ticket_for(conn, ticket_id, user))
+        return customer_record(conn, ticket_for(conn, ticket_id, user), user)
 
 
 @app.patch("/api/tickets/{ticket_id}/status")
@@ -2788,7 +2822,7 @@ def accept_work_service(conn, user, ticket_id: int, data: AcceptanceDecision):
         notify(conn, recipient, ticket_id, "acceptance", text)
     dispatch_webhooks("ticket.status_changed", {"event": "ticket.status_changed", "ticket_id": ticket_id,
                                                 "old_status": "done", "new_status": new_status, "timestamp": stamp})
-    return ticket_dict(ticket_for(conn, ticket_id, user))
+    return customer_record(conn, ticket_for(conn, ticket_id, user), user)
 
 
 @app.post("/api/tickets/{ticket_id}/acceptance")
@@ -2821,7 +2855,7 @@ def reopen_ticket(ticket_id: int, data: ReopenTicket, desk_session: str | None =
                      (ticket_id, user["id"], "reopen", "closed", data.reason.strip(), now()))
         for recipient in customer_recipients(conn, ticket) | ({ticket["assignee_id"]} - {None}):
             notify(conn, recipient, ticket_id, "status", f"Заявка №{ticket_id} возвращена в работу: {data.reason.strip()}")
-        return ticket_dict(ticket_for(conn, ticket_id, user))
+        return customer_record(conn, ticket_for(conn, ticket_id, user), user)
 
 
 def decline_ticket_service(conn, user, ticket_id: int, data: TicketDecline):
@@ -2847,7 +2881,7 @@ def decline_ticket_service(conn, user, ticket_id: int, data: TicketDecline):
         notify(conn, recipient, ticket_id, "decline", text)
     dispatch_webhooks("ticket.status_changed", {"event": "ticket.status_changed", "ticket_id": ticket_id,
                                                 "old_status": ticket["status"], "new_status": "closed", "timestamp": stamp})
-    return ticket_dict(ticket_for(conn, ticket_id, user))
+    return customer_record(conn, ticket_for(conn, ticket_id, user), user)
 
 
 @app.post("/api/tickets/{ticket_id}/decline")
@@ -4037,7 +4071,7 @@ def get_ticket_git_links(ticket_id: int, desk_session: str | None = Cookie(defau
             WHERE g.ticket_id = ?
             ORDER BY g.id DESC
         """, (ticket_id,)).fetchall()
-        return [dict(r) for r in rows]
+        return [customer_record(conn, r, user) for r in rows]
 
 
 @app.post("/api/tickets/{ticket_id}/git-links", status_code=201)
@@ -5417,9 +5451,11 @@ def render_outbox_email(conn, job):
     unread = list(reversed(conn.execute(messages_sql, (record_id, user["id"], read["last_read_id"] if read else 0)).fetchall()))
     if not any(e["kind"] == "message" for e in events):
         unread = []
+    events = [{**e, "text": customer_notification_text(e["text"], user)} for e in events]
     text_lines = [heading, ""] + [f"• {e['text']}" for e in events]
     body = "".join(f"<p style=\"margin:0 0 6px\">• {html.escape(e['text'])}</p>" for e in events)
     for message in unread:
+        message = message_dict(message, user)
         body += quote_html(f"{message['author_name']} · {format_ru_date(message['created_at']).removesuffix(' г.')}", message["body"])
         text_lines += ["", f"{message['author_name']}:", message["body"]]
     buttons = []
