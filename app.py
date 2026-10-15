@@ -15,7 +15,7 @@ import sqlite3
 import sys
 import time
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date as Date, datetime, timedelta, timezone
 from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Literal
@@ -30,6 +30,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 import mailer
 import team_management
 import company_chat
+import payroll
 from web_push import WebPush, b64url_decode
 
 
@@ -551,6 +552,7 @@ def init_db():
         init_bot_schema(conn)
         team_management.init_schema(conn)
         company_chat.init_schema(conn)
+        payroll.init_schema(conn)
 
 
 init_db()
@@ -1075,6 +1077,7 @@ class TimeEntryCreate(BaseModel):
     minutes: int = Field(ge=1, le=100_000)
     note: str = Field(min_length=3, max_length=2000)
     request_id: str | None = Field(default=None, min_length=8, max_length=100)
+    work_date: Date | None = None
 
 
 class ServiceEntryCreate(BaseModel):
@@ -1996,6 +1999,7 @@ def delete_service_entry(entry_id: int, desk_session: str | None = Cookie(defaul
     user = current_user(desk_session)
     require_staff(user)
     with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT author_id,act_invoice_id,is_billable FROM service_entries WHERE id=?", (entry_id,)).fetchone()
         if not row:
             raise HTTPException(404, "Запись не найдена")
@@ -2005,6 +2009,7 @@ def delete_service_entry(entry_id: int, desk_session: str | None = Cookie(defaul
             raise HTTPException(403, "Удалить запись может её автор или руководитель")
         if row["act_invoice_id"] is not None:
             raise HTTPException(409, "Запись уже включена в акт")
+        payroll.protect_service_deletion(conn, entry_id)
         conn.execute("DELETE FROM service_entries WHERE id=?", (entry_id,))
         return {"ok": True}
 
@@ -2913,8 +2918,11 @@ def add_time_entry(ticket_id: int, data: TimeEntryCreate, desk_session: str | No
         if actual_minutes(conn, ticket_id) + data.minutes > approved_minutes(conn, ticket_id):
             raise HTTPException(409, "Превышен согласованный лимит часов. Запросите дополнительные часы")
         stamp = now()
-        cursor = conn.execute("INSERT INTO time_entries(ticket_id,author_id,minutes,note,created_at,request_id) VALUES(?,?,?,?,?,?)",
-                              (ticket_id, user["id"], data.minutes, data.note.strip(), stamp, data.request_id))
+        work_date = data.work_date or payroll.work_today()
+        if work_date > payroll.work_today():
+            raise HTTPException(422, "Дата фактической работы не может быть в будущем")
+        cursor = conn.execute("INSERT INTO time_entries(ticket_id,author_id,minutes,note,created_at,request_id,work_date) VALUES(?,?,?,?,?,?,?)",
+                              (ticket_id, user["id"], data.minutes, data.note.strip(), stamp, data.request_id, work_date.isoformat()))
         conn.execute("UPDATE tickets SET updated_at=? WHERE id=?", (stamp, ticket_id))
         return dict(conn.execute("SELECT * FROM time_entries WHERE id=?", (cursor.lastrowid,)).fetchone())
 
@@ -5827,6 +5835,7 @@ def bootstrap_admin():
 
 
 team_management.install_routes(app, sys.modules[__name__])
+payroll.install_routes(app, sys.modules[__name__])
 
 from bot.service import BotEngine
 from bot.routes import install_bot_routes
