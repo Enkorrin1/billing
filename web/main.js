@@ -1,10 +1,31 @@
 const app = document.querySelector('#app');
-const state = { user: null, profile: null, tickets: [], chats: [], queue: [], staff: [], customers: [], organizations: [], notifications: [], current: null, currentChat: null, view: 'tickets', filter: 'all', search: '', authMode: 'login', error: '', internalNotes: [], cannedResponses: [], analytics: null, kbCategories: [], kbArticles: [], kbActiveCategory: null, kbSearch: '', kbReadingArticle: null, kbEditingArticle: null, gitLinks: [], webhooks: [], billing: null, billingTab: 'docs', billingFilter: 'all', billingModal: null, owner: 'all', queueScope: 'all', queueSource: 'all', queueGroup: null, detailTab: 'messages', chatSearch: '', inboxSection: 'general', ticketChatSearch: '', waiting: [], replyTo: null };
+const state = { user: null, profile: null, tickets: [], chats: [], queue: [], staff: [], customers: [], organizations: [], notifications: [], current: null, currentChat: null, view: 'tickets', filter: 'all', priorityFilter: 'all', search: '', authMode: 'login', error: '', internalNotes: [], cannedResponses: [], analytics: null, kbCategories: [], kbArticles: [], kbActiveCategory: null, kbSearch: '', kbReadingArticle: null, kbEditingArticle: null, gitLinks: [], webhooks: [], billing: null, billingTab: 'docs', billingFilter: 'all', billingModal: null, owner: 'all', queueScope: 'all', queueSource: 'all', queueGroup: null, detailTab: 'messages', chatSearch: '', inboxSection: 'general', ticketChatSearch: '', waiting: [], replyTo: null, specialists: [], selectedTickets: new Set() };
+
+async function claimTicket(id) {
+  try {
+    await api(`/tickets/${id}`, { method: 'PATCH', body: JSON.stringify({ assignee_id: state.user.id, status: 'working' }) });
+    toast(`Заявка №${id} взята вами в работу`);
+    await reload();
+    if (state.view === 'detail' && state.current?.ticket?.id === id) openTicket(id);
+    else if (state.view === 'tickets') renderTickets();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
 const statusNames = { new: 'Новая', working: 'В работе', waiting: 'Ожидает заказчика', done: 'На проверке', closed: 'Закрыта' };
+const priorityNames = { low: 'Низкий', normal: 'Обычный', high: 'Высокий', urgent: 'Критический' };
 const teamRoleNames = {programmer:'Программист',integrator:'Интегратор',devops:'Девопс',analyst:'Аналитик',designer:'Дизайнер',qa:'Тестировщик',sales:'Продажи',account:'Ведение клиентов',call_host:'Проведение созвонов',support:'Поддержка',project_manager:'Управление проектами',team_lead:'Руководство командой',finance:'Финансовый учёт'};
 const staffLabel = person => `${person.name}${(person.functions||[person.team_role]).filter(Boolean).length?' · '+(person.functions||[person.team_role]).filter(Boolean).map(c=>state.teamWorkspace?.functions.find(f=>f.code===c)?.name||teamRoleNames[c]||c).join(', '):''}`;
 const teamRoleOptions = selected => `<option value="">Не назначена</option>${Object.entries(teamRoleNames).map(([value,label])=>`<option value="${value}" ${selected===value?'selected':''}>${label}</option>`).join('')}`;
-const estimateNames = {pending:'Ожидает решения',approved:'Одобрена',rejected:'Отклонена',revision_requested:'Запрошена корректировка'};
+const estimateNames = {
+  pending_pm: 'Ожидает согласования PM',
+  pending: 'Ожидает решения заказчика',
+  approved: 'Одобрена',
+  rejected: 'Отклонена',
+  rejected_by_pm: 'Отклонена PM',
+  pm_revision_requested: 'Возвращена PM на доработку',
+  revision_requested: 'Запрошена корректировка'
+};
 const serviceNames = {development:'Доработка',new_development:'Разработка',integration:'Интеграция',support:'Поддержка',maintenance:'Сопровождение',consultation:'Консультация',other:'Другое'};
 const serviceLabel = value => value?.startsWith('custom:') ? value.slice(7) : serviceNames[value] || 'Другое';
 const ticketServiceType = form => form.elements.service_type.value === 'other' ? `custom:${form.elements.service_topic.value.trim()}` : form.elements.service_type.value;
@@ -21,6 +42,8 @@ const ICONS = {
   chat: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
   building: '<rect x="4" y="2" width="16" height="20" rx="2"/><path d="M9 22v-4h6v4M8 6h.01M12 6h.01M16 6h.01M8 10h.01M12 10h.01M16 10h.01M8 14h.01M12 14h.01M16 14h.01"/>',
   book: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V2H6.5A2.5 2.5 0 0 0 4 4.5z"/><path d="M20 17v5H6.5A2.5 2.5 0 0 1 4 19.5"/>',
+  briefcase: '<rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>',
+  calendar: '<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>',
   wallet: '<rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20M6 15h4"/>',
   chart: '<path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-6"/>',
   users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
@@ -847,25 +870,60 @@ function shell(title, action, body, opts = {}) {
   const v = state.view;
   const unread = state.notifications.filter(n => !n.read_at).length+(staff?(state.teamWorkspace?.events||[]).filter(e=>e.entity==='tasks'&&!e.read_at).length:0);
   const chatUnread = state.notifications.filter(n => ['chat', 'ticket'].includes(n.target) && !n.read_at).length;
-  const activeTasks=(state.teamWorkspace?.tasks||[]).filter(t=>t.status!=='done'&&t.status!=='cancelled'&&(t.owner_id===state.user.id||t.participants.includes(state.user.id)||(t.reviewer_id===state.user.id&&t.status==='review'))).length;
-    const activeTickets = state.tickets.filter(t => !['done', 'closed'].includes(t.status)).length;
+  const activeTasks=(state.teamWorkspace?.tasks||[]).filter(t=>t.status!=='done'&&t.status!=='cancelled'&&(t.owner_id===state.user.id||(t.participants||[]).includes(state.user.id)||(t.reviewer_id===state.user.id&&t.status==='review'))).length;
+  const activeDeals = (state.teamWorkspace?.deals || []).filter(d => !['won', 'lost'].includes(d.stage)).length;
+  const activeMeetings = (state.teamWorkspace?.meetings || []).filter(m => m.status === 'planned').length;
+  const activeTickets = state.tickets.filter(t => !['done', 'closed'].includes(t.status)).length;
   const ticketsActive = ['tickets', 'detail', 'new'].includes(v);
   const chatsActive = ['chats', 'chat', 'ticket-chat'].includes(v);
   const item = (id, label, ic, active, count, tone = '') => `<button class="nav-item ${active ? 'active' : ''}" data-nav="${id}" ${active ? 'aria-current="page"' : ''}>${icon(ic)}<span>${label}</span>${count ? `<span class="nav-count ${tone}">${count}</span>` : ''}</button>`;
-  const groups = [
-    ['Работа', [staff && item('tasks','Мои задачи','check',['tasks','task'].includes(v),activeTasks,'accent'), staff && item('queue', 'Обращения', 'queue', v === 'queue', state.queue.length, 'accent'), item('tickets', staff ? 'Заявки' : 'Мои заявки', 'ticket', ticketsActive, activeTickets), item('chats', 'Общий чат', 'chat', chatsActive, chatUnread, 'accent')]],
-    ['Клиенты', [(dispatcher || (!staff && state.organizations.length)) && item('organizations', staff ? 'Компании' : 'Моя компания', 'building', v === 'organizations'), item('kb', 'База знаний', 'book', v === 'kb')]],
-    ['Финансы', [staff && item('payroll', admin ? 'Выплаты исполнителям' : 'Мои начисления', 'wallet', v === 'payroll'), billingOn() && item('billing', 'Биллинг и счета', 'wallet', v === 'billing'), staff && dispatcher && item('analytics', 'Аналитика и SLA', 'chart', v === 'analytics')]],
-    ['Настройки', [item('profile', 'Мой профиль', 'user', v === 'profile'), staff && item('team', 'Команда', 'users', v === 'team'), item('messengers', 'Мессенджеры', 'send', v === 'messengers'), admin && item('webhooks', 'Вебхуки', 'link', v === 'webhooks')]],
+
+  const groups = staff ? [
+    ['Совместная работа', [
+      item('tasks', 'Задачи и Проекты', 'check', ['tasks','task'].includes(v), activeTasks, 'accent'),
+      item('deals', 'CRM и Сделки', 'briefcase', v === 'deals', activeDeals),
+      item('meetings', 'Календарь и Встречи', 'calendar', v === 'meetings', activeMeetings),
+      item('chats', 'Чат и Сообщения', 'chat', chatsActive, chatUnread, 'accent'),
+    ]],
+    ['Поддержка и Клиенты', [
+      item('tickets', 'Заявки клиентов', 'ticket', ticketsActive || v === 'queue', activeTickets),
+      item('organizations', 'Клиенты и Компании', 'building', v === 'organizations'),
+      item('kb', 'База знаний', 'book', v === 'kb'),
+    ]],
+    ['Компания и Учет', [
+      item('team', 'Сотрудники и Структура', 'users', v === 'team'),
+      item('payroll', admin ? 'Выплаты исполнителям' : 'Мои начисления', 'wallet', v === 'payroll'),
+      billingOn() && item('billing', 'Биллинг и счета', 'wallet', v === 'billing'),
+      dispatcher && item('analytics', 'Аналитика и SLA', 'chart', v === 'analytics'),
+    ]],
+    ['Настройки', [
+      item('profile', 'Мой профиль', 'user', v === 'profile'),
+      item('messengers', 'Мессенджеры', 'send', v === 'messengers'),
+      admin && item('webhooks', 'Вебхуки', 'link', v === 'webhooks'),
+    ]],
+  ].map(([label, items]) => { const list = items.filter(Boolean); return list.length ? `<div class="nav-group-label">${label}</div>${list.join('')}` : ''; }).join('')
+  : [
+    ['Мой кабинет', [
+      item('tickets', 'Мои заявки', 'ticket', ticketsActive, activeTickets),
+      item('specialists', 'Наша команда', 'users', v === 'specialists'),
+      item('chats', 'Чат с поддержкой', 'chat', chatsActive, chatUnread, 'accent'),
+      state.organizations.length && item('organizations', 'Моя компания', 'building', v === 'organizations'),
+      item('kb', 'База знаний', 'book', v === 'kb'),
+      billingOn() && item('billing', 'Счета и Биллинг', 'wallet', v === 'billing'),
+      item('profile', 'Мой профиль', 'user', v === 'profile'),
+      item('messengers', 'Мессенджеры', 'send', v === 'messengers'),
+    ]]
   ].map(([label, items]) => { const list = items.filter(Boolean); return list.length ? `<div class="nav-group-label">${label}</div>${list.join('')}` : ''; }).join('');
+
   const tab = (id, label, ic, active, count) => `<button class="${active ? 'active' : ''}" data-nav="${id}" ${active ? 'aria-current="page"' : ''}>${icon(ic, 22)}${label}${count ? `<span class="dot-count">${count}</span>` : ''}</button>`;
   const tabs = [
     staff ? tab('tasks', 'Задачи', 'check', ['tasks','task'].includes(v)) : tab('tickets', 'Заявки', 'ticket', ticketsActive),
-    staff ? tab('tickets', 'Заявки', 'ticket', ticketsActive) : tab('notifications', 'События', 'bell', v === 'notifications', unread),
+    staff ? tab('deals', 'Сделки', 'briefcase', v === 'deals', activeDeals) : tab('notifications', 'События', 'bell', v === 'notifications', unread),
     tab('chats', 'Чат', 'chat', chatsActive, chatUnread),
-    billingOn() ? tab('billing', 'Счета', 'wallet', v === 'billing') : staff ? tab('notifications', 'События', 'bell', v === 'notifications', unread) : tab('profile', 'Профиль', 'user', v === 'profile'),
+    staff ? tab('tickets', 'Заявки', 'ticket', ticketsActive) : (billingOn() ? tab('billing', 'Счета', 'wallet', v === 'billing') : tab('profile', 'Профиль', 'user', v === 'profile')),
     `<button data-nav-toggle aria-controls="sidebar" aria-expanded="false">${icon('more', 22)}Ещё</button>`,
   ].join('');
+
   const role = admin ? 'Администратор' : state.user.is_manager ? 'Менеджер' : 'Сотрудник';
   const subtitle = staff ? (state.profile?.job_title || role) : (state.organizations[0]?.name || state.profile?.company_name || 'Заказчик');
   const kicker = opts.kicker ?? (staff ? 'Рабочее место' : 'Личный кабинет');
@@ -875,20 +933,119 @@ function shell(title, action, body, opts = {}) {
   const entering = viewKey !== lastViewKey && !reduceMotion();
   lastViewKey = viewKey;
   document.body.classList.remove('nav-open');
-  app.innerHTML = `<a class="skip-link" href="#main">Перейти к содержимому</a><div class="shell"><aside id="sidebar" aria-label="Основное меню"><div class="brand"><span class="brand-mark" aria-hidden="true">Л</span><span><span class="brand-name">Линия<span class="brand-dot">.</span></span><small>Кабинет заявок</small></span></div><nav class="nav">${groups}</nav><div class="aside-bottom aside-user"><button type="button" class="aside-profile ${v === 'profile' ? 'active' : ''}" data-nav="profile" aria-label="Открыть мой профиль" title="Мой профиль" ${v === 'profile' ? 'aria-current="page"' : ''}>${avatar(state.profile, 'small')}<span class="aside-user-meta"><strong>${esc(state.user.name)}</strong><small>${esc(subtitle)}</small></span></button><button id="theme-toggle" class="aside-logout" aria-label="Сменить тему">${icon(effectiveTheme() === 'dark' ? 'sun' : 'moon')}</button><button id="logout" class="aside-logout" aria-label="Выйти" title="Выйти">${icon('logout')}</button></div></aside><div class="nav-backdrop" data-nav-close></div><div class="workspace"><header class="topbar"><button class="icon-btn menu-btn" data-nav-toggle aria-controls="sidebar" aria-expanded="false" aria-label="Открыть меню">${icon('menu')}</button><button type="button" class="global-search" id="open-palette" aria-haspopup="dialog">${icon('search', 17)}<span class="global-search-text">Поиск задач, заявок и разделов</span><kbd>Ctrl K</kbd></button><span class="topbar-spacer"></span><span id="connection-state" class="muted connection-state" role="status"></span><button class="button primary" id="top-new-ticket" aria-label="${staff?'Новая задача':'Новая заявка'}">${icon('plus', 16)}<span>${staff?'Новая задача':'Новая заявка'}</span></button>${staff ? '' : `<button class="icon-btn" id="help-tour" aria-label="Пройти обучение по кабинету" title="Обучение по кабинету">${icon('help')}</button>`}<button class="icon-btn ${v === 'notifications' ? 'active' : ''}" data-nav="notifications" aria-label="Уведомления${unread ? `: ${unread} новых` : ''}">${icon('bell')}<span class="dot-count" id="notification-count">${unread || ''}</span></button><button class="top-profile ${v === 'profile' ? 'active' : ''}" data-nav="profile" aria-label="Мой профиль">${avatar(state.profile, 'small')}${icon('chevron', 14)}</button></header><main id="main" tabindex="-1" class="${entering ? 'is-entering' : ''}">${opts.crumbs ? `<nav class="crumbs" aria-label="Навигационная цепочка">${opts.crumbs}</nav>` : ''}<div class="top"><div class="top-text">${opts.badges ? `<div class="top-badges">${opts.badges}</div>` : kicker ? `<div class="eyebrow">${kicker}</div>` : ''}<h1>${esc(title)}</h1>${opts.lead ? `<p class="lead">${opts.lead}</p>` : ''}</div>${action ? `<div class="top-actions">${action}</div>` : ''}</div>${notice()}${state.loadFailures?.length?'<div class="notice" role="status">Часть данных не обновилась. Доступные данные сохранены. <button class="button small" id="retry-load">Повторить загрузку</button></div>':''}${body}</main></div><nav class="tabbar" aria-label="Быстрая навигация">${tabs}</nav></div>`;
+
+  const mePerson = staff ? (state.teamWorkspace?.people || []).find(p => p.id === state.user.id) : null;
+  const myAvailability = mePerson?.availability || 'available';
+  const availabilityLabels = { available: 'На работе', vacation: 'В отпуске', sick: 'Больничный', away: 'Отсутствует' };
+  const workdayWidget = staff ? `
+    <div class="workday-widget" id="workday-widget">
+      <button type="button" class="workday-btn" id="workday-btn" title="Статус рабочего дня">
+        <span class="workday-dot ${myAvailability}"></span>
+        <span class="workday-label">${availabilityLabels[myAvailability] || 'На работе'}</span>
+      </button>
+      <div class="workday-menu bitrix-quick-menu" id="workday-menu" hidden>
+        <button type="button" data-set-status="available"><span class="workday-dot available"></span>На работе</button>
+        <button type="button" data-set-status="vacation"><span class="workday-dot vacation"></span>В отпуске</button>
+        <button type="button" data-set-status="sick"><span class="workday-dot sick"></span>Больничный</button>
+        <button type="button" data-set-status="away"><span class="workday-dot away"></span>Отсутствует</button>
+      </div>
+    </div>
+  ` : '';
+
+  const createButton = staff ? `
+    <div class="bitrix-create-wrap">
+      <button class="button primary bitrix-top-create" id="bitrix-create-btn" aria-haspopup="menu" aria-expanded="false" title="Быстрое создание">
+        ${icon('plus', 16)}<span>Создать</span>${icon('chevron', 12)}
+      </button>
+      <div class="bitrix-quick-menu" id="bitrix-create-menu" hidden>
+        <button type="button" data-bitrix-create="task">${icon('check', 16)}<span>Новая задача</span></button>
+        <button type="button" data-bitrix-create="deal">${icon('briefcase', 16)}<span>Новая сделка</span></button>
+        <button type="button" data-bitrix-create="meeting">${icon('calendar', 16)}<span>Запланировать встречу</span></button>
+        <button type="button" data-bitrix-create="ticket">${icon('ticket', 16)}<span>Новая заявка</span></button>
+      </div>
+    </div>
+  ` : `<button class="button primary" id="top-new-ticket" aria-label="Новая заявка">${icon('plus', 16)}<span>Новая заявка</span></button>`;
+
+  app.innerHTML = `<a class="skip-link" href="#main">Перейти к содержимому</a>
+  <div class="shell">
+    <aside id="sidebar" aria-label="Основное меню">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">Л</span>
+        <span><span class="brand-name">Линия<span class="brand-dot">.</span></span><small>${staff ? 'Рабочее пространство' : 'Кабинет заявок'}</small></span>
+      </div>
+      <nav class="nav">${groups}</nav>
+      <div class="aside-bottom aside-user">
+        <button type="button" class="aside-profile ${v === 'profile' ? 'active' : ''}" data-nav="profile" aria-label="Открыть мой профиль" title="Мой профиль" ${v === 'profile' ? 'aria-current="page"' : ''}>
+          ${avatar(state.profile, 'small')}
+          <span class="aside-user-meta"><strong>${esc(state.user.name)}</strong><small>${esc(subtitle)}</small></span>
+        </button>
+        <button id="theme-toggle" class="aside-logout" aria-label="Сменить тему">${icon(effectiveTheme() === 'dark' ? 'sun' : 'moon')}</button>
+        <button id="logout" class="aside-logout" aria-label="Выйти" title="Выйти">${icon('logout')}</button>
+      </div>
+    </aside>
+    <div class="nav-backdrop" data-nav-close></div>
+    <div class="workspace">
+      <header class="topbar">
+        <button class="icon-btn menu-btn" data-nav-toggle aria-controls="sidebar" aria-expanded="false" aria-label="Открыть меню">${icon('menu')}</button>
+        <button type="button" class="global-search" id="open-palette" aria-haspopup="dialog">${icon('search', 17)}<span class="global-search-text">Поиск задач, сделок, заявок, контактов...</span><kbd>Ctrl K</kbd></button>
+        <span class="topbar-spacer"></span>
+        ${workdayWidget}
+        <span id="connection-state" class="muted connection-state" role="status"></span>
+        ${createButton}
+        ${staff ? '' : `<button class="icon-btn" id="help-tour" aria-label="Пройти обучение по кабинету" title="Обучение по кабинету">${icon('help')}</button>`}
+        <button class="icon-btn ${v === 'notifications' ? 'active' : ''}" data-nav="notifications" aria-label="Уведомления${unread ? `: ${unread} новых` : ''}">${icon('bell')}<span class="dot-count" id="notification-count">${unread || ''}</span></button>
+        <button class="top-profile ${v === 'profile' ? 'active' : ''}" data-nav="profile" aria-label="Мой профиль">${avatar(state.profile, 'small')}${icon('chevron', 14)}</button>
+      </header>
+      <main id="main" tabindex="-1" class="${entering ? 'is-entering' : ''}">
+        ${opts.crumbs ? `<nav class="crumbs" aria-label="Навигационная цепочка">${opts.crumbs}</nav>` : ''}
+        <div class="top">
+          <div class="top-text">
+            ${opts.badges ? `<div class="top-badges">${opts.badges}</div>` : kicker ? `<div class="eyebrow">${kicker}</div>` : ''}
+            <h1>${esc(title)}</h1>
+            ${opts.lead ? `<p class="lead">${opts.lead}</p>` : ''}
+          </div>
+          ${action ? `<div class="top-actions">${action}</div>` : ''}
+        </div>
+        ${notice()}
+        ${state.loadFailures?.length ? '<div class="notice" role="status">Часть данных не обновилась. Доступные данные сохранены. <button class="button small" id="retry-load">Повторить загрузку</button></div>' : ''}
+        ${body}
+      </main>
+    </div>
+    <nav class="tabbar" aria-label="Быстрая навигация">${tabs}</nav>
+  </div>`;
+
   document.querySelector('.skip-link').onclick = event => {
     event.preventDefault();
     document.querySelector('#main').focus();
     document.querySelector('#main').scrollIntoView({ block: 'start', behavior: 'instant' });
   };
-  document.querySelector('#retry-load')?.addEventListener('click',()=>refresh());
+  document.querySelector('#retry-load')?.addEventListener('click', () => refresh());
+
   const navActions = {
-    tasks: () => setView('tasks'), queue: () => setView('queue'), tickets: () => setView('tickets'), notifications: () => setView('notifications'), profile: () => setView('profile'),
-    organizations: () => setView('organizations'), team: () => setView('team'), kb: () => openKb(), billing: () => billingOn() ? openBilling() : setView('tickets'), payroll: () => setView('payroll'),
-    analytics: () => openAnalytics(), webhooks: () => openWebhooks(), messengers: () => openMessengers(),
+    tasks: () => setView('tasks'),
+    deals: () => setView('deals'),
+    meetings: () => setView('meetings'),
+    queue: () => setView('queue'),
+    tickets: () => setView('tickets'),
+    notifications: () => setView('notifications'),
+    profile: () => setView('profile'),
+    organizations: () => setView('organizations'),
+    team: () => setView('team'),
+    kb: () => openKb(),
+    billing: () => billingOn() ? openBilling() : setView('tickets'),
+    payroll: () => setView('payroll'),
+    analytics: () => openAnalytics(),
+    webhooks: () => openWebhooks(),
+    messengers: () => openMessengers(),
+    specialists: () => openSpecialists(),
     chats: async () => { if (staff || state.inboxSection === 'tickets') return setView('chats'); try { const chat = await api('/chats', { method: 'POST' }); await refresh(); await openChat(chat.id); } catch (error) { showError(error); } },
   };
-  document.querySelectorAll('[data-nav]').forEach(button => button.onclick = () => { if (document.body.classList.contains('nav-open')) document.querySelector('[data-nav-close]')?.click(); navActions[button.dataset.nav]?.(); });
+
+  document.querySelectorAll('[data-nav]').forEach(button => button.onclick = () => {
+    if (document.body.classList.contains('nav-open')) document.querySelector('[data-nav-close]')?.click();
+    navActions[button.dataset.nav]?.();
+  });
+
   document.querySelectorAll('[data-nav-toggle]').forEach(button => button.onclick = () => {
     const open = document.body.classList.toggle('nav-open');
     document.querySelectorAll('[data-nav-toggle]').forEach(toggle => toggle.setAttribute('aria-expanded', String(open)));
@@ -896,6 +1053,7 @@ function shell(title, action, body, opts = {}) {
     document.querySelector('.tabbar').inert = open;
     if (open) requestAnimationFrame(() => (document.querySelector('#sidebar .nav-item.active') || document.querySelector('#sidebar .nav-item'))?.focus());
   });
+
   document.querySelector('[data-nav-close]').onclick = () => {
     document.body.classList.remove('nav-open');
     document.querySelector('.workspace').inert = false;
@@ -903,13 +1061,63 @@ function shell(title, action, body, opts = {}) {
     document.querySelectorAll('[data-nav-toggle]').forEach(toggle => toggle.setAttribute('aria-expanded', 'false'));
     document.querySelector('.menu-btn')?.focus();
   };
+
   document.querySelector('#sidebar').onkeydown = event => {
     if (event.key !== 'Tab' || !document.body.classList.contains('nav-open')) return;
     const buttons = [...document.querySelectorAll('#sidebar button:not(:disabled)')];
     if (event.shiftKey && document.activeElement === buttons[0]) { event.preventDefault(); buttons.at(-1)?.focus(); }
     else if (!event.shiftKey && document.activeElement === buttons.at(-1)) { event.preventDefault(); buttons[0]?.focus(); }
   };
-  document.querySelector('#top-new-ticket').onclick = () => staff?TasksUI.quickCreate():setView('new');
+
+  const createBtnEl = document.querySelector('#bitrix-create-btn');
+  const createMenuEl = document.querySelector('#bitrix-create-menu');
+  if (createBtnEl && createMenuEl) {
+    createBtnEl.onclick = e => {
+      e.stopPropagation();
+      const open = createMenuEl.hidden;
+      createMenuEl.hidden = !open;
+      createBtnEl.setAttribute('aria-expanded', String(open));
+    };
+    document.querySelectorAll('[data-bitrix-create]').forEach(b => b.onclick = e => {
+      createMenuEl.hidden = true;
+      createBtnEl.setAttribute('aria-expanded', 'false');
+      const action = b.dataset.bitrixCreate;
+      if (action === 'task') TasksUI.quickCreate();
+      else if (action === 'deal') TeamUI.workDialog('deals');
+      else if (action === 'meeting') TeamUI.workDialog('meetings');
+      else if (action === 'ticket') setView('new');
+    });
+  }
+  const topNewTicket = document.querySelector('#top-new-ticket');
+  if (topNewTicket) {
+    topNewTicket.onclick = () => setView('new');
+  }
+
+  const workdayBtnEl = document.querySelector('#workday-btn');
+  const workdayMenuEl = document.querySelector('#workday-menu');
+  if (workdayBtnEl && workdayMenuEl) {
+    workdayBtnEl.onclick = e => {
+      e.stopPropagation();
+      workdayMenuEl.hidden = !workdayMenuEl.hidden;
+    };
+    document.querySelectorAll('[data-set-status]').forEach(b => b.onclick = async e => {
+      workdayMenuEl.hidden = true;
+      const status = b.dataset.setStatus;
+      try {
+        await api('/team/me/availability', { method: 'PATCH', body: JSON.stringify({ availability: status }) });
+        await TeamUI.reload();
+        toast('Статус обновлён: ' + (availabilityLabels[status] || status));
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    });
+  }
+
+  document.addEventListener('click', () => {
+    if (createMenuEl) createMenuEl.hidden = true;
+    if (workdayMenuEl) workdayMenuEl.hidden = true;
+  });
+
   document.querySelector('#open-palette').onclick = () => openPalette();
   document.querySelector('#help-tour')?.addEventListener('click', () => startTour());
   document.querySelector('#theme-toggle').onclick = toggleTheme;
@@ -930,9 +1138,17 @@ function portfolioOverview(all) {
   const approved = approvedTickets.reduce((sum, t) => sum + (t.effort_minutes || 0), 0);
   const pending = all.filter(t => t.estimate_state === 'pending' && (staff || t.can_decide));
   const pendingMinutes = pending.reduce((sum, t) => sum + (t.effort_minutes || 0), 0);
+  const approvedSum = approvedTickets.reduce((sum, t) => sum + (t.cost_rub || t.estimate_amount_rub || 0), 0);
+  const pendingSum = pending.reduce((sum, t) => sum + (t.estimate_amount_rub || 0), 0);
   const parts = Object.keys(statusChipNames).map(key => ({ key, label: statusChipNames[key], count: all.filter(t => t.status === key).length }));
   const chart = parts.filter(p => p.count).map(p => `<button class="portfolio-segment ${p.key}" data-overview-filter="${p.key}" style="width:${p.count / total * 100}%" aria-label="${p.label}: ${p.count}" title="${p.label}: ${p.count}"></button>`).join('');
-  return `<section class="panel overview-card" aria-label="Сводка по заявкам"><div><div class="overview-head"><span class="eyebrow">По статусам</span><strong>${total} ${plural(total, ['заявка', 'заявки', 'заявок'])} · ${done} завершено</strong></div><div class="portfolio-track" role="group" aria-label="Фильтр по статусам заявок">${chart}</div><div class="portfolio-legends">${parts.map(p => `<span>${p.label} <strong>${p.count}</strong></span>`).join('')}</div></div><div><span class="eyebrow">Согласовано часов</span><strong class="big">${hours(approved)}</strong><span class="muted">${approvedTickets.length ? `по ${approvedTickets.length} ${plural(approvedTickets.length, ['заявке', 'заявкам', 'заявкам'])}` : 'Пока нет согласованных оценок'}</span></div><div><span class="eyebrow">${staff ? 'Ждут решения заказчика' : 'Ждут вашего решения'}</span><strong class="big">${pending.length} ${plural(pending.length, ['оценка', 'оценки', 'оценок'])}</strong><span class="muted">${pending.length ? `на ${hours(pendingMinutes)}` : 'Нет оценок на согласовании'}</span></div></section>`;
+  const col2 = staff
+    ? `<div><span class="eyebrow">Согласовано часов</span><strong class="big">${hours(approved)}</strong><span class="muted">${approvedTickets.length ? `по ${approvedTickets.length} ${plural(approvedTickets.length, ['заявке', 'заявкам', 'заявкам'])}` : 'Пока нет согласованных оценок'}</span></div>`
+    : `<div><span class="eyebrow">Согласовано</span><strong class="big">${approvedSum.toLocaleString('ru-RU')} ₽</strong><span class="muted">${approvedTickets.length ? `по ${approvedTickets.length} ${plural(approvedTickets.length, ['заявке', 'заявкам', 'заявкам'])}` : 'Пока нет согласованных оценок'}</span></div>`;
+  const col3 = staff
+    ? `<div><span class="eyebrow">Ждут решения заказчика</span><strong class="big">${pending.length} ${plural(pending.length, ['оценка', 'оценки', 'оценок'])}</strong><span class="muted">${pending.length ? `на ${hours(pendingMinutes)}` : 'Нет оценок на согласовании'}</span></div>`
+    : `<div><span class="eyebrow">Ждут вашего решения</span><strong class="big">${pending.length} ${plural(pending.length, ['оценка', 'оценки', 'оценок'])}</strong><span class="muted">${pending.length ? `на ${pendingSum.toLocaleString('ru-RU')} ₽` : 'Нет оценок на согласовании'}</span></div>`;
+  return `<section class="panel overview-card" aria-label="Сводка по заявкам"><div><div class="overview-head"><span class="eyebrow">По статусам</span><strong>${total} ${plural(total, ['заявка', 'заявки', 'заявок'])} · ${done} завершено</strong></div><div class="portfolio-track" role="group" aria-label="Фильтр по статусам заявок">${chart}</div><div class="portfolio-legends">${parts.map(p => `<span>${p.label} <strong>${p.count}</strong></span>`).join('')}</div></div>${col2}${col3}</section>`;
 }
 function queueItemSla(item) {
   if (item.source === 'ticket') { const t = state.tickets.find(x => x.id === item.id); const s = t && nearestSla(t); if (s) return s; }
@@ -961,8 +1177,8 @@ function waitingPanel() {
     return `<button type="button" class="waiting-row" data-waiting-ticket="${w.ticket_id}"><span class="waiting-ico ${w.kind}">${icon(waitingIcons[w.kind] || 'alert', 17)}</span><span class="waiting-text"><strong>${esc(w.action)}</strong><small>№${w.ticket_id} · ${esc(w.title)}</small><small class="waiting-detail">${esc(w.detail)}</small></span><span class="waiting-age ${age.days >= 2 ? 'late' : ''}">${age.text}</span><span class="waiting-go">${icon('arrow', 16)}</span></button>`;
   }).join('');
   const estimates = items.filter(w => w.kind === 'estimate');
-  const total = estimates.reduce((sum, w) => sum + (w.effort_minutes || 0), 0);
-  const bulk = estimates.length > 1 ? `<div class="waiting-bulk"><span><strong>${estimates.length} ${plural(estimates.length, ['оценка', 'оценки', 'оценок'])}</strong> на ${hours(total)} ждут одобрения</span><button type="button" class="button primary" id="approve-all">${icon('check', 16)}Одобрить все</button><button type="button" class="button primary" id="approve-all-confirm" hidden>Подтвердить: ${hours(total)}</button><button type="button" class="button" id="approve-all-cancel" hidden>Отмена</button></div>` : '';
+  const total = estimates.reduce((sum, w) => sum + (w.amount_rub || (w.effort_minutes ? Math.round(w.effort_minutes / 60 * 3000) : 0)), 0);
+  const bulk = estimates.length > 1 ? `<div class="waiting-bulk"><span><strong>${estimates.length} ${plural(estimates.length, ['оценка', 'оценки', 'оценок'])}</strong> на ${total.toLocaleString('ru-RU')} ₽ ждут одобрения</span><button type="button" class="button primary" id="approve-all">${icon('check', 16)}Одобрить все</button><button type="button" class="button primary" id="approve-all-confirm" hidden>Подтвердить: ${total.toLocaleString('ru-RU')} ₽</button><button type="button" class="button" id="approve-all-cancel" hidden>Отмена</button></div>` : '';
   return `<section class="panel waiting-panel" aria-labelledby="waiting-title"><div class="waiting-head"><div><span class="eyebrow">Ваше действие</span><h2 id="waiting-title">Ждём от вас</h2></div><span class="waiting-count" aria-label="${items.length} ${plural(items.length, ['шаг', 'шага', 'шагов'])}">${items.length}</span></div><div class="waiting-list">${rows}</div>${bulk}<p class="waiting-hint">Пока эти шаги не сделаны, работа по заявкам стоит.</p></section>`;
 }
 function bindWaitingBulk() {
@@ -989,28 +1205,140 @@ function renderTickets() {
   const chip = (key, label, count, dot = '') => `<button type="button" class="chip ${state.filter === key ? 'active' : ''}" data-status-filter="${key}" aria-pressed="${state.filter === key}">${dot ? `<span class="dot ${dot}"></span>` : ''}${label} <i>${count}</i></button>`;
   const chips = chip('all', 'Все', owned.length) + Object.entries(statusChipNames).map(([key, label]) => chip(key, label, owned.filter(t => t.status === key).length, key)).join('');
   const ownerSelect = staff ? `<label class="select-inline"><span>Ответственный</span><select id="owner-filter"><option value="all">Все</option><option value="mine">Мои</option>${dispatcher ? '<option value="unassigned">Без ответственного</option>' : ''}</select></label>` : '';
+  const prioritySelect = `<label class="select-inline"><span>Приоритет</span><select id="priority-filter"><option value="all">Все</option><option value="urgent">Критический</option><option value="high">Высокий</option><option value="normal">Обычный</option><option value="low">Низкий</option></select></label>`;
+  state.selectedTickets = state.selectedTickets || new Set();
   const ticketRow = t => {
     const sla = nearestSla(t);
     const finished = ['done', 'closed'].includes(t.status);
     const deadline = sla ? slaTag(sla) : finished ? `<span class="sla met">${icon('check', 13)}Завершена</span>` : `<span class="tdate">${esc(t.next_step || '—')}</span>`;
-    return `<button class="trow" data-ticket="${t.id}"><span class="tnum">${t.id}</span><span class="ttitle"><strong>${esc(t.title)}</strong><small>${esc([t.customer_name, staff ? t.customer_company : '', serviceLabel(t.service_type)].filter(Boolean).join(' · '))}</small></span><span class="badge ${esc(t.status)}">${statusNames[t.status]}</span><span>${deadline}</span><span class="tnum-strong">${t.effort_minutes ? hours(t.effort_minutes) : '—'}</span>${staff ? `<span class="twho">${avatarOf(t.assignee_id, t.assignee_name)}<span>${esc(t.assignee_name || 'Не назначен')}</span></span>` : ''}<span class="tdate">${date(t.updated_at)}</span></button>`;
+    const prioBadge = t.priority && t.priority !== 'normal' ? `<span class="badge priority-${esc(t.priority)}">${esc(priorityNames[t.priority] || t.priority)}</span>` : '<span class="muted" style="font-size:11px">Обычный</span>';
+    const estimateCol = staff
+      ? (t.effort_minutes ? hours(t.effort_minutes) : '—')
+      : (t.estimate_amount_rub ? `${t.estimate_amount_rub.toLocaleString('ru-RU')} ₽` : (t.cost_rub ? `${t.cost_rub.toLocaleString('ru-RU')} ₽` : '—'));
+    const canClaim = staff && t.assignee_id !== state.user.id && !['done', 'closed'].includes(t.status);
+    const claimBtn = canClaim ? `<button type="button" class="button small btn-claim-ticket" data-claim-ticket="${t.id}" title="Взять заявку себе">${icon('user', 12)} Взять себе</button>` : '';
+    const selectBox = staff ? `<span class="t-select-cell" onclick="event.stopPropagation()"><input type="checkbox" class="ticket-select-cb" data-ticket-select="${t.id}" ${state.selectedTickets.has(t.id) ? 'checked' : ''} aria-label="Выбрать заявку №${t.id}"></span>` : '';
+    return `<button class="trow" data-ticket="${t.id}">${selectBox}<span class="tnum">${t.id}</span><span class="ttitle"><strong>${esc(t.title)}</strong><small>${esc([t.customer_name, staff ? t.customer_company : '', serviceLabel(t.service_type)].filter(Boolean).join(' · '))}</small></span><span class="badge ${esc(t.status)}">${statusNames[t.status]}</span><span>${deadline}</span><span class="tnum-strong">${estimateCol}</span><span class="twho">${avatarOf(t.assignee_id, t.assignee_name)}<span>${esc(t.assignee_name || 'Не назначен')}</span></span><span>${prioBadge}</span><span class="tdate">${date(t.updated_at)}</span>${staff ? `<span class="t-actions-cell" onclick="event.stopPropagation()">${claimBtn}</span>` : ''}</button>`;
   };
-  const head = '<div class="table-head" aria-hidden="true"><span>№</span><span>Заявка</span><span>Статус</span><span>Ближайший срок</span><span>Оценка</span><span>Ответственный</span><span>Обновлена</span></div>'.replace('<span>Ответственный</span>', staff ? '<span>Ответственный</span>' : '');
-  shell(staff ? 'Заявки' : 'Мои заявки', '', `${staff ? '' : waitingPanel()}${portfolioOverview(owned)}<section class="panel ${staff ? '' : 'customer-ticket-list'}"><div class="toolbar"><div class="chips" role="group" aria-label="Фильтр по статусу">${chips}</div><div class="ticket-tools"><input class="field ticket-search" id="ticket-search" type="search" maxlength="100" aria-label="Поиск по заявкам" placeholder="Номер, тема, клиент" value="${esc(state.search)}">${ownerSelect}</div></div>${head}<div id="ticket-list"></div><div class="toolbar" style="border-top:1px solid var(--line-light);border-bottom:0;min-height:52px"><span class="muted" id="ticket-count"></span><span class="kbd-hint"><kbd>J</kbd><kbd>K</kbd> по строкам · <kbd>Enter</kbd> открыть</span></div></section>`, { kicker: staff ? (dispatcher ? 'Все клиенты' : 'Назначенные мне и команде') : 'Личный кабинет' });
+  const head = `<div class="table-head" aria-hidden="true">${staff ? `<span class="t-select-cell"><input type="checkbox" id="tickets-select-all" aria-label="Выбрать все" ${visible.length && visible.every(t => state.selectedTickets.has(t.id)) ? 'checked' : ''}></span>` : ''}<span>№</span><span>Заявка</span><span>Статус</span><span>Ближайший срок</span><span>${staff ? 'Оценка' : 'Стоимость'}</span><span>Ответственный</span><span>Приоритет</span><span>Обновлена</span>${staff ? '<span>Действия</span>' : ''}</div>`;
+  const ticketTabs = staff ? `<div class="task-scope-tabs bitrix-role-tabs ticket-nav-tabs" role="group" aria-label="Разделы заявок">
+    <button class="${state.owner !== 'mine' ? 'active' : ''}" id="tab-t-all">${icon('ticket', 14)}Все заявки <span>${owned.length}</span></button>
+    <button class="" id="tab-t-queue">${icon('queue', 14)}Очередь обработки (SLA) <span class="accent">${state.queue.length}</span></button>
+    <button class="${state.owner === 'mine' ? 'active' : ''}" id="tab-t-mine">${icon('check', 14)}Мои заявки <span>${state.tickets.filter(t => t.assignee_id === state.user.id && !['done', 'closed'].includes(t.status)).length}</span></button>
+  </div>` : '';
+  const bulkBarHtml = staff && state.selectedTickets.size > 0 ? `
+    <div class="bulk-action-bar" id="bulk-action-bar">
+      <div class="bulk-info">
+        <span>Выбрано заявок: <strong>${state.selectedTickets.size}</strong></span>
+      </div>
+      <div class="bulk-actions">
+        <label class="bulk-assignee-label">
+          <span class="visually-hidden">Назначить исполнителя</span>
+          <select id="bulk-assignee-select" class="field small">
+            <option value="">Назначить исполнителя...</option>
+            ${state.staff.filter(s => s.role !== 'customer').map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}
+          </select>
+        </label>
+        <button type="button" class="button small primary" id="bulk-assignee-apply">Назначить</button>
+        <div class="bulk-divider"></div>
+        <button type="button" class="button small" data-bulk-status="working">В работу</button>
+        <button type="button" class="button small" data-bulk-status="waiting">Ожидает заказчика</button>
+        <button type="button" class="button small" data-bulk-status="closed">Закрыть</button>
+        <div class="bulk-divider"></div>
+        <button type="button" class="button small" id="bulk-cancel">Отменить выбор</button>
+      </div>
+    </div>
+  ` : '';
+  shell(staff ? 'Заявки клиентов' : 'Мои заявки', staff ? `<button class="button primary bitrix-btn-top" id="tickets-new-btn">${icon('plus', 15)}<span>Новая заявка</span></button>` : '', `${ticketTabs}${staff ? '' : waitingPanel()}${portfolioOverview(owned)}<section class="panel ${staff ? '' : 'customer-ticket-list'}"><div class="toolbar"><div class="chips" role="group" aria-label="Фильтр по статусу">${chips}</div><div class="ticket-tools"><input class="field ticket-search" id="ticket-search" type="search" maxlength="100" aria-label="Поиск по заявкам" placeholder="Номер, тема, клиент" value="${esc(state.search)}">${prioritySelect}${ownerSelect}</div></div>${head}<div id="ticket-list"></div><div class="toolbar" style="border-top:1px solid var(--line-light);border-bottom:0;min-height:52px"><span class="muted" id="ticket-count"></span><span class="kbd-hint"><kbd>J</kbd><kbd>K</kbd> по строкам · <kbd>Enter</kbd> открыть</span></div></section>${bulkBarHtml}`, { kicker: staff ? (dispatcher ? 'Все клиенты' : 'Назначенные мне и команде') : 'Личный кабинет' });
   const updateList = () => {
     const query = state.search.trim().toLocaleLowerCase('ru-RU');
-    const matches = query ? visible.filter(t => [t.id, t.title, t.description, t.customer_name, t.customer_company, t.assignee_name, statusNames[t.status]].some(value => String(value || '').toLocaleLowerCase('ru-RU').includes(query))) : visible;
+    const prio = state.priorityFilter || 'all';
+    const prioFiltered = visible.filter(t => prio === 'all' || (t.priority || 'normal') === prio);
+    const matches = query ? prioFiltered.filter(t => [t.id, t.title, t.description, t.customer_name, t.customer_company, t.assignee_name, statusNames[t.status], priorityNames[t.priority || 'normal']].some(value => String(value || '').toLocaleLowerCase('ru-RU').includes(query))) : prioFiltered;
     document.querySelector('#ticket-count').textContent = `Показано ${matches.length} из ${owned.length}`;
     document.querySelector('#ticket-list').innerHTML = matches.map(ticketRow).join('') || (query ? '<div class="empty"><strong>Ничего не найдено</strong>Попробуйте другой запрос или фильтр.</div>' : '<div class="empty"><strong>Заявок пока нет</strong>Создайте новую заявку или выберите другой фильтр.</div>');
     document.querySelectorAll('#ticket-list [data-ticket]').forEach(el => el.onclick = () => openTicket(Number(el.dataset.ticket)));
   };
   const ownerFilter = document.querySelector('#owner-filter');
   if (ownerFilter) { ownerFilter.value = state.owner; ownerFilter.onchange = e => { state.owner = e.target.value; renderTickets(); }; }
+  const prioFilterEl = document.querySelector('#priority-filter');
+  if (prioFilterEl) { prioFilterEl.value = state.priorityFilter || 'all'; prioFilterEl.onchange = e => { state.priorityFilter = e.target.value; updateList(); }; }
   document.querySelector('#ticket-search').oninput = e => { state.search = e.target.value; updateList(); };
   updateList();
+  document.querySelector('#tickets-new-btn')?.addEventListener('click', () => setView('new'));
+  document.querySelector('#tab-t-all')?.addEventListener('click', () => { state.owner = 'all'; renderTickets(); });
+  document.querySelector('#tab-t-queue')?.addEventListener('click', () => setView('queue'));
+  document.querySelector('#tab-t-mine')?.addEventListener('click', () => { state.owner = 'mine'; renderTickets(); });
   document.querySelectorAll('[data-waiting-ticket]').forEach(el => el.onclick = () => openTicket(Number(el.dataset.waitingTicket)));
   bindWaitingBulk();
   document.querySelectorAll('[data-status-filter],[data-overview-filter]').forEach(button => button.onclick = () => { const key = button.dataset.statusFilter || button.dataset.overviewFilter; state.filter = state.filter === key && button.dataset.overviewFilter ? 'all' : key; renderTickets(); });
+  document.querySelectorAll('[data-ticket-select]').forEach(cb => {
+    cb.onchange = e => {
+      e.stopPropagation();
+      const tid = Number(cb.dataset.ticketSelect);
+      if (cb.checked) state.selectedTickets.add(tid);
+      else state.selectedTickets.delete(tid);
+      renderTickets();
+    };
+  });
+  document.querySelector('#tickets-select-all')?.addEventListener('change', e => {
+    e.stopPropagation();
+    const checked = e.target.checked;
+    visible.forEach(t => {
+      if (checked) state.selectedTickets.add(t.id);
+      else state.selectedTickets.delete(t.id);
+    });
+    renderTickets();
+  });
+  document.querySelector('#bulk-cancel')?.addEventListener('click', () => {
+    state.selectedTickets.clear();
+    renderTickets();
+  });
+  document.querySelector('#bulk-assignee-apply')?.addEventListener('click', async () => {
+    const uid = Number(document.querySelector('#bulk-assignee-select').value);
+    if (!uid) return toast('Выберите исполнителя', 'error');
+    try {
+      const res = await api('/tickets/bulk', {
+        method: 'POST',
+        body: JSON.stringify({
+          ticket_ids: [...state.selectedTickets],
+          action: 'assignee',
+          assignee_id: uid
+        })
+      });
+      toast(`Назначен исполнитель для ${res.updated.length} заявок`);
+      state.selectedTickets.clear();
+      await reload();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  });
+  document.querySelectorAll('[data-bulk-status]').forEach(btn => {
+    btn.onclick = async () => {
+      const status = btn.dataset.bulkStatus;
+      try {
+        const res = await api('/tickets/bulk', {
+          method: 'POST',
+          body: JSON.stringify({
+            ticket_ids: [...state.selectedTickets],
+            action: 'status',
+            status
+          })
+        });
+        toast(`Статус обновлён для ${res.updated.length} заявок`);
+        state.selectedTickets.clear();
+        await reload();
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    };
+  });
+  document.querySelectorAll('[data-claim-ticket]').forEach(btn => {
+    btn.onclick = e => {
+      e.stopPropagation();
+      claimTicket(Number(btn.dataset.claimTicket));
+    };
+  });
 }
 function renderQueue() {
   const dispatcher = isDispatcher();
@@ -1126,7 +1454,7 @@ function renderNew() {
   const estimateField=staff?`<details class="estimate-inline"><summary>Сразу приложить оценку</summary><p class="muted">Заказчику останется только согласовать часы — или отказаться, если заявка не нужна.${dispatcher?' Для оценки нужен ответственный.':''}</p><label>Плановые трудозатраты, часов<input class="field" name="effort_hours" type="number" min="0.25" max="1666" step="0.25"></label><label>Потрачено на оценку, минут<input class="field" name="assessment_minutes" type="number" min="1" max="100000" step="1"></label><label>Пояснение к оценке<textarea name="estimate_note" maxlength="3000" placeholder="Что входит в работу"></textarea></label></details>`:'';
   const help=staff?['Выберите заказчика, которому нужна помощь.','Опишите задачу его словами — он увидит текст в своём кабинете.','Приложите оценку — заказчик согласует её в один клик или откажется от заявки.']:['Коротко назовите задачу, чтобы её было легко найти.','Напишите, какой результат нужен и какие детали важны.','Команда оценит трудозатраты в часах; решение останется за вами.'];
   shell('Новая заявка','',`<button class="back" id="back">← К заявкам</button><div class="form-layout"><div class="panel content"><h2>${staff?'Создать заявку для заказчика':'Опишите задачу'}</h2>${staff&&!state.customers.length?'<div class="notice">Нет доступных заказчиков. Менеджер или администратор может создать заявку для любого зарегистрированного заказчика.</div>':''}<form class="form" id="ticket-form">${staff?`<div class="template-bar"><label>Шаблон<select class="field" id="template-select"><option value="">Без шаблона</option></select></label><div class="row"><button type="button" class="button" id="template-save">Сохранить как шаблон</button><button type="button" class="button" id="template-delete" hidden>Удалить шаблон</button></div></div>`:''}${customerField}<label>Тема<input class="field" name="title" required minlength="3" maxlength="140" placeholder="Коротко о задаче"></label><div id="kb-suggest-box" class="kb-suggest-box" style="display:none"></div><label>Описание<textarea name="description" data-draft="new-ticket" required minlength="5" maxlength="10000" placeholder="Что нужно сделать? Укажите важные детали."></textarea></label>${assigneeField}${estimateField}<button class="button primary" ${staff&&!state.customers.length?'disabled':''}>Создать заявку</button></form></div><div class="form-help"><span>ПОДСКАЗКА</span><h2>Чтобы быстрее начать</h2>${help.map((item,index)=>`<div class="help-step"><b>${String(index+1).padStart(2,'0')}</b><p>${item}</p></div>`).join('')}</div></div>`);
-  document.querySelector('#ticket-form [name="title"]').parentElement.insertAdjacentHTML('beforebegin',`<label>Тип задачи<select class="field" name="service_type">${Object.entries(serviceNames).map(([key,label])=>`<option value="${key}">${label}</option>`).join('')}</select></label><label id="service-topic-field" hidden>Другая тема<input class="field" name="service_topic" maxlength="80" placeholder="Укажите свою тему" disabled></label>`);
+  document.querySelector('#ticket-form [name="title"]').parentElement.insertAdjacentHTML('beforebegin',`<label>Тип задачи<select class="field" name="service_type">${Object.entries(serviceNames).map(([key,label])=>`<option value="${key}">${label}</option>`).join('')}</select></label><label id="service-topic-field" hidden>Другая тема<input class="field" name="service_topic" maxlength="80" placeholder="Укажите свою тему" disabled></label><label>Приоритет<select class="field" name="priority"><option value="low">Низкий (плановые задачи, консультации)</option><option value="normal" selected>Обычный (стандартный рабочий режим)</option><option value="high">Высокий (важный сбой, блок процессов)</option><option value="urgent">Критический (авария, полная остановка)</option></select></label>`);
   if(dispatcher){
     const details=document.createElement('details');details.className='estimate-inline';details.innerHTML='<summary>Добавить или подключить клиента</summary><div class="new-customer-invitation"></div>';
     document.querySelector('#ticket-form').before(details);
@@ -1220,6 +1548,7 @@ function bindTicketTemplates(form) {
     form.elements.service_type.value = t.service_type.startsWith('custom:') ? 'other' : t.service_type;
     form.elements.service_topic.value = t.service_type.startsWith('custom:') ? t.service_type.slice(7) : '';
     form.elements.service_type.dispatchEvent(new Event('change'));
+    if (t.priority && form.elements.priority) form.elements.priority.value = t.priority;
     form.elements.title.value = t.title;
     form.elements.description.value = t.description;
     form.elements.effort_hours.value = t.effort_minutes ? t.effort_minutes / 60 : '';
@@ -1253,8 +1582,9 @@ function messageHtml(m, { header, extra = '', canReply = false }) {
   const side = messageSide(m);
   const quote = m.reply_to_id ? `<button type="button" class="reply-quote" data-jump="${m.reply_to_id}" aria-label="Перейти к исходному сообщению"><strong>${esc(m.reply_author_name || 'Сообщение')}</strong><span>${esc(m.reply_body || 'Сообщение удалено')}</span></button>` : '';
   const reply = canReply ? `<button type="button" class="msg-reply" data-reply="${m.id}" aria-label="Ответить на сообщение ${esc(m.author_name)}">${icon('reply', 14)}<span>Ответить</span></button>` : '';
+  const toTask = state.user?.role !== 'customer' ? `<button type="button" class="msg-to-task" data-chat-to-task="${m.id}" title="Создать задачу из этого сообщения">${icon('check', 13)}<span>В задачу</span></button>` : '';
   const status = side === viewerSide() ? '<span class="msg-status" aria-live="off"></span>' : '';
-  return `<div class="message ${m.author_id === state.user.id ? 'mine' : ''}" id="msg-${m.id}" data-msg="${m.id}" data-side="${side}"><div class="msg-head"><small>${header}</small>${reply}</div>${quote}<div class="msg-body">${esc(m.body)}</div>${extra}<div class="msg-foot">${status}</div></div>`;
+  return `<div class="message ${m.author_id === state.user.id ? 'mine' : ''}" id="msg-${m.id}" data-msg="${m.id}" data-side="${side}"><div class="msg-head"><small>${header}</small><div class="msg-actions-wrap">${toTask}${reply}</div></div>${quote}<div class="msg-body">${esc(m.body)}</div>${extra}<div class="msg-foot">${status}</div></div>`;
 }
 function summaryCard(s) {
   return `<article class="meeting-card" aria-label="Итоги ${meetingKindNames[s.kind] || 'встречи'}"><div class="meeting-head"><span class="meeting-ico">${icon('users', 16)}</span><div><strong>Итоги ${meetingKindNames[s.kind] || 'встречи'} · ${new Date(s.occurred_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}</strong><small>${esc(s.author_name)}</small></div></div><span class="eyebrow">О чём договорились</span><p>${esc(s.client_summary)}</p>${s.client_next_steps ? `<span class="eyebrow">Что дальше</span><p>${esc(s.client_next_steps)}</p>` : ''}</article>`;
@@ -1295,6 +1625,19 @@ function bindConversation(kind, record, messages, readState) {
     const bar = document.querySelector('#reply-bar');
     if (bar) { bar.outerHTML = replyBar(kind, record); bindReplyCancel(kind, record); }
     document.querySelector(kind === 'ticket' ? '#message-body' : '#chat-body')?.focus();
+  });
+  document.querySelectorAll('[data-chat-to-task]').forEach(el => el.onclick = () => {
+    const m = messages.find(x => x.id === Number(el.dataset.chatToTask));
+    if (!m) return;
+    const ticketId = kind === 'ticket' ? record : (state.current?.ticket?.id || null);
+    const customerId = state.currentChat?.chat?.customer_id || state.current?.ticket?.customer_id || null;
+    const title = m.body.slice(0, 80).replace(/\n.*/s, '');
+    TasksUI.quickCreate({
+      title: title || 'Задача из переписки',
+      description: m.body,
+      ticket_id: ticketId,
+      customer_id: customerId
+    });
   });
   bindReplyCancel(kind, record);
   markRead(kind, record, messages);
@@ -1522,22 +1865,32 @@ function renderDetail() {
   const viewer = (staff && t.can_write === false) || !staff && t.visibility === 'organization' && state.organizations.some(o => o.id === t.organization_id && o.members.some(m => m.user_id === state.user.id && m.role === 'viewer'));
   const canStatus = staff && t.status !== 'closed' && (state.user.role === 'admin' || t.assignee_id === state.user.id);
   const late = ticketSla(t).filter(s => s.tone === 'late');
-  const badges = `<span class="badge ${esc(t.status)}">${statusNames[t.status]}</span>${late.map(s => `<span class="sla late">${icon('clock', 13)}${s.label} ${s.label === 'Ответ' ? 'просрочен' : 'просрочена'} на ${formatDuration(-s.diff)}</span>`).join('')}<span class="badge">${esc(serviceLabel(t.service_type))}</span>`;
+  const prioBadge = `<span class="badge priority-${esc(t.priority || 'normal')}">${esc(priorityNames[t.priority] || 'Обычный')}</span>`;
+  const badges = `<span class="badge ${esc(t.status)}">${statusNames[t.status]}</span>${prioBadge}${late.map(s => `<span class="sla late">${icon('clock', 13)}${s.label} ${s.label === 'Ответ' ? 'просрочен' : 'просрочена'} на ${formatDuration(-s.diff)}</span>`).join('')}<span class="badge">${esc(serviceLabel(t.service_type))}</span>`;
   const lead = [`№${t.id}`, staff ? (t.customer_company || t.customer_name) : '', `создана ${date(t.created_at)}`, t.organization_id ? (t.visibility === 'organization' ? 'видна всей компании' : 'личная заявка') : ''].filter(Boolean).map(esc).join(' · ');
-  const assignee = dispatcher ? `<select id="assignee" aria-label="Ответственный"><option value="">Без ответственного</option>${state.staff.map(x => `<option value="${x.id}">${esc(staffLabel(x))}</option>`).join('')}</select>` : `<span class="meta-person">${t.assignee_id ? avatarOf(t.assignee_id, t.assignee_name) : ''}${esc(t.assignee_name || 'Не назначен')}</span>`;
+  const canClaim = staff && t.assignee_id !== state.user.id && !['done', 'closed'].includes(t.status);
+  const claimBtn = canClaim ? `<button type="button" class="button small btn-claim-ticket" data-claim-ticket="${t.id}" title="Взять заявку себе">${icon('user', 13)} Взять себе</button>` : '';
+  const assignee = dispatcher ? `<div class="assignee-wrap"><select id="assignee" aria-label="Ответственный"><option value="">Без ответственного</option>${state.staff.map(x => `<option value="${x.id}">${esc(staffLabel(x))}</option>`).join('')}</select>${claimBtn}</div>` : `<div class="assignee-wrap"><span class="meta-person">${t.assignee_id ? avatarOf(t.assignee_id, t.assignee_name) : ''}${esc(t.assignee_name || 'Не назначен')}</span>${claimBtn}</div>`;
   const canReply = !viewer && t.status !== 'closed';
   const chat = timeline(messages, state.current.meeting_summaries, m => messageHtml(m, { header: `${esc(m.author_name)} · ${date(m.created_at)}`, canReply })).map(x => x.html).join('') || `<div class="empty">${canReply ? 'Сообщений пока нет. Напишите первое сообщение.' : 'Сообщений пока нет. Здесь появится история переписки.'}</div>`;
-  const eventText = e => e.kind==='service_budget'?'лимит сопровождения изменён: '+(e.new_value==='unlimited'?'без ограничения':hours(Number(e.new_value))):e.kind==='owner_help'?'отправлен запрос менеджеру на восстановление владельца':e.kind === 'reopen' ? 'заявка возвращена в работу: ' + esc(e.new_value) : e.kind === 'status' ? 'статус изменён на «' + esc(statusNames[e.new_value] || e.new_value) + '»' : e.kind === 'acceptance' ? (e.new_value === 'accepted' ? 'работа принята' : 'работа возвращена на доработку') : e.kind === 'decline' ? 'заказчик отказался от заявки' : 'ответственный изменён';
+  const eventText = e => e.kind==='priority'?'приоритет изменён на «'+(priorityNames[e.new_value]||e.new_value)+'»':e.kind==='service_budget'?'лимит сопровождения изменён: '+(e.new_value==='unlimited'?'без ограничения':hours(Number(e.new_value))):e.kind==='owner_help'?'отправлен запрос менеджеру на восстановление владельца':e.kind === 'reopen' ? 'заявка возвращена в работу: ' + esc(e.new_value) : e.kind === 'status' ? 'статус изменён на «' + esc(statusNames[e.new_value] || e.new_value) + '»' : e.kind === 'acceptance' ? (e.new_value === 'accepted' ? 'работа принята' : 'работа возвращена на доработку') : e.kind === 'decline' ? 'заказчик отказался от заявки' : 'ответственный изменён';
   const history = events.map(e => `<li><div>${esc(e.actor_name)}: ${eventText(e)}<small>${date(e.created_at)}</small></div></li>`).join('');
   const person = state.current.assignee_profile;
   if (!staff && state.detailTab === 'notes') state.detailTab = 'messages';
   const tab = state.detailTab || 'messages';
   const tabButton = (id, label, count, ic = '') => `<button type="button" role="tab" class="tab ${tab === id ? 'active' : ''}" aria-selected="${tab === id}" data-detail-tab="${id}">${ic}${label}${count !== undefined ? ` <i>${count}</i>` : ''}</button>`;
   const composer = ticketChatComposer(t, viewer, staff);
-  const meta = `<dl class="meta"><dt>Заказчик</dt><dd>${esc(t.customer_name)}${staff && t.customer_company ? `<small>${esc(t.customer_company)}</small>` : ''}</dd>${staff ? `<dt>Ответственный</dt><dd>${assignee}</dd>` : ''}<dt>Тип задачи</dt><dd>${esc(serviceLabel(t.service_type))}</dd>${t.organization_id ? `<dt>Видимость</dt><dd>${t.visibility === 'organization' ? 'Вся компания' : 'Личная заявка'}</dd>` : ''}<dt>Создана</dt><dd>${date(t.created_at)}</dd>${t.created_by_name ? `<dt>Создал</dt><dd>${esc(t.created_by_name)}</dd>` : ''}</dl>`;
-  const personCard = staff && person ? `<section class="panel content assigned-person"><div class="person-heading">${avatar(person)}<div><span class="eyebrow">${staff ? 'Ответственный' : 'Ваш специалист'}</span><h2>${esc(person.name)}</h2><p>${esc([(person.function_names||[teamRoleNames[person.team_role]]).filter(Boolean).join(", "),person.job_title].filter(Boolean).join(' · ') || 'Сотрудник команды')}</p></div></div>${person.bio ? `<p class="person-bio">${esc(person.bio)}</p>` : ''}</section>` : '';
+  const priorityControl = staff ? `<select id="ticket-priority" class="field compact" aria-label="Приоритет">${Object.entries(priorityNames).map(([k,v])=>`<option value="${k}" ${(t.priority||'normal')===k?'selected':''}>${v}</option>`).join('')}</select>` : `<span class="badge priority-${esc(t.priority || 'normal')}">${esc(priorityNames[t.priority] || 'Обычный')}</span>`;
+  const participants = state.current.participants || [];
+  const participantsList = participants.length ? `<div class="participants-list" style="margin-top:12px;border-top:1px solid var(--line-light);padding-top:10px;"><span class="eyebrow" style="margin-bottom:6px;display:block;">Участники команды (${participants.length})</span>${participants.map(p=>`<div class="team-person org-person" style="padding:4px 0;"><span class="org-member-identity">${avatar(p,'small')}<span><strong>${esc(p.name)}</strong><small>${esc([(p.functions||[teamRoleNames[p.team_role]]).filter(Boolean).join(', '), p.job_title].filter(Boolean).join(' · ') || 'Специалист')}</small></span></span></div>`).join('')}</div>` : '';
+  const meta = `<dl class="meta"><dt>Заказчик</dt><dd>${esc(t.customer_name)}${staff && t.customer_company ? `<small>${esc(t.customer_company)}</small>` : ''}</dd><dt>Ответственный</dt><dd>${staff ? assignee : (t.assignee_name ? `<span class="meta-person">${avatarOf(t.assignee_id, t.assignee_name)}${esc(t.assignee_name)}</span>` : '<span class="muted">Назначается поддержкой</span>')}</dd><dt>Приоритет</dt><dd>${priorityControl}</dd><dt>Тип задачи</dt><dd>${esc(serviceLabel(t.service_type))}</dd>${t.organization_id ? `<dt>Видимость</dt><dd>${t.visibility === 'organization' ? 'Вся компания' : 'Личная заявка'}</dd>` : ''}<dt>Создана</dt><dd>${date(t.created_at)}</dd>${t.created_by_name ? `<dt>Создал</dt><dd>${esc(t.created_by_name)}</dd>` : ''}</dl>`;
+  const personCard = person ? `<section class="panel content assigned-person"><div class="person-heading">${avatar(person)}<div><span class="eyebrow">${staff ? 'Ответственный' : 'Ваш специалист по заявке'}</span><h2>${esc(person.name)}</h2><p>${esc([(person.function_names||[teamRoleNames[person.team_role]]).filter(Boolean).join(", "),person.job_title].filter(Boolean).join(' · ') || 'Специалист команды')}</p></div></div>${person.bio ? `<p class="person-bio">${esc(person.bio)}</p>` : ''}${participantsList}</section>` : (participants.length ? `<section class="panel content assigned-person">${participantsList}</section>` : '');
   const body = `${ticketProgress(t, estimates)}<div class="detail-grid"><div>${t.next_step ? `<div class="next-step"><span>Следующий шаг</span><strong>${esc(t.next_step)}</strong></div>` : ''}<section class="panel content"><h2>Описание задачи</h2><p class="description">${esc(t.description)}</p>${state.current.linked_chat ? `<button class="button linked-chat" id="linked-chat">${icon('chat', 16)}Обсуждение в общем чате</button>` : ''}</section><section class="panel conversation"><div class="tabs" role="tablist" aria-label="Обсуждение заявки">${tabButton('messages', 'Переписка', messages.length)}${staff ? tabButton('notes', 'Заметки команды', undefined, icon('lock', 14)) : ''}${tabButton('history', 'История', events.length)}</div><div class="tab-pane" data-pane="messages" ${tab !== 'messages' ? 'hidden' : ''}><div class="messages">${chat}</div>${composer}</div>${staff ? `<div class="tab-pane" data-pane="notes" ${tab !== 'notes' ? 'hidden' : ''}><div id="internal-notes-container"></div></div>` : ''}<div class="tab-pane" data-pane="history" ${tab !== 'history' ? 'hidden' : ''}>${history ? `<ol class="events">${history}</ol>` : '<div class="empty">В истории пока нет событий.</div>'}</div></section>${renderCsat(t, staff)}</div><div><section class="panel content"><h2>Детали</h2>${meta}</section>${personCard}</div></div>`;
-  shell(t.title, '', body, { crumbs: `<button class="crumb-link" id="back">Заявки</button><span aria-hidden="true">/</span><span>№${t.id}</span>`, badges, lead });
+  const topClaimAction = canClaim ? `<button type="button" class="button primary btn-claim-ticket" data-claim-ticket="${t.id}">${icon('user', 14)}<span>Взять себе</span></button>` : '';
+  shell(t.title, topClaimAction, body, { crumbs: `<button class="crumb-link" id="back">Заявки</button><span aria-hidden="true">/</span><span>№${t.id}</span>`, badges, lead });
+  document.querySelectorAll('[data-claim-ticket]').forEach(btn => {
+    btn.onclick = () => claimTicket(Number(btn.dataset.claimTicket));
+  });
   renderEstimate(t, estimates, staff);
   renderAcceptance(t, staff);
   renderOperations();
@@ -1577,6 +1930,7 @@ function renderDetail() {
   if (box) box.scrollTop = box.scrollHeight;
   popLastMessage(box);
   document.querySelector('#assignee')?.addEventListener('change', async e => { try { await api(`/tickets/${t.id}/assignee`, { method: 'PATCH', body: JSON.stringify({ assignee_id: e.target.value ? Number(e.target.value) : null }) }); toast('Ответственный обновлён'); await refresh(); await openTicket(t.id); } catch (error) { showError(error); } });
+  document.querySelector('#ticket-priority')?.addEventListener('change', async e => { try { await api(`/tickets/${t.id}/priority`, { method: 'PATCH', body: JSON.stringify({ priority: e.target.value }) }); toast('Приоритет обновлён'); await refresh(); await openTicket(t.id); } catch (error) { showError(error); } });
   bindTicketChatComposer(t, () => openTicket(t.id));
   if (staff) {
     loadInternalNotes(t.id);
@@ -1662,80 +2016,474 @@ function renderAcceptance(t, staff) {
   document.querySelector('#return-form').onsubmit = e => { e.preventDefault(); e.target.querySelector('button.primary').disabled = true; send({ action: 'return', comment: e.target.elements.comment.value }, 'Заявка возвращена на доработку'); };
 }
 function renderEstimate(ticket, estimates, staff) {
-  const latest=estimates[0];
-  const legacy=latest&&latest.effort_minutes===null;
-  const canCreate=staff&&ticket.assignee_id===state.user.id&&ticket.status!=='closed'&&(!latest||legacy||['rejected','revision_requested'].includes(latest.state));
-  const canDecide=!staff&&ticket.can_decide&&latest?.state==='pending'&&!legacy&&ticket.status!=='closed';
-  const history=estimates.map(e=>`<div class="estimate-version"><div class="row"><strong>Версия ${e.version} · ${e.effort_minutes===null?'Старая оценка без часов':hours(e.effort_minutes)}</strong><span class="badge">${estimateNames[e.state]||'Требуется новая оценка'}</span></div><div class="muted">${staff ? 'Оценил ' + esc(e.author_name) : 'Оценка подготовлена'} · ${date(e.created_at)} · на оценку потрачено ${e.assessment_minutes} мин.</div>${e.note?`<p>${esc(e.note)}</p>`:''}${e.customer_comment?`<p>Комментарий заказчика: ${esc(e.customer_comment)}</p>`:''}${e.proposed_effort_minutes!==null?`<p>Предложение заказчика: ${hours(e.proposed_effort_minutes)}</p>`:''}</div>`).join('');
-  const create=canCreate?`<form class="form" id="estimate-form"><label>Плановые трудозатраты, часов<input class="field" name="effort_hours" type="number" min="0.25" max="1666" step="0.25" required></label><label>Потрачено на оценку, минут<input class="field" name="minutes" type="number" min="1" max="100000" step="1" required></label><label>Пояснение к оценке<textarea name="note" maxlength="3000" placeholder="Что входит в работу"></textarea></label><button class="button primary">Отправить оценку заказчику</button></form>`:'';
-  const decide=canDecide?`<div class="row estimate-actions"><button class="button primary" id="approve-estimate">Одобрить</button><button class="button" id="revise-estimate">Попросить поправить</button><button class="button" id="reject-estimate">Не согласен с оценкой</button></div><form class="form" id="revision-form" hidden><label>Ваш вариант, часов (необязательно)<input class="field" name="effort_hours" type="number" min="0.25" max="1666" step="0.25"></label><label>Что скорректировать<textarea name="comment" maxlength="3000" placeholder="Напишите ваши пожелания"></textarea></label><div class="row"><button class="button primary">Запросить корректировку</button><button type="button" class="button" id="cancel-revision">Отмена</button></div></form>`:'';
-  const estimateMoney=latest&&billingOn()?`<p class="notice">Работа по оценке: <strong>${Math.round((latest.effort_minutes||0)/60*(ticket.hourly_rate_rub||3000)).toLocaleString('ru-RU')} ₽</strong> (${hours(latest.effort_minutes||0)}). Созвоны и переписка учитываются отдельно по той же ставке. Текущий лимит сопровождения: <strong>${ticket.service_limit_minutes===null?'без ограничения':hours(ticket.service_limit_minutes)}</strong>. Лимит можно изменить ниже.</p>`:'';
-  const decline=!staff&&ticket.can_decline?`<div class="decline-box"><p class="muted">Эту заявку создала команда. Если задача не нужна, откажитесь — заявка закроется без работы и оплаты.</p><button type="button" class="button" id="decline-ticket">Отменить задачу</button><form class="form" id="decline-form" hidden><label>Почему не нужна (необязательно)<textarea name="comment" maxlength="3000" placeholder="Например: уже решили своими силами"></textarea></label><div class="row"><button class="button primary">Отказаться от заявки</button><button type="button" class="button" id="cancel-decline">Отмена</button></div></form></div>`:'';
-  document.querySelector('.detail-grid>div:first-child>.panel.content').insertAdjacentHTML('afterend',`<section class="panel content estimate-panel ${canCreate||canDecide?'needs-action':''}">${canCreate||canDecide?'<div class="eyebrow" style="color:var(--accent-ink);margin-bottom:6px">Ваше действие</div>':''}<h2>Оценка трудозатрат</h2>${legacy?'<div class="notice">Старая оценка была указана в деньгах. Нужна новая оценка в часах.</div>':''}${latest?history:'<p class="muted">Оценка ещё не подготовлена.</p>'}${estimateMoney}${create}${decide}${decline}</section>`);
-  document.querySelector('#decline-ticket')?.addEventListener('click',()=>{const form=document.querySelector('#decline-form');form.hidden=false;document.querySelector('#decline-ticket').hidden=true;form.elements.comment.focus();});
-  document.querySelector('#cancel-decline')?.addEventListener('click',()=>{document.querySelector('#decline-form').hidden=true;document.querySelector('#decline-ticket').hidden=false;});
-  document.querySelector('#decline-form')?.addEventListener('submit',e=>{e.preventDefault();e.target.querySelector('button.primary').disabled=true;update(`/tickets/${ticket.id}/decline`,{comment:e.target.elements.comment.value},'Заявка закрыта — команда получила уведомление');});
-  const update=async(path,data,message)=>{try{await api(path,{method:'POST',body:JSON.stringify(data)});if(message)toast(message);await refresh();await openTicket(ticket.id);}catch(error){showError(error);}};
-  document.querySelector('#estimate-form')?.addEventListener('submit',e=>{e.preventDefault();const data=new FormData(e.target);update(`/tickets/${ticket.id}/estimates`,{effort_minutes:Math.round(Number(data.get('effort_hours'))*60),assessment_minutes:Number(data.get('minutes')),note:data.get('note')},'Оценка отправлена заказчику');});
-  document.querySelector('#approve-estimate')?.addEventListener('click',()=>update(`/tickets/${ticket.id}/estimates/decision`,{estimate_id:latest.id,action:'approve'},'Оценка одобрена — команда приступит к работе'));
-  document.querySelector('#reject-estimate')?.addEventListener('click',()=>update(`/tickets/${ticket.id}/estimates/decision`,{estimate_id:latest.id,action:'reject'},'Оценка отклонена'));
-  document.querySelector('#revise-estimate')?.addEventListener('click',()=>{const form=document.querySelector('#revision-form');form.hidden=false;form.elements.effort_hours.focus();});
-  document.querySelector('#cancel-revision')?.addEventListener('click',()=>{document.querySelector('#revision-form').hidden=true;});
-  document.querySelector('#revision-form')?.addEventListener('submit',e=>{e.preventDefault();const data=new FormData(e.target);update(`/tickets/${ticket.id}/estimates/decision`,{estimate_id:latest.id,action:'request_revision',comment:data.get('comment'),proposed_effort_minutes:data.get('effort_hours')===''?null:Math.round(Number(data.get('effort_hours'))*60)},'Запрос на корректировку отправлен');});
+  const latest = estimates[0];
+  const isPm = isDispatcher();
+  const legacy = latest && latest.effort_minutes === null && !latest.amount_rub;
+  const canCreate = staff && (ticket.assignee_id === state.user.id || isPm) && ticket.status !== 'closed' && (!latest || legacy || ['rejected', 'revision_requested', 'pm_revision_requested'].includes(latest.state));
+  const canDecide = !staff && ticket.can_decide && latest?.state === 'pending' && ticket.status !== 'closed';
+  const isPmReview = isPm && latest?.state === 'pending_pm' && ticket.status !== 'closed';
+
+  const history = staff ? estimates.map(e => {
+    const perfH = hours(e.performer_effort_minutes || e.effort_minutes || 0);
+    const pmH = e.pm_effort_minutes ? ` + PM: ${hours(e.pm_effort_minutes)}` : '';
+    const sumRub = e.amount_rub ? ` · ${e.amount_rub.toLocaleString('ru-RU')} ₽` : '';
+    return `<div class="estimate-version">
+      <div class="row">
+        <strong>Версия ${e.version} · Исполнитель: ${perfH}${pmH}${sumRub}</strong>
+        <span class="badge">${estimateNames[e.state] || 'Требуется новая оценка'}</span>
+      </div>
+      <div class="muted">Оценил ${esc(e.author_name)} · ${date(e.created_at)} · на оценку: ${e.assessment_minutes || 0} мин.</div>
+      ${e.note ? `<p><strong>Внутренняя заметка:</strong> ${esc(e.note)}</p>` : ''}
+      ${e.client_note ? `<p><strong>Пояснение клиенту:</strong> ${esc(e.client_note)}</p>` : ''}
+      ${e.customer_comment ? `<p><strong>Комментарий заказчика:</strong> ${esc(e.customer_comment)}</p>` : ''}
+      ${e.proposed_amount_rub ? `<p><strong>Предложение заказчика:</strong> ${e.proposed_amount_rub.toLocaleString('ru-RU')} ₽</p>` : ''}
+    </div>`;
+  }).join('') : estimates.map(e => `
+    <div class="estimate-version">
+      <div class="row">
+        <strong>Версия ${e.version} · ${(e.amount_rub || 0).toLocaleString('ru-RU')} ₽</strong>
+        <span class="badge">${estimateNames[e.state] || e.state}</span>
+      </div>
+      <div class="muted">Оценка подготовлена · ${date(e.created_at)}</div>
+      ${e.note ? `<p>${esc(e.note)}</p>` : ''}
+      ${e.customer_comment ? `<p>Ваш комментарий: ${esc(e.customer_comment)}</p>` : ''}
+      ${e.proposed_amount_rub ? `<p>Желаемый бюджет: ${e.proposed_amount_rub.toLocaleString('ru-RU')} ₽</p>` : ''}
+    </div>
+  `).join('');
+
+  const rateRub = ticket.hourly_rate_rub || 3000;
+  const perfHours = ((latest?.performer_effort_minutes || latest?.effort_minutes || 0) / 60);
+  const pmReviewCard = isPmReview ? `
+    <div class="pm-review-card" style="border: 2px solid var(--accent); border-radius: var(--radius); padding: 16px; margin: 16px 0; background: var(--surface-secondary);">
+      <div class="eyebrow" style="color:var(--accent-ink);margin-bottom:6px">Проверка руководителем проектов (PM)</div>
+      <h3 style="margin-top:0">Выставление оценки клиенту</h3>
+      <p>Оценка исполнителя: <strong>${perfHours} ч</strong> (${Math.round(perfHours * rateRub).toLocaleString('ru-RU')} ₽ по ставке ${rateRub.toLocaleString('ru-RU')} ₽/ч).</p>
+      <form class="form" id="pm-review-form">
+        <div class="duration-inputs">
+          <label>Часы PM / QA / риски
+            <input class="field" type="number" id="pm-hours-input" name="pm_hours" min="0" max="500" step="0.25" value="0">
+          </label>
+          <label>Сумма клиенту, ₽ (ручная корректировка)
+            <input class="field" type="number" id="pm-custom-amount" name="custom_amount_rub" min="0" step="100" placeholder="Автоматический расчёт">
+          </label>
+        </div>
+        <p class="muted" id="pm-calc-preview">Итого клиенту: <strong>${Math.round(perfHours * rateRub).toLocaleString('ru-RU')} ₽</strong> (${perfHours} ч × ${rateRub.toLocaleString('ru-RU')} ₽/ч)</p>
+        <label>Пояснение для клиента (клиент не видит часы и ставку)
+          <textarea class="field" name="client_note" maxlength="3000" placeholder="Что входит в стоимость работы">${esc(latest?.client_note || latest?.note || '')}</textarea>
+        </label>
+        <div class="row">
+          <button class="button primary" id="pm-send-estimate">Выставить клиенту</button>
+          <button type="button" class="button" id="pm-reject-estimate">Вернуть исполнителю</button>
+        </div>
+      </form>
+      <form class="form" id="pm-reject-form" hidden style="margin-top:12px; border-top: 1px solid var(--line); padding-top: 12px;">
+        <label>Причина возврата на доработку
+          <textarea class="field" name="reject_comment" required maxlength="3000" placeholder="Укажите, что нужно пересмотреть в оценке"></textarea>
+        </label>
+        <div class="row">
+          <button class="button primary">Вернуть на доработку</button>
+          <button type="button" class="button" id="pm-cancel-reject">Отмена</button>
+        </div>
+      </form>
+    </div>
+  ` : '';
+
+  const pendingPmNotice = (staff && !isPm && latest?.state === 'pending_pm') ? `
+    <div class="notice">Оценка (${hours(latest.performer_effort_minutes || latest.effort_minutes)}) передана на проверку руководителю проектов (PM). Клиент пока её не видит.</div>
+  ` : '';
+  const pmRevisionNotice = (staff && latest?.state === 'pm_revision_requested') ? `
+    <div class="notice warning">PM запросил пересмотр оценки: ${esc(latest.customer_comment || '')}. Пожалуйста, внесите скорректированную оценку.</div>
+  ` : '';
+
+  const create = canCreate ? `
+    <form class="form" id="estimate-form">
+      <label>Плановые трудозатраты исполнителя, часов
+        <input class="field" name="effort_hours" type="number" min="0.25" max="1666" step="0.25" required>
+      </label>
+      <label>Потрачено на оценку, минут
+        <input class="field" name="minutes" type="number" min="1" max="100000" step="1" required>
+      </label>
+      <label>Пояснение к оценке
+        <textarea name="note" maxlength="3000" placeholder="Что входит в работу"></textarea>
+      </label>
+      <button class="button primary">${isPm ? 'Создать оценку' : 'Отправить на проверку PM'}</button>
+    </form>
+  ` : '';
+
+  const decide = canDecide ? `
+    <div class="estimate-customer-offer" style="margin: 16px 0; padding: 16px; background: var(--surface-secondary); border-radius: var(--radius); border-left: 4px solid var(--accent);">
+      <div style="font-size: 24px; font-weight: 700; color: var(--accent-ink);">${(latest.amount_rub || 0).toLocaleString('ru-RU')} ₽</div>
+      ${latest.note ? `<p style="margin: 8px 0 0; color: var(--ink);">${esc(latest.note)}</p>` : ''}
+    </div>
+    <div class="row estimate-actions">
+      <button class="button primary" id="approve-estimate">Согласовать стоимость</button>
+      <button class="button" id="revise-estimate">Запросить корректировку</button>
+      <button class="button" id="reject-estimate">Не согласен со стоимостью</button>
+    </div>
+    <form class="form" id="revision-form" hidden>
+      <label>Желаемый бюджет, ₽ (необязательно)
+        <input class="field" name="proposed_amount" type="number" min="0" step="500" placeholder="Например: 15000">
+      </label>
+      <label>Что скорректировать
+        <textarea name="comment" required maxlength="3000" placeholder="Напишите ваши пожелания"></textarea>
+      </label>
+      <div class="row">
+        <button class="button primary">Запросить корректировку</button>
+        <button type="button" class="button" id="cancel-revision">Отмена</button>
+      </div>
+    </form>
+  ` : '';
+
+  const estimateMoney = staff && latest && billingOn() ? `
+    <p class="notice">Тариф клиента: <strong>${rateRub.toLocaleString('ru-RU')} ₽/ч</strong>. Согласованная сумма: <strong>${(latest.amount_rub || 0).toLocaleString('ru-RU')} ₽</strong>.</p>
+  ` : '';
+
+  const decline = !staff && ticket.can_decline ? `<div class="decline-box"><p class="muted">Эту заявку создала команда. Если задача не нужна, откажитесь — заявка закроется без работы и оплаты.</p><button type="button" class="button" id="decline-ticket">Отменить задачу</button><form class="form" id="decline-form" hidden><label>Почему не нужна (необязательно)<textarea name="comment" maxlength="3000" placeholder="Например: уже решили своими силами"></textarea></label><div class="row"><button class="button primary">Отказаться от заявки</button><button type="button" class="button" id="cancel-decline">Отмена</button></div></form></div>` : '';
+
+  const title = staff ? 'Оценка трудозатрат и стоимости' : 'Стоимость работ';
+  const needsAction = canCreate || canDecide || isPmReview;
+  const noEstimateText = staff ? 'Оценка ещё не подготовлена.' : 'Команда готовит расчёт стоимости.';
+
+  document.querySelector('.detail-grid>div:first-child>.panel.content').insertAdjacentHTML('afterend', `
+    <section class="panel content estimate-panel ${needsAction ? 'needs-action' : ''}">
+      ${needsAction ? '<div class="eyebrow" style="color:var(--accent-ink);margin-bottom:6px">Ваше действие</div>' : ''}
+      <h2>${title}</h2>
+      ${legacy ? '<div class="notice">Старая оценка была указана в деньгах. Нужна новая оценка в часах.</div>' : ''}
+      ${pendingPmNotice}
+      ${pmRevisionNotice}
+      ${pmReviewCard}
+      ${latest ? history : `<p class="muted">${noEstimateText}</p>`}
+      ${estimateMoney}
+      ${create}
+      ${decide}
+      ${decline}
+    </section>
+  `);
+
+  document.querySelector('#decline-ticket')?.addEventListener('click', () => {
+    const form = document.querySelector('#decline-form');
+    form.hidden = false;
+    document.querySelector('#decline-ticket').hidden = true;
+    form.elements.comment.focus();
+  });
+  document.querySelector('#cancel-decline')?.addEventListener('click', () => {
+    document.querySelector('#decline-form').hidden = true;
+    document.querySelector('#decline-ticket').hidden = false;
+  });
+  document.querySelector('#decline-form')?.addEventListener('submit', e => {
+    e.preventDefault();
+    e.target.querySelector('button.primary').disabled = true;
+    update(`/tickets/${ticket.id}/decline`, { comment: e.target.elements.comment.value }, 'Заявка закрыта — команда получила уведомление');
+  });
+
+  const update = async (path, data, message) => {
+    try {
+      await api(path, { method: 'POST', body: JSON.stringify(data) });
+      if (message) toast(message);
+      await refresh();
+      await openTicket(ticket.id);
+    } catch (error) {
+      showError(error);
+    }
+  };
+
+  const updatePmPreview = () => {
+    const pmH = Number(document.querySelector('#pm-hours-input')?.value || 0);
+    const customAmt = document.querySelector('#pm-custom-amount')?.value;
+    const totalH = perfHours + pmH;
+    const calcAmt = Math.round(totalH * rateRub);
+    const finalAmt = (customAmt !== '' && customAmt !== null && customAmt !== undefined) ? Number(customAmt) : calcAmt;
+    const prev = document.querySelector('#pm-calc-preview');
+    if (prev) prev.innerHTML = `Итого клиенту: <strong>${finalAmt.toLocaleString('ru-RU')} ₽</strong> (${totalH} ч × ${rateRub.toLocaleString('ru-RU')} ₽/ч)`;
+  };
+  document.querySelector('#pm-hours-input')?.addEventListener('input', updatePmPreview);
+  document.querySelector('#pm-custom-amount')?.addEventListener('input', updatePmPreview);
+
+  document.querySelector('#pm-review-form')?.addEventListener('submit', e => {
+    e.preventDefault();
+    const data = new FormData(e.target);
+    const pmHours = Number(data.get('pm_hours') || 0);
+    const custom = data.get('custom_amount_rub');
+    update(`/tickets/${ticket.id}/estimates/${latest.id}/pm-review`, {
+      action: 'send_to_customer',
+      pm_effort_minutes: Math.round(pmHours * 60),
+      custom_amount_rub: custom ? Number(custom) : null,
+      client_note: data.get('client_note') || ''
+    }, 'Оценка выставлена заказчику');
+  });
+
+  document.querySelector('#pm-reject-estimate')?.addEventListener('click', () => {
+    const form = document.querySelector('#pm-reject-form');
+    form.hidden = false;
+    form.elements.reject_comment.focus();
+  });
+  document.querySelector('#pm-cancel-reject')?.addEventListener('click', () => {
+    document.querySelector('#pm-reject-form').hidden = true;
+  });
+  document.querySelector('#pm-reject-form')?.addEventListener('submit', e => {
+    e.preventDefault();
+    const data = new FormData(e.target);
+    update(`/tickets/${ticket.id}/estimates/${latest.id}/pm-review`, {
+      action: 'reject_to_performer',
+      comment: data.get('reject_comment') || ''
+    }, 'Оценка возвращена исполнителю');
+  });
+
+  document.querySelector('#estimate-form')?.addEventListener('submit', e => {
+    e.preventDefault();
+    const data = new FormData(e.target);
+    update(`/tickets/${ticket.id}/estimates`, {
+      effort_minutes: Math.round(Number(data.get('effort_hours')) * 60),
+      assessment_minutes: Number(data.get('minutes')),
+      note: data.get('note')
+    }, isPm ? 'Оценка создана' : 'Оценка отправлена на проверку PM');
+  });
+
+  document.querySelector('#approve-estimate')?.addEventListener('click', () => {
+    update(`/tickets/${ticket.id}/estimates/decision`, {
+      estimate_id: latest.id,
+      action: 'approve'
+    }, 'Стоимость согласована — команда приступает к работе');
+  });
+
+  document.querySelector('#reject-estimate')?.addEventListener('click', () => {
+    update(`/tickets/${ticket.id}/estimates/decision`, {
+      estimate_id: latest.id,
+      action: 'reject'
+    }, 'Оценка отклонена');
+  });
+
+  document.querySelector('#revise-estimate')?.addEventListener('click', () => {
+    const form = document.querySelector('#revision-form');
+    form.hidden = false;
+    form.elements.comment.focus();
+  });
+  document.querySelector('#cancel-revision')?.addEventListener('click', () => {
+    document.querySelector('#revision-form').hidden = true;
+  });
+  document.querySelector('#revision-form')?.addEventListener('submit', e => {
+    e.preventDefault();
+    const data = new FormData(e.target);
+    const propAmt = data.get('proposed_amount');
+    update(`/tickets/${ticket.id}/estimates/decision`, {
+      estimate_id: latest.id,
+      action: 'request_revision',
+      comment: data.get('comment'),
+      proposed_amount_rub: propAmt ? Number(propAmt) : null
+    }, 'Запрос на корректировку отправлен');
+  });
 }
-function renderOperations(){
-  const {ticket:t,time_entries=[],hour_requests=[],attachments=[]}=state.current;
-  const staff=state.user.role!=='customer';
-  const assigned=staff&&t.assignee_id===state.user.id;
-  const viewer=(staff&&t.can_write===false)||!staff&&t.visibility==='organization'&&state.organizations.some(o=>o.id===t.organization_id&&o.members.some(m=>m.user_id===state.user.id&&m.role==='viewer'));
-  const canDecide=!staff&&t.can_decide;
-  const remaining=Math.max(0,(t.approved_minutes||0)-(t.actual_minutes||0));
-  const progress=t.approved_minutes?Math.min(100,Math.round(t.actual_minutes/t.approved_minutes*100)):0;
-  const requests=hour_requests.map(r=>`<div class="hours-request"><div class="row"><strong>+${hours(r.minutes)}</strong><span class="badge">${r.state==='approved'?'Одобрено':r.state==='rejected'?'Отклонено':'На согласовании'}</span></div><p>${esc(r.reason)}</p><small>${esc(r.author_name)} · ${date(r.created_at)}</small>${r.state==='pending'&&canDecide?`<div class="row"><button class="button primary" data-hours-approve="${r.id}">Одобрить часы</button><button class="button" data-hours-reject="${r.id}">Отклонить</button></div>`:''}</div>`).join('');
-  const entries=time_entries.map(w=>`<div class="time-entry"><div class="row"><strong>${hours(w.minutes)}</strong><small>${esc(w.work_date||w.created_at.slice(0,10))}</small></div><p>${esc(w.note)}</p><small>${esc(w.author_name)}</small></div>`).join('');
-  const logForm=assigned&&['working','waiting','done'].includes(t.status)&&t.approved_minutes?`<form class="form" id="time-entry-form"><label>Дата работы<input class="field" type="date" name="work_date" value="${new Date(Date.now()+3*3600000).toISOString().slice(0,10)}" max="${new Date(Date.now()+3*3600000).toISOString().slice(0,10)}" required></label><small>Часы поступят администратору на подтверждение для выплаты.</small><div><span>Фактически потрачено</span><div class="duration-inputs"><label>Часы<input class="field" type="number" name="hours" min="0" step="1" max="${Math.floor(remaining/60)}" placeholder="0" inputmode="numeric"></label><label>Минуты · необязательно<input class="field" type="number" name="minutes" min="0" max="60" step="1" placeholder="0" inputmode="numeric"></label></div><small>Например: 1 час и 30 минут. Пустое поле — 0. 60 минут = 1 час.</small></div><label>Что сделано<textarea name="note" data-draft="work-note-${t.id}" required minlength="3" maxlength="2000" placeholder="Кратко опишите результат работы"></textarea></label><button class="button primary" ${remaining<1?'disabled data-permanently-disabled="true"':''}>Внести время</button>${remaining>0?`<button type="button" class="button" id="fill-remaining">Внести остаток ${hours(remaining)}</button>`:''}</form>`:'';
-  const requestForm=assigned&&['working','waiting'].includes(t.status)&&t.approved_minutes&&!t.pending_hour_request?`<form class="form" id="hour-request-form"><p class="muted">Запросите часы сверх согласованной оценки и укажите причину. После одобрения заказчиком лимит увеличится; фактически потраченное время нужно внести отдельно.</p><label>Дополнительные часы<input class="field" type="number" name="hours" min="0.25" step="0.25" required></label><label>Почему нужны дополнительные часы<textarea name="reason" required minlength="3" maxlength="2000"></textarea></label><button class="button">Запросить согласование</button></form>`:'';
-  const deadlineForm=staff&&(state.user.role==='admin'||state.user.is_manager)?`<form class="deadline-form" id="deadline-form"><label>Установить срок выполнения<input class="field" type="datetime-local" name="due_at" value="${t.delivery_due_at?new Date(t.delivery_due_at).toLocaleString('sv-SE').replace(' ','T').slice(0,16):''}"></label><button class="button">Сохранить срок</button></form>`:'';
-  document.querySelector('.detail-grid>div:last-child').insertAdjacentHTML('afterbegin',`<section class="panel content operations-panel"><h2>Сроки SLA</h2>${slaCard(t)}${deadlineForm}</section>`);
-  if (staff) document.querySelector('.detail-grid>div:last-child').insertAdjacentHTML('beforeend', `<div id="git-links-container">${renderGitLinksPanel(t.id, staff&&t.can_write!==false)}</div>`);
+
+function renderOperations() {
+  const { ticket: t, time_entries = [], hour_requests = [], attachments = [] } = state.current;
+  const staff = state.user.role !== 'customer';
+  const assigned = staff && t.assignee_id === state.user.id;
+  const viewer = (staff && t.can_write === false) || !staff && t.visibility === 'organization' && state.organizations.some(o => o.id === t.organization_id && o.members.some(m => m.user_id === state.user.id && m.role === 'viewer'));
+  const canDecide = !staff && t.can_decide;
+  const remaining = Math.max(0, (t.approved_minutes || 0) - (t.actual_minutes || 0));
+  const progress = t.approved_minutes ? Math.min(100, Math.round(t.actual_minutes / t.approved_minutes * 100)) : 0;
   const rateRub = t.hourly_rate_rub || 3000;
   const costRub = t.cost_rub || Math.round((t.approved_minutes || 0) / 60 * rateRub);
   const actBadge = t.act_invoice ? `<span style="margin: 0 10px; color: var(--line)">|</span><a href="/api/billing/invoices/${t.act_invoice.id}/print" target="_blank" rel="noopener noreferrer" class="billing-doc-pill act" title="Открыть печатную форму акта">Акт №${esc(t.act_invoice.number)} ✓</a>` : '';
+
+  const requests = staff ? hour_requests.map(r => {
+    if (r.state === 'pending_pm') {
+      if (isDispatcher()) {
+        const perfH = (r.minutes / 60);
+        return `<div class="hours-request needs-action" style="border: 2px solid var(--accent); border-radius: var(--radius); padding: 12px; margin: 10px 0;">
+          <div class="row"><strong>Запрос доп. часов: +${hours(r.minutes)}</strong><span class="badge">Ждёт решения PM</span></div>
+          <p><strong>Причина исполнителя:</strong> ${esc(r.reason)}</p>
+          <small>${esc(r.author_name)} · ${date(r.created_at)}</small>
+          <form class="form pm-hour-decision-form" data-request-id="${r.id}" style="margin-top: 10px;">
+            <div class="duration-inputs">
+              <label>Часов исполнителю
+                <input class="field" type="number" name="approved_hours" min="0" max="500" step="0.25" value="${perfH}" required>
+              </label>
+              <label class="check-row" style="margin-top:24px">
+                <input type="checkbox" name="bill_customer" class="bill-customer-check">Выставить заказчику
+              </label>
+            </div>
+            <div class="bill-customer-fields" hidden style="margin-top:8px">
+              <label>Сумма заказчику, ₽ (по умолчанию по тарифу)
+                <input class="field" type="number" name="custom_amount_rub" min="0" step="100" placeholder="Автоматический расчёт">
+              </label>
+              <label>Пояснение для заказчика
+                <textarea name="client_explanation" maxlength="3000" placeholder="Пояснение к дополнительной стоимости">${esc(r.reason)}</textarea>
+              </label>
+            </div>
+            <div class="row" style="margin-top:8px">
+              <button class="button primary small" type="submit">Принять решение PM</button>
+              <button class="button small" type="button" data-pm-hour-reject="${r.id}">Отклонить</button>
+            </div>
+          </form>
+        </div>`;
+      } else {
+        return `<div class="hours-request"><div class="row"><strong>+${hours(r.minutes)}</strong><span class="badge">Ожидает решения PM</span></div><p>${esc(r.reason)}</p><small>${esc(r.author_name)} · ${date(r.created_at)}</small></div>`;
+      }
+    }
+    const billNote = r.bill_customer ? ` · клиенту: ${(r.amount_rub || 0).toLocaleString('ru-RU')} ₽` : ' · за счёт компании';
+    const stBadge = r.state === 'approved' ? 'Одобрено' : r.state === 'rejected' ? 'Отклонено' : 'На согласовании у заказчика';
+    return `<div class="hours-request"><div class="row"><strong>+${hours(r.pm_approved_minutes || r.minutes)}${billNote}</strong><span class="badge">${stBadge}</span></div><p>${esc(r.reason)}</p>${r.client_explanation ? `<p class="muted">Пояснение клиенту: ${esc(r.client_explanation)}</p>` : ''}<small>${esc(r.author_name)} · ${date(r.created_at)}</small></div>`;
+  }).join('') : '';
+
+  const customerRequests = !staff ? hour_requests.map(r => `
+    <div class="hours-request ${r.state === 'pending' && canDecide ? 'needs-action' : ''}">
+      <div class="row"><strong>Дополнительные работы: +${(r.amount_rub || 0).toLocaleString('ru-RU')} ₽</strong><span class="badge">${r.state === 'approved' ? 'Одобрено' : r.state === 'rejected' ? 'Отклонено' : 'Ожидает согласования'}</span></div>
+      <p>${esc(r.reason || r.client_explanation || '')}</p>
+      <small>${date(r.created_at)}</small>
+      ${r.state === 'pending' && canDecide ? `<div class="row" style="margin-top:8px"><button class="button primary" data-hours-approve="${r.id}">Согласовать доплату</button><button class="button" data-hours-reject="${r.id}">Отклонить</button></div>` : ''}
+    </div>
+  `).join('') : '';
+
+  const entries = staff ? time_entries.map(w => `<div class="time-entry"><div class="row"><strong>${hours(w.minutes)}</strong><small>${esc(w.work_date || w.created_at.slice(0, 10))}</small></div><p>${esc(w.note)}</p><small>${esc(w.author_name)}</small></div>`).join('') : '';
+
+  const logForm = assigned && ['working', 'waiting', 'done'].includes(t.status) && t.approved_minutes ? `<form class="form" id="time-entry-form"><label>Дата работы<input class="field" type="date" name="work_date" value="${new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10)}" max="${new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10)}" required></label><small>Часы поступят администратору на подтверждение для выплаты.</small><div><span>Фактически потрачено</span><div class="duration-inputs"><label>Часы<input class="field" type="number" name="hours" min="0" step="1" max="${Math.floor(remaining / 60)}" placeholder="0" inputmode="numeric"></label><label>Минуты · необязательно<input class="field" type="number" name="minutes" min="0" max="60" step="1" placeholder="0" inputmode="numeric"></label></div><small>Например: 1 час и 30 минут. Пустое поле — 0. 60 минут = 1 час.</small></div><label>Что сделано<textarea name="note" data-draft="work-note-${t.id}" required minlength="3" maxlength="2000" placeholder="Кратко опишите результат работы"></textarea></label><button class="button primary" ${remaining < 1 ? 'disabled data-permanently-disabled="true"' : ''}>Внести время</button>${remaining > 0 ? `<button type="button" class="button" id="fill-remaining">Внести остаток ${hours(remaining)}</button>` : ''}</form>` : '';
+
+  const requestForm = assigned && ['working', 'waiting'].includes(t.status) && t.approved_minutes && !t.pending_hour_request ? `<form class="form" id="hour-request-form"><p class="muted">Запросите часы сверх согласованной оценки и укажите причину. Запрос поступит руководителю проектов (PM) на проверку.</p><label>Дополнительные часы<input class="field" type="number" name="hours" min="0.25" step="0.25" required></label><label>Почему нужны дополнительные часы<textarea name="reason" required minlength="3" maxlength="2000"></textarea></label><button class="button">Запросить согласование</button></form>` : '';
+
+  const deadlineForm = staff && (state.user.role === 'admin' || state.user.is_manager) ? `<form class="deadline-form" id="deadline-form"><label>Установить срок выполнения<input class="field" type="datetime-local" name="due_at" value="${t.delivery_due_at ? new Date(t.delivery_due_at).toLocaleString('sv-SE').replace(' ', 'T').slice(0, 16) : ''}"></label><button class="button">Сохранить срок</button></form>` : '';
+
+  document.querySelector('.detail-grid>div:last-child').insertAdjacentHTML('afterbegin', `<section class="panel content operations-panel"><h2>Сроки SLA</h2>${slaCard(t)}${deadlineForm}</section>`);
+  if (staff) document.querySelector('.detail-grid>div:last-child').insertAdjacentHTML('beforeend', `<div id="git-links-container">${renderGitLinksPanel(t.id, staff && t.can_write !== false)}</div>`);
+
   const serviceEntries = state.current.service_entries || [];
   const serviceMins = t.service_minutes || 0;
   const serviceTarget = { customer_id: t.customer_id, customer_name: t.customer_company || t.customer_name, ticket_id: t.id, reload: () => openTicket(t.id) };
   const serviceList = serviceEntries.length ? serviceEntries.map(e => serviceEntryItem(e, { canDelete: e.author_id === state.user.id || isDispatcher() })).join('') : '<p class="muted">Созвонов и переписки по заявке пока не учтено.</p>';
   const serviceTotal = billingOn() ? `<div class="hours-finance"><span>Стоимость для заказчика: <strong>${(t.total_cost_rub ?? costRub).toLocaleString('ru-RU')} ₽</strong></span><span style="margin: 0 10px; color: var(--line)">|</span><span>оценка ${costRub.toLocaleString('ru-RU')} ₽ + сопровождение ${(t.service_cost_rub || 0).toLocaleString('ru-RU')} ₽</span></div>` : '';
-  const clientService= !staff&&billingOn()?`<section class="panel content"><h2>Сопровождение и общая стоимость</h2><p>Созвоны и переписка оплачиваются сверх оценки по ставке ${rateRub.toLocaleString('ru-RU')} ₽/ч. В акте они идут строкой «Консультационное сопровождение и координация работ».</p><p>Учтено: <strong>${hours(serviceMins)} · ${(t.service_cost_rub||0).toLocaleString('ru-RU')} ₽</strong>. Стоимость согласованной работы и сопровождения: <strong>${(t.total_cost_rub??costRub).toLocaleString('ru-RU')} ₽</strong>.</p>${t.estimate_state==='pending'?'<p class="muted">Оценка ещё не согласована и в эту сумму не входит.</p>':''}<p>Лимит сопровождения: <strong>${t.service_limit_minutes===null?'без ограничения':hours(t.service_limit_minutes)}</strong>.</p>${canDecide&&t.status!=='closed'?`<form class="form" id="service-budget-form"><label>Лимит сопровождения, часов<input class="field" name="limit_hours" type="number" min="${serviceMins/60}" step="any" value="${t.service_limit_minutes===null?'':t.service_limit_minutes/60}" placeholder="Без ограничения"><small>0 — без дополнительного сопровождения. Пусто — без ограничения. Уже учтённые часы сохраняются.</small></label><button class="button">Сохранить лимит</button></form>`:''}</section>`:'';
-  const serviceSection = staff ? `<section class="panel content operations-panel"><div class="row contractor-time-header"><h2>Трудозатраты подрядчика</h2>${t.can_write!==false?`<button class="button small" type="button" id="open-service-form">${icon('clock', 14)}Учесть созвон или переписку</button>`:''}</div><div class="hours-summary contractor-time-summary"><div><small>Фактическая работа</small><strong>${hours(t.actual_minutes || 0)}</strong></div><div><small>Оценки и переоценки</small><strong>${hours(t.assessment_minutes || 0)}</strong></div><div><small>Сопровождение</small><strong>${hours(serviceMins)}</strong></div><div><small>Всего к учёту подрядчику</small><strong>${hours(t.contractor_total_minutes || 0)}</strong></div></div><p class="muted">Всего — фактически внесённая работа, время всех версий оценки (включая отклонённые и пересмотренные), учтённые созвоны и переписка. Время уточнений нужно внести вручную и привязать к этой заявке.</p>${serviceTotal}<p class="muted">Подробности записей видны только команде. Заказчик видит общие часы, стоимость и лимит сопровождения. Созвоны и переписка оплачиваются сверх оценки; в акте клиента они идут общей строкой «Консультационное сопровождение и координация работ».</p>${t.can_write!==false?serviceForm(serviceTarget, serviceEntries):''}${serviceList}</section>` : '';
+
+  const clientService = !staff && billingOn() ? `
+    <section class="panel content">
+      <h2>Сопровождение и общая стоимость</h2>
+      <p>Консультации, созвоны и координация учитываются отдельно. В закрывающих документах они указываются строкой «Консультационное сопровождение и координация работ».</p>
+      <p>Согласованная стоимость работ: <strong>${costRub.toLocaleString('ru-RU')} ₽</strong>.</p>
+      <p>Учтено сопровождение: <strong>${(t.service_cost_rub || 0).toLocaleString('ru-RU')} ₽</strong>.</p>
+      <p>Общая стоимость: <strong>${(t.total_cost_rub ?? costRub).toLocaleString('ru-RU')} ₽</strong>.</p>
+      ${t.estimate_state === 'pending' ? '<p class="muted">Текущая оценка ещё не согласована и не входит в эту сумму.</p>' : ''}
+    </section>
+  ` : '';
+
+  const serviceSection = staff ? `<section class="panel content operations-panel"><div class="row contractor-time-header"><h2>Трудозатраты подрядчика</h2>${t.can_write !== false ? `<button class="button small" type="button" id="open-service-form">${icon('clock', 14)}Учесть созвон или переписку</button>` : ''}</div><div class="hours-summary contractor-time-summary"><div><small>Фактическая работа</small><strong>${hours(t.actual_minutes || 0)}</strong></div><div><small>Оценки и переоценки</small><strong>${hours(t.assessment_minutes || 0)}</strong></div><div><small>Сопровождение</small><strong>${hours(serviceMins)}</strong></div><div><small>Всего к учёту подрядчику</small><strong>${hours(t.contractor_total_minutes || 0)}</strong></div></div><p class="muted">Всего — фактически внесённая работа, время всех версий оценки (включая отклонённые и пересмотренные), учтённые созвоны и переписка. Время уточнений нужно внести вручную и привязать к этой заявке.</p>${serviceTotal}<p class="muted">Подробности записей видны только команде. Заказчик видит стоимость работ и сопровождения.</p>${t.can_write !== false ? serviceForm(serviceTarget, serviceEntries) : ''}${serviceList}</section>` : '';
+
   const financeHtml = `<div class="hours-finance"><span>Ставка: <strong>${rateRub.toLocaleString('ru-RU')} ₽/ч</strong></span><span style="margin: 0 10px; color: var(--line)">|</span><span>Стоимость: <strong>${costRub.toLocaleString('ru-RU')} ₽</strong></span>${actBadge}</div>`;
-  document.querySelector('.detail-grid>div:first-child').insertAdjacentHTML('beforeend',`<section class="panel content operations-panel" id="actual-work"><h2>Фактические трудозатраты</h2><p class="muted">Вносите время, которое действительно потратили на выполнение. После записи передайте готовый результат заказчику на проверку.</p><div class="hours-summary"><div><small>Согласовано</small><strong>${hours(t.approved_minutes||0)}</strong></div><div><small>Выполнено</small><strong>${hours(t.actual_minutes||0)}</strong></div><div><small>Осталось</small><strong>${hours(remaining)}</strong></div></div><div class="work-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress}" aria-label="Использовано согласованных часов"><span style="width:${progress}%"></span></div>${billingOn()?financeHtml:''}${logForm}${entries?`<h3>Записи времени</h3>${entries}`:'<p class="muted">Фактическое время пока не внесено.</p>'}${requests?`<h3>Дополнительные часы</h3>${requests}`:''}${requestForm}</section>${serviceSection}${clientService}<section class="panel content operations-panel"><h2>Файлы</h2>${attachments.map(a=>`<a class="attachment-link" href="/api/attachments/${a.id}"><span>${icon('paperclip',14)} ${esc(a.filename)}</span><small>${Math.ceil(a.size/1024)} КБ</small></a>`).join('')||'<p class="muted">Файлов пока нет.</p>'}${t.status!=='closed'&&!viewer?'<label class="upload-label">Прикрепить файл<input id="ticket-file" type="file" multiple accept=".png,.jpg,.jpeg,.webp,.gif,.pdf,.txt,.doc,.docx,.xls,.xlsx,.csv,.zip"></label>':''}</section>`);
-  document.querySelector('#service-budget-form')?.addEventListener('submit',async e=>{e.preventDefault();const raw=e.target.elements.limit_hours.value;try{await api(`/tickets/${t.id}/service-budget`,{method:'PATCH',body:JSON.stringify({limit_minutes:raw===''?null:Math.round(Number(raw)*60)})});toast('Лимит сопровождения сохранён');await openTicket(t.id);}catch(error){showError(error);}});
+
+  const staffWorkSection = staff ? `<section class="panel content operations-panel" id="actual-work"><h2>Фактические трудозатраты</h2><p class="muted">Вносите время, которое действительно потратили на выполнение. После записи передайте готовый результат заказчику на проверку.</p><div class="hours-summary"><div><small>Согласовано</small><strong>${hours(t.approved_minutes || 0)}</strong></div><div><small>Выполнено</small><strong>${hours(t.actual_minutes || 0)}</strong></div><div><small>Осталось</small><strong>${hours(remaining)}</strong></div></div><div class="work-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress}" aria-label="Использовано согласованных часов"><span style="width:${progress}%"></span></div>${billingOn() ? financeHtml : ''}${logForm}${entries ? `<h3>Записи времени</h3>${entries}` : '<p class="muted">Фактическое время пока не внесено.</p>'}${requests ? `<h3>Дополнительные часы</h3>${requests}` : ''}${requestForm}</section>` : '';
+
+  const customerRequestsSection = (!staff && customerRequests) ? `
+    <section class="panel content operations-panel">
+      <h2>Дополнительные работы</h2>
+      <p class="muted">Согласование дополнительных работ и стоимости.</p>
+      ${customerRequests}
+    </section>
+  ` : '';
+
+  const filesSection = `<section class="panel content operations-panel"><h2>Файлы</h2>${attachments.map(a => `<a class="attachment-link" href="/api/attachments/${a.id}"><span>${icon('paperclip', 14)} ${esc(a.filename)}</span><small>${Math.ceil(a.size / 1024)} КБ</small></a>`).join('') || '<p class="muted">Файлов пока нет.</p>'}${t.status !== 'closed' && !viewer ? '<label class="upload-label">Прикрепить файл<input id="ticket-file" type="file" multiple accept=".png,.jpg,.jpeg,.webp,.gif,.pdf,.txt,.doc,.docx,.xls,.xlsx,.csv,.zip"></label>' : ''}</section>`;
+
+  document.querySelector('.detail-grid>div:first-child').insertAdjacentHTML('beforeend', `${staffWorkSection}${customerRequestsSection}${serviceSection}${clientService}${filesSection}`);
+
   const actualWork = document.querySelector('#actual-work');
   const conversation = document.querySelector('.detail-grid .conversation');
   if (actualWork && conversation) conversation.before(actualWork);
-  bindDrafts(actualWork);
+  if (actualWork) bindDrafts(actualWork);
+
   state.pendingOps ||= {};
-  const submit=async(path,data,key)=>{try{await api(path,{method:'POST',body:JSON.stringify(data)});if(key)delete state.pendingOps[key];if(key===`time-${t.id}`)clearDraft(`work-note-${t.id}`);await refresh();await openTicket(t.id);}catch(error){showError(error);document.querySelector('#time-entry-form button.primary:not([data-permanently-disabled])')?.removeAttribute('disabled');document.querySelector('#hour-request-form button')?.removeAttribute('disabled');}};
-  const timeForm=document.querySelector('#time-entry-form');
-  const timeMinutes=()=>Number(timeForm.elements.hours.value)*60+Number(timeForm.elements.minutes.value);
-  const validateTime=()=>{
-    const minutes=timeMinutes();
-    timeForm.elements.hours.setCustomValidity(minutes<1?'Укажите время: хотя бы 1 минуту.':minutes>remaining?`Осталось ${hours(remaining)}. Для превышения лимита согласуйте дополнительные часы.`:'');
+  const submit = async (path, data, key) => {
+    try {
+      await api(path, { method: 'POST', body: JSON.stringify(data) });
+      if (key) delete state.pendingOps[key];
+      if (key === `time-${t.id}`) clearDraft(`work-note-${t.id}`);
+      await refresh();
+      await openTicket(t.id);
+    } catch (error) {
+      showError(error);
+      document.querySelector('#time-entry-form button.primary:not([data-permanently-disabled])')?.removeAttribute('disabled');
+      document.querySelector('#hour-request-form button')?.removeAttribute('disabled');
+    }
   };
-  timeForm?.addEventListener('input',validateTime);
-  document.querySelector('#fill-remaining')?.addEventListener('click',()=>{
-    timeForm.elements.hours.value=String(Math.floor(remaining/60));
-    timeForm.elements.minutes.value=String(remaining%60);
+
+  const timeForm = document.querySelector('#time-entry-form');
+  const timeMinutes = () => Number(timeForm.elements.hours.value) * 60 + Number(timeForm.elements.minutes.value);
+  const validateTime = () => {
+    const minutes = timeMinutes();
+    timeForm.elements.hours.setCustomValidity(minutes < 1 ? 'Укажите время: хотя бы 1 минуту.' : minutes > remaining ? `Осталось ${hours(remaining)}. Для превышения лимита согласуйте дополнительные часы.` : '');
+  };
+  timeForm?.addEventListener('input', validateTime);
+  document.querySelector('#fill-remaining')?.addEventListener('click', () => {
+    timeForm.elements.hours.value = String(Math.floor(remaining / 60));
+    timeForm.elements.minutes.value = String(remaining % 60);
     validateTime();
     timeForm.elements.note.focus();
   });
-  document.querySelector('#time-entry-form')?.addEventListener('submit',e=>{e.preventDefault();validateTime();if(!e.target.reportValidity())return;e.target.querySelector('button').disabled=true;const form=new FormData(e.target);const key=`time-${t.id}`;const request_id=state.pendingOps[key] ||= crypto.randomUUID();submit(`/tickets/${t.id}/time-entries`,{minutes:timeMinutes(),note:form.get('note'),work_date:form.get('work_date'),request_id},key);});
-  document.querySelector('#hour-request-form')?.addEventListener('submit',e=>{e.preventDefault();e.target.querySelector('button').disabled=true;const form=new FormData(e.target);const key=`hours-${t.id}`;const request_id=state.pendingOps[key] ||= crypto.randomUUID();submit(`/tickets/${t.id}/hour-requests`,{minutes:Math.round(Number(form.get('hours'))*60),reason:form.get('reason'),request_id},key);});
-  document.querySelectorAll('[data-hours-approve],[data-hours-reject]').forEach(button=>button.onclick=()=>submit(`/tickets/${t.id}/hour-requests/${button.dataset.hoursApprove||button.dataset.hoursReject}/decision`,{action:button.dataset.hoursApprove?'approve':'reject'}));
-  document.querySelector('#ticket-file')?.addEventListener('change',async e=>{try{for(const file of e.target.files)await upload(`/tickets/${t.id}/attachments`,file);await refresh();await openTicket(t.id);}catch(error){showError(error);}});
+  document.querySelector('#time-entry-form')?.addEventListener('submit', e => {
+    e.preventDefault();
+    validateTime();
+    if (!e.target.reportValidity()) return;
+    e.target.querySelector('button').disabled = true;
+    const form = new FormData(e.target);
+    const key = `time-${t.id}`;
+    const request_id = state.pendingOps[key] ||= crypto.randomUUID();
+    submit(`/tickets/${t.id}/time-entries`, { minutes: timeMinutes(), note: form.get('note'), work_date: form.get('work_date'), request_id }, key);
+  });
+
+  document.querySelector('#hour-request-form')?.addEventListener('submit', e => {
+    e.preventDefault();
+    e.target.querySelector('button').disabled = true;
+    const form = new FormData(e.target);
+    const key = `hours-${t.id}`;
+    const request_id = state.pendingOps[key] ||= crypto.randomUUID();
+    submit(`/tickets/${t.id}/hour-requests`, { minutes: Math.round(Number(form.get('hours')) * 60), reason: form.get('reason'), request_id }, key);
+  });
+
+  document.querySelectorAll('.pm-hour-decision-form').forEach(form => {
+    const reqId = form.dataset.requestId;
+    const billCheck = form.querySelector('.bill-customer-check');
+    const billFields = form.querySelector('.bill-customer-fields');
+    billCheck?.addEventListener('change', () => {
+      if (billFields) billFields.hidden = !billCheck.checked;
+    });
+    form.onsubmit = async e => {
+      e.preventDefault();
+      const fd = new FormData(form);
+      const appH = Number(fd.get('approved_hours') || 0);
+      const isBilled = billCheck?.checked || false;
+      const customAmt = fd.get('custom_amount_rub');
+      submit(`/tickets/${t.id}/hour-requests/${reqId}/pm-decision`, {
+        action: 'approve',
+        approved_performer_minutes: Math.round(appH * 60),
+        bill_customer: isBilled,
+        customer_minutes: isBilled ? Math.round(appH * 60) : 0,
+        custom_amount_rub: (isBilled && customAmt) ? Number(customAmt) : null,
+        client_explanation: isBilled ? (fd.get('client_explanation') || '') : ''
+      });
+    };
+  });
+
+  document.querySelectorAll('[data-pm-hour-reject]').forEach(btn => {
+    btn.onclick = () => submit(`/tickets/${t.id}/hour-requests/${btn.dataset.pmHourReject}/pm-decision`, { action: 'reject' });
+  });
+
+  document.querySelectorAll('[data-hours-approve],[data-hours-reject]').forEach(button => button.onclick = () => submit(`/tickets/${t.id}/hour-requests/${button.dataset.hoursApprove || button.dataset.hoursReject}/decision`, { action: button.dataset.hoursApprove ? 'approve' : 'reject' }));
+  document.querySelector('#ticket-file')?.addEventListener('change', async e => {
+    try {
+      for (const file of e.target.files) await upload(`/tickets/${t.id}/attachments`, file);
+      await refresh();
+      await openTicket(t.id);
+    } catch (error) {
+      showError(error);
+    }
+  });
   if (staff) bindServiceForm(serviceTarget);
-  document.querySelector('#deadline-form')?.addEventListener('submit',async e=>{e.preventDefault();const raw=e.target.elements.due_at.value;try{await api(`/tickets/${t.id}/deadline`,{method:'PATCH',body:JSON.stringify({due_at:raw?new Date(raw).toISOString():null})});await refresh();await openTicket(t.id);}catch(error){showError(error);}});
+  document.querySelector('#deadline-form')?.addEventListener('submit', async e => {
+    e.preventDefault();
+    const raw = e.target.elements.due_at.value;
+    try {
+      await api(`/tickets/${t.id}/deadline`, { method: 'PATCH', body: JSON.stringify({ due_at: raw ? new Date(raw).toISOString() : null }) });
+      await refresh();
+      await openTicket(t.id);
+    } catch (error) {
+      showError(error);
+    }
+  });
 }
 function serviceEntryItem(e, { showClient = false, canDelete = false } = {}) {
   const billed = e.act_invoice_id ? `<a class="billing-doc-pill act" href="/api/billing/invoices/${e.act_invoice_id}/print" target="_blank" rel="noopener">Акт ${esc(e.act_number || '')}</a>` : '<span class="badge">Ждёт акта</span>';
@@ -2037,6 +2785,83 @@ function renderOrganizations(){
   document.querySelectorAll('[data-member-role]').forEach(select=>{const original=select.value;select.onchange=async()=>{try{await api(`/organizations/${select.dataset.org}/members/${select.dataset.memberRole}`,{method:'PATCH',body:JSON.stringify({role:select.value})});await refresh();}catch(error){select.value=original;showError(error);}};});
   document.querySelectorAll('[data-remove-member]').forEach(button=>button.onclick=async()=>{if(!confirm('Убрать участника из компании? Доступ к общим заявкам прекратится.'))return;try{await api(`/organizations/${button.dataset.org}/members/${button.dataset.removeMember}`,{method:'DELETE'});await refresh();}catch(error){showError(error);}});
   document.querySelectorAll('[data-renew-owner]').forEach(button=>button.onclick=async()=>{button.disabled=true;try{const access=await api(`/company-owners/${button.dataset.renewOwner}/temporary-access`,{method:'POST'});const host=document.querySelector(`[data-owner-access="${button.dataset.renewOwner}"]`);host.innerHTML=`<label>Временный логин<input class="field" readonly value="${esc(access.login)}"></label><label>Временный пароль<input class="field" readonly value="${esc(access.temporary_password)}"></label><p>До ${date(access.expires_at)}. Сохраните данные и передайте владельцу.</p>`;state.organizations=await api('/organizations');}catch(error){showError(error);}finally{button.disabled=false;}});
+}
+
+
+async function openSpecialists() {
+  setView('specialists');
+  try {
+    state.specialists = await api('/customer/specialists');
+    render();
+  } catch (error) {
+    showError(error);
+  }
+}
+
+function renderSpecialists() {
+  const list = state.specialists || [];
+  const empty = `<div class="empty">
+    <h3>Специалисты пока не назначены</h3>
+    <p>Здесь появятся сотрудники службы поддержки, кураторы и инженеры, закреплённые за вашей компанией или назначенные на ваши заявки.</p>
+  </div>`;
+
+  const cards = list.map(s => {
+    const responsibilitiesHtml = (s.responsibilities && s.responsibilities.length)
+      ? `<div class="specialist-tags">
+          <span class="muted">Направления:</span>
+          ${s.responsibilities.map(r => `<span class="badge role">${esc(r)}</span>`).join('')}
+         </div>`
+      : '';
+
+    const functionsHtml = (s.functions && s.functions.length)
+      ? `<div class="specialist-tags">
+          <span class="muted">Компетенции:</span>
+          ${s.functions.map(f => `<span class="badge">${esc(f)}</span>`).join('')}
+         </div>`
+      : '';
+
+    const ticketsHtml = (s.tickets && s.tickets.length)
+      ? `<div class="specialist-tickets">
+          <h4>Заявки с участием специалиста (${s.tickets.length})</h4>
+          <ul class="specialist-ticket-list">
+            ${s.tickets.map(t => `
+              <li class="specialist-ticket-item">
+                <div class="row" style="gap:8px;align-items:center;">
+                  <span class="badge ${esc(t.status)}">${statusNames[t.status] || t.status}</span>
+                  <span class="badge priority-${esc(t.priority || 'normal')}">${esc(priorityNames[t.priority] || 'Обычный')}</span>
+                  <span class="specialist-role-tag">${esc(t.role)}</span>
+                </div>
+                <button type="button" class="link-button specialist-ticket-title" data-open-ticket="${t.id}">
+                  №${t.id} · ${esc(t.title)}
+                </button>
+              </li>
+            `).join('')}
+          </ul>
+         </div>`
+      : '<p class="muted">Сейчас нет активных заявок с участием этого специалиста.</p>';
+
+    return `
+      <section class="panel content specialist-card" data-specialist-id="${s.id}">
+        <div class="specialist-header">
+          ${avatar(s, 'large')}
+          <div class="specialist-info">
+            <span class="eyebrow">${esc(s.job_title || 'Специалист команды')}</span>
+            <h2>${esc(s.name)}</h2>
+            ${s.bio ? `<p class="specialist-bio">${esc(s.bio)}</p>` : ''}
+            ${responsibilitiesHtml}
+            ${functionsHtml}
+          </div>
+        </div>
+        ${ticketsHtml}
+      </section>
+    `;
+  }).join('');
+
+  shell('Наша команда', '', `<div class="specialists-container">${list.length ? `<div class="specialists-grid">${cards}</div>` : empty}</div>`, { kicker: 'Сотрудники, работающие с вами' });
+
+  document.querySelectorAll('[data-open-ticket]').forEach(btn => {
+    btn.onclick = () => openTicket(Number(btn.dataset.openTicket));
+  });
 }
 
 async function openAnalytics(){
@@ -3363,15 +4188,15 @@ async function openHash(){
   if(!state.user||state.user.must_change_credentials)return;
   state.restoringRoute=true;
   try{
-    const route=location.hash.slice(1);const taskMatch=route.match(/^task\/(\d+)$/);if(taskMatch){if(state.user.role==='customer')return setView('tickets');return await TasksUI.open(Number(taskMatch[1]));}const match=route.match(/^(ticket|chat|ticket-chat)\/(\d+)$/);
+    const route=location.hash.slice(1).replace(/^\//, '');const taskMatch=route.match(/^task\/(\d+)$/);if(taskMatch){if(state.user.role==='customer')return setView('tickets');return await TasksUI.open(Number(taskMatch[1]));}const match=route.match(/^(ticket|chat|ticket-chat)\/(\d+)$/);
     if(match?.[1]==='ticket-chat')return await openTicketChat(Number(match[2]));
     if(match)return await (match[1]==='ticket'?openTicket(Number(match[2])):openChat(Number(match[2])));
     if(route==='payroll')return setView(state.user.role==='customer'?'tickets':'payroll');
-    const loaders={messengers:openMessengers,analytics:openAnalytics,kb:openKb,webhooks:openWebhooks,billing:openBilling};
+    const loaders={messengers:openMessengers,analytics:openAnalytics,kb:openKb,webhooks:openWebhooks,billing:openBilling,specialists:openSpecialists};
     if(route==='webhooks'&&state.user.role!=='admin')return setView('tickets');
     if(route==='analytics'&&!isDispatcher())return setView('tickets');
     if(loaders[route])return await loaders[route]();
-    const views=['tasks','tickets','queue','organizations','team','profile','new','notifications','chats'];
+    const views=['tasks','deals','meetings','tickets','queue','organizations','team','profile','new','notifications','chats','specialists'];
     if(views.includes(route)&&!(['team','tasks'].includes(route)&&state.user.role==='customer')&&!(route==='queue'&&state.user.role==='customer'))setView(route);
     else setView(state.user.role==='customer'?'tickets':'tasks');
   }catch(error){showError(error);}finally{state.restoringRoute=false;}
@@ -3380,7 +4205,7 @@ async function openHash(){
 async function renderPayroll(){
   try{const module=await import('/payroll.js');if(state.view==='payroll')module.render({state,api,shell,esc,hours,toast,showError});}catch(error){showError(error);}
 }
-function render() {syncRoute();if(!state.user)return renderAuth();if(state.user.must_change_credentials)return renderCredentials();if(state.view==='organizations')return renderOrganizations();if(state.view==='profile')return renderProfile();if(state.view==='messengers')return renderMessengers();if(state.view==='queue')return renderQueue();if(state.view==='new')return renderNew();if(state.view==='detail'&&state.current)return renderDetail();if(state.view==='ticket-chat'&&state.current)return renderTicketChat();if(state.view==='tasks')return TasksUI.render();if(state.view==='task')return TasksUI.renderDetail();if(state.view==='team')return renderTeam();if(state.view==='notifications')return renderNotifications();if(state.view==='chats')return renderChats();if(state.view==='chat'&&state.currentChat)return renderChatDetail();if(state.view==='analytics')return renderAnalytics();if(state.view==='kb')return renderKb();if(state.view==='webhooks')return renderWebhooks();if(state.view==='payroll')return renderPayroll();if(state.view==='billing')return renderBilling();renderTickets();}
+function render() {syncRoute();if(!state.user)return renderAuth();if(state.user.must_change_credentials)return renderCredentials();if(state.view==='organizations')return renderOrganizations();if(state.view==='profile')return renderProfile();if(state.view==='messengers')return renderMessengers();if(state.view==='queue')return renderQueue();if(state.view==='new')return renderNew();if(state.view==='detail'&&state.current)return renderDetail();if(state.view==='ticket-chat'&&state.current)return renderTicketChat();if(state.view==='tasks')return TasksUI.render();if(state.view==='task')return TasksUI.renderDetail();if(state.view==='team')return renderTeam();if(state.view==='deals')return TeamUI.renderDeals();if(state.view==='meetings')return TeamUI.renderMeetings();if(state.view==='notifications')return renderNotifications();if(state.view==='chats')return renderChats();if(state.view==='chat'&&state.currentChat)return renderChatDetail();if(state.view==='analytics')return renderAnalytics();if(state.view==='kb')return renderKb();if(state.view==='webhooks')return renderWebhooks();if(state.view==='payroll')return renderPayroll();if(state.view==='billing')return renderBilling();if(state.view==='specialists')return renderSpecialists();renderTickets();}
 async function start(){
   const params=new URLSearchParams(location.search);
   if(params.has('invite')||params.has('reset')){renderAuth();return;}

@@ -548,6 +548,23 @@ def install_routes(app, domain):
             audit(conn,domain,user,'staff',uid,'update',data.model_dump(exclude={'version'}))
             return person_data(conn,conn.execute('SELECT * FROM users WHERE id=?',(uid,)).fetchone(),True)
 
+    @router.patch('/me/availability')
+    def update_my_availability(data: dict, desk_session: str | None = Cookie(default=None)):
+        user = user_for(desk_session)
+        if user['role'] not in ('employee', 'admin'):
+            raise HTTPException(403, 'Только для сотрудников')
+        availability = data.get('availability')
+        if availability not in ('available', 'vacation', 'sick', 'away'):
+            raise HTTPException(422, 'Недопустимый статус доступности')
+        with domain.db() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            stamp = domain.now()
+            conn.execute("""INSERT INTO staff_settings(user_id,availability,updated_at)
+                VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET availability=excluded.availability,updated_at=excluded.updated_at""",
+                (user['id'], availability, stamp))
+            audit(conn, domain, user, 'staff', user['id'], 'availability', {'availability': availability})
+            return {'ok': True, 'availability': availability}
+
     @router.put('/clients/{cid}')
     def update_client_team(cid:int,data:ClientTeamInput,desk_session:str|None=Cookie(default=None)):
         user=user_for(desk_session)

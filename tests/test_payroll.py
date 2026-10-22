@@ -37,6 +37,7 @@ class PayrollTests(unittest.TestCase):
         self.ticket = ticket['id']
         self.admin.patch(f'/api/tickets/{self.ticket}/assignee', json={'assignee_id':self.ids['worker']})
         quote = self.worker.post(f'/api/tickets/{self.ticket}/estimates', json={'effort_minutes':600,'assessment_minutes':10}).json()
+        self.admin.post(f'/api/tickets/{self.ticket}/estimates/{quote["id"]}/pm-review', json={'action':'send_to_customer'})
         self.clients['client'].post(f'/api/tickets/{self.ticket}/estimates/decision', json={'estimate_id':quote['id'],'action':'approve'})
         self.worker.patch(f'/api/tickets/{self.ticket}/status', json={'status':'working'})
 
@@ -160,6 +161,7 @@ class PayrollTests(unittest.TestCase):
         for minutes, action in ((5,'reject'),(7,'request_revision'),(11,None)):
             estimate = self.worker.post(f'/api/tickets/{second}/estimates',json={'effort_minutes':60,'assessment_minutes':minutes}).json()
             if action:
+                self.admin.post(f'/api/tickets/{second}/estimates/{estimate["id"]}/pm-review', json={'action':'send_to_customer'})
                 result = customer.post(f'/api/tickets/{second}/estimates/decision',json={'estimate_id':estimate['id'],'action':action,'comment':'Уточнить оценку'})
                 self.assertEqual(result.status_code,200,result.text)
         services = []

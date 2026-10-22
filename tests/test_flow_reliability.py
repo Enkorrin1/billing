@@ -16,6 +16,7 @@ class FlowReliability(unittest.TestCase):
         ticket = self.other.post('/api/tickets', json={'title':'Общая задача','description':'Работа для всей компании','visibility':'organization'}).json()['id']
         self.admin.patch(f'/api/tickets/{ticket}/assignee', json={'assignee_id':self.staff['id']})
         quote = self.employee.post(f'/api/tickets/{ticket}/estimates', json={'effort_minutes':120,'assessment_minutes':10}).json()['id']
+        self.admin.post(f'/api/tickets/{ticket}/estimates/{quote}/pm-review', json={'action': 'send_to_customer'})
         return org, ticket, quote
 
     def test_shared_author_cannot_decide_but_owner_can(self):
@@ -28,6 +29,7 @@ class FlowReliability(unittest.TestCase):
         self.assertEqual(self.customer.post(path+'/estimates/decision', json={'estimate_id':quote,'action':'approve'}).status_code,200)
         self.employee.patch(path+'/status', json={'status':'working'})
         request = self.employee.post(path+'/hour-requests',json={'minutes':30,'reason':'Дополнительная работа'}).json()['id']
+        self.admin.post(path+f'/hour-requests/{request}/pm-decision', json={'action': 'approve', 'bill_customer': True, 'customer_minutes': 30})
         self.assertEqual(self.other.post(path+f'/hour-requests/{request}/decision',json={'action':'approve'}).status_code,403)
         self.customer.post(path+f'/hour-requests/{request}/decision',json={'action':'approve'})
         self.employee.post(path+'/time-entries',json={'minutes':30,'note':'Работа выполнена'})

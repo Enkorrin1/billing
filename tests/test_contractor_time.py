@@ -19,6 +19,7 @@ class ContractorTime(unittest.TestCase):
                 'effort_minutes': 180, 'assessment_minutes': assessment, 'note': 'Estimate'
             })
             self.assertEqual(response.status_code, 201, response.text)
+            self.admin.post(f"{path}/estimates/{response.json()['id']}/pm-review", json={"action": "send_to_customer"}).raise_for_status()
             self.customer.post(path + '/estimates/decision', json={
                 'estimate_id': response.json()['id'], 'action': action, 'comment': 'Please review'
             }).raise_for_status()

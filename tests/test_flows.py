@@ -109,9 +109,10 @@ class Flows(unittest.TestCase):
         ticket_id = self.customer.post("/api/tickets", json={"title":"Нужна помощь","description":"Подключить систему"}).json()["id"]
         self.admin.patch(f"/api/tickets/{ticket_id}/assignee", json={"assignee_id":self.staff["id"]})
         profile = self.customer.get(f"/api/staff/{self.staff['id']}/profile")
-        self.assertEqual(profile.status_code, 404)
+        self.assertEqual(profile.status_code, 200)
         self.assertEqual(self.admin.get(f"/api/staff/{self.staff['id']}/profile").json()["job_title"], "Ведущий инженер")
-        self.assertEqual(self.customer.get(f"/api/staff/{self.staff['id']}/avatar").status_code, 404)
+        self.assertEqual(self.customer.get(f"/api/staff/{self.staff['id']}/avatar").status_code, 200)
+        self.assertEqual(self.other.get(f"/api/staff/{self.staff['id']}/profile").status_code, 404)
         image = self.admin.get(f"/api/staff/{self.staff['id']}/avatar")
         self.assertEqual(image.status_code, 200)
         self.assertEqual(image.headers["content-type"], "image/webp")
@@ -179,6 +180,7 @@ class Flows(unittest.TestCase):
         self.assertEqual(quote.status_code, 201)
         self.assertEqual(quote.json()["effort_minutes"], 150)
         quote_id = quote.json()["id"]
+        self.assertEqual(self.admin.post(f"/api/tickets/{ticket_id}/estimates/{quote_id}/pm-review", json={"action": "send_to_customer"}).status_code, 200)
         self.assertEqual(self.other.post(f"/api/tickets/{ticket_id}/estimates/decision", json={"estimate_id":quote_id,"action":"approve"}).status_code, 404)
         self.assertEqual(self.customer.post(f"/api/tickets/{ticket_id}/estimates/decision", json={"estimate_id":quote_id,"action":"approve"}).status_code, 200)
         overview_ticket = self.customer.get("/api/tickets").json()[0]
@@ -190,8 +192,8 @@ class Flows(unittest.TestCase):
         self.assertEqual(self.employee.post(f"/api/tickets/{ticket_id}/messages", json={"body":"Взяли в работу","request_id":"employee-1"}).status_code, 201)
         detail = self.customer.get(f"/api/tickets/{ticket_id}").json()
         self.assertEqual(len(detail["messages"]), 2)
-        self.assertEqual(len(detail["events"]), 1)
-        self.assertNotIn("assignee_name", detail["ticket"])
+        self.assertEqual(len(detail["events"]), 2)
+        self.assertEqual(detail["ticket"]["assignee_name"], "Worker")
         self.assertEqual(self.employee.get(f"/api/tickets/{ticket_id}").json()["ticket"]["assignee_name"], "Worker")
         self.assertEqual(detail["estimates"][0]["state"], "approved")
         self.assertEqual(len(self.other.get("/api/tickets").json()), 0)
@@ -209,10 +211,12 @@ class Flows(unittest.TestCase):
         self.assertEqual(self.customer.post(f"/api/tickets/{ticket_id}/estimates", json={"effort_minutes":240,"assessment_minutes":5}).status_code, 403)
         first = self.employee.post(f"/api/tickets/{ticket_id}/estimates", json={"effort_minutes":240,"assessment_minutes":15,"note":"Первый вариант"}).json()
         self.assertEqual(self.employee.post(f"/api/tickets/{ticket_id}/estimates", json={"effort_minutes":180,"assessment_minutes":15}).status_code, 409)
+        self.assertEqual(self.admin.post(f"/api/tickets/{ticket_id}/estimates/{first['id']}/pm-review", json={"action": "send_to_customer"}).status_code, 200)
         revised = self.customer.post(f"/api/tickets/{ticket_id}/estimates/decision", json={"estimate_id":first["id"],"action":"request_revision","comment":"Сократите объём","proposed_effort_minutes":180})
         self.assertEqual(revised.status_code, 200)
         second = self.employee.post(f"/api/tickets/{ticket_id}/estimates", json={"effort_minutes":195,"assessment_minutes":10,"note":"Сокращённый объём"}).json()
         self.assertEqual(second["version"], 2)
+        self.assertEqual(self.admin.post(f"/api/tickets/{ticket_id}/estimates/{second['id']}/pm-review", json={"action": "send_to_customer"}).status_code, 200)
         self.assertEqual(self.customer.post(f"/api/tickets/{ticket_id}/estimates/decision", json={"estimate_id":first["id"],"action":"approve"}).status_code, 409)
         self.assertEqual(self.customer.post(f"/api/tickets/{ticket_id}/estimates/decision", json={"estimate_id":second["id"],"action":"reject"}).status_code, 200)
         self.assertEqual(self.employee.patch(f"/api/tickets/{ticket_id}/status", json={"status":"working"}).status_code, 409)
@@ -301,8 +305,10 @@ class Flows(unittest.TestCase):
         self.assertEqual(self.customer.get("/api/work-queue").status_code, 403)
         self.admin.patch(f"/api/tickets/{ticket_id}/assignee", json={"assignee_id":self.staff["id"]})
         self.assertEqual(self.customer.get(f"/api/tickets/{ticket_id}").json()["ticket"]["next_step"], "Готовим оценку")
-        self.employee.post(f"/api/tickets/{ticket_id}/estimates",
-                           json={"effort_minutes":120,"assessment_minutes":20})
+        est = self.employee.post(f"/api/tickets/{ticket_id}/estimates",
+                           json={"effort_minutes":120,"assessment_minutes":20}).json()
+        self.assertEqual(self.customer.get(f"/api/tickets/{ticket_id}").json()["ticket"]["next_step"], "Готовим оценку")
+        self.assertEqual(self.admin.post(f"/api/tickets/{ticket_id}/estimates/{est['id']}/pm-review", json={"action": "send_to_customer"}).status_code, 200)
         self.assertEqual(self.customer.get(f"/api/tickets/{ticket_id}").json()["ticket"]["next_step"], "Одобрите оценку трудозатрат")
 
     def test_staff_creates_ticket_for_customer(self):
@@ -342,6 +348,7 @@ class Flows(unittest.TestCase):
                                  json={"effort_minutes":180,"assessment_minutes":30})
         self.assertEqual(new.status_code, 201)
         self.assertEqual(new.json()["version"], 2)
+        self.assertEqual(self.admin.post(f"/api/tickets/{ticket_id}/estimates/{new.json()['id']}/pm-review", json={"action": "send_to_customer"}).status_code, 200)
         self.assertEqual(self.customer.get(f"/api/tickets/{ticket_id}").json()["estimates"][1]["state"], "superseded")
 
 
@@ -349,6 +356,7 @@ class Flows(unittest.TestCase):
         ticket_id = self.customer.post("/api/tickets", json={"title":"Интеграция","description":"Настроить обмен данными"}).json()["id"]
         self.admin.patch(f"/api/tickets/{ticket_id}/assignee", json={"assignee_id":self.staff["id"]})
         quote = self.employee.post(f"/api/tickets/{ticket_id}/estimates", json={"effort_minutes":60,"assessment_minutes":20}).json()
+        self.assertEqual(self.admin.post(f"/api/tickets/{ticket_id}/estimates/{quote['id']}/pm-review", json={"action": "send_to_customer"}).status_code, 200)
         self.customer.post(f"/api/tickets/{ticket_id}/estimates/decision", json={"estimate_id":quote["id"],"action":"approve"})
         self.employee.patch(f"/api/tickets/{ticket_id}/status", json={"status":"working"})
         self.assertEqual(self.employee.patch(f"/api/tickets/{ticket_id}/status", json={"status":"done"}).status_code, 409)
@@ -360,6 +368,8 @@ class Flows(unittest.TestCase):
         self.assertEqual(request.status_code, 201)
         self.assertEqual(self.employee.post(f"/api/tickets/{ticket_id}/hour-requests", json={"minutes":60,"reason":"Дубликат"}).status_code, 409)
         self.assertEqual(self.employee.patch(f"/api/tickets/{ticket_id}/status", json={"status":"done"}).status_code, 409)
+        self.assertEqual(self.admin.post(f"/api/tickets/{ticket_id}/hour-requests/{request.json()['id']}/pm-decision",
+                                         json={"action": "approve", "pm_approved_minutes": 60, "bill_customer": True, "customer_minutes": 60}).status_code, 200)
         self.assertEqual(self.other.post(f"/api/tickets/{ticket_id}/hour-requests/{request.json()['id']}/decision", json={"action":"approve"}).status_code, 404)
         self.assertEqual(self.customer.post(f"/api/tickets/{ticket_id}/hour-requests/{request.json()['id']}/decision", json={"action":"approve"}).status_code, 200)
         self.assertEqual(self.customer.post(f"/api/tickets/{ticket_id}/hour-requests/{request.json()['id']}/decision", json={"action":"approve"}).status_code, 409)
@@ -379,6 +389,7 @@ class Flows(unittest.TestCase):
         self.assertEqual(len(self.customer.get("/api/tickets").json()), 1)
         self.admin.patch(f"/api/tickets/{shared}/assignee", json={"assignee_id":self.staff["id"]})
         quote = self.employee.post(f"/api/tickets/{shared}/estimates", json={"effort_minutes":120,"assessment_minutes":15}).json()
+        self.assertEqual(self.admin.post(f"/api/tickets/{shared}/estimates/{quote['id']}/pm-review", json={"action": "send_to_customer"}).status_code, 200)
         self.assertEqual(self.customer.post(f"/api/tickets/{shared}/estimates/decision", json={"estimate_id":quote["id"],"action":"approve"}).status_code, 200)
         self.assertEqual(self.other.get(f"/api/tickets/{shared}").json()["estimates"][0]["state"], "approved")
         self.assertEqual(self.admin.delete(f"/api/organizations/{org['id']}/members/{owner_id}").status_code, 409)
@@ -444,6 +455,7 @@ class Flows(unittest.TestCase):
         ticket_id = self.customer.post("/api/tickets", json={"title":"Разработка модуля","description":"Добавить экспорт"}).json()["id"]
         self.admin.patch(f"/api/tickets/{ticket_id}/assignee", json={"assignee_id": self.staff["id"]})
         est = self.employee.post(f"/api/tickets/{ticket_id}/estimates", json={"effort_minutes": 120, "assessment_minutes": 20}).json()
+        self.assertEqual(self.admin.post(f"/api/tickets/{ticket_id}/estimates/{est['id']}/pm-review", json={"action": "send_to_customer"}).status_code, 200)
         self.customer.post(f"/api/tickets/{ticket_id}/estimates/decision", json={"estimate_id": est["id"], "action": "approve"})
         self.employee.patch(f"/api/tickets/{ticket_id}/status", json={"status": "working"})
         self.employee.post(f"/api/tickets/{ticket_id}/time-entries", json={"minutes": 120, "note": "Выполнено"})

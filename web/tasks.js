@@ -1,105 +1,587 @@
 /* Task-first workspace. The server owns permissions, versions and review rules. */
 const TasksUI = (() => {
-  const statuses={new:'Новая',working:'В работе',review:'На проверке',done:'Выполнена',cancelled:'В архиве'};
-  const priorities={low:'Низкий',normal:'Обычный',high:'Высокий',urgent:'Срочный'};
-  const scopes={mine:'Мои задачи',review:'На проверке',overdue:'Просроченные',all:'Все доступные'};
-  let prefs=null,account=null,current=null,descriptionEditing=false,descriptionDraft=null,fetchSerial=0,busy=false,commentDraft='',commentRequest=null;
-  const data=()=>state.teamWorkspace;
-  const people=()=>data()?.people||[];
-  const name=id=>people().find(p=>p.id===id)?.name||'Без исполнителя';
-  const canCreate=()=>data()?.my_permissions.includes('tasks');
-  const canReviewAssign=(task={})=>data()?.can_dispatch||data()?.my_permissions.includes('clients')||(!task.reviewer_id&&task.owner_id===state.user.id&&['new','working'].includes(task.status));
-  const options=(map,value)=>Object.entries(map).map(([id,label])=>`<option value="${esc(id)}" ${String(value)===String(id)?'selected':''}>${esc(label)}</option>`).join('');
-  const personOptions=(value,blank=true)=>`${blank?'<option value="">Не назначен</option>':''}${people().filter(p=>p.active||p.id===value).map(p=>`<option value="${p.id}" ${p.id===value?'selected':''}>${esc(p.name)}${!p.active?' · отключён':p.availability==='vacation'?' · в отпуске':''}</option>`).join('')}`;
-  const isoLocal=value=>{if(!value)return '';const date=new Date(value);return new Date(date.getTime()-date.getTimezoneOffset()*60000).toISOString().slice(0,16);};
-  const shortDate=value=>value?new Date(value).toLocaleDateString('ru-RU',{day:'numeric',month:'short'}):'Без срока';
-  const dateTime=value=>new Date(value).toLocaleString('ru-RU',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
-  const overdue=t=>Boolean(t.due_at)&&!['done','cancelled'].includes(t.status)&&new Date(t.due_at)<new Date();
-  const mine=t=>t.owner_id===state.user.id||t.participants.includes(state.user.id)||(t.reviewer_id===state.user.id&&t.status==='review');
-  const empty=(title,text)=>`<div class="empty tasks-empty"><strong>${esc(title)}</strong><p>${esc(text)}</p>${canCreate()?'<button class="button primary" data-quick-task>Создать задачу</button>':''}</div>`;
+  const statuses = { new: 'Новая', working: 'В работе', review: 'На проверке', done: 'Выполнена', cancelled: 'В архиве' };
+  const priorities = { low: 'Низкий', normal: 'Обычный', high: 'Высокий', urgent: 'Срочный' };
+  const scopes = { all: 'Все', doing: 'Делаю', delegated: 'Поручил', assisting: 'Помогаю', review: 'Наблюдаю', overdue: 'Просроченные' };
+  let prefs = null, account = null, current = null, descriptionEditing = false, descriptionDraft = null, fetchSerial = 0, busy = false, commentDraft = '', commentRequest = null;
+  const data = () => state.teamWorkspace;
+  const people = () => data()?.people || [];
+  const name = id => people().find(p => p.id === id)?.name || 'Без исполнителя';
+  const canCreate = () => data()?.my_permissions.includes('tasks');
+  const canReviewAssign = (task = {}) => data()?.can_dispatch || data()?.my_permissions.includes('clients') || (!task.reviewer_id && task.owner_id === state.user.id && ['new', 'working'].includes(task.status));
+  const options = (map, value) => Object.entries(map).map(([id, label]) => `<option value="${esc(id)}" ${String(value) === String(id) ? 'selected' : ''}>${esc(label)}</option>`).join('');
+  const personOptions = (value, blank = true) => `${blank ? '<option value="">Не назначен</option>' : ''}${people().filter(p => p.active || p.id === value).map(p => `<option value="${p.id}" ${p.id === value ? 'selected' : ''}>${esc(p.name)}${!p.active ? ' · отключён' : p.availability === 'vacation' ? ' · в отпуске' : ''}</option>`).join('')}`;
+  const isoLocal = value => { if (!value) return ''; const date = new Date(value); return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16); };
+  const shortDate = value => value ? new Date(value).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' }) : 'Без срока';
+  const dateTime = value => new Date(value).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  const overdue = t => Boolean(t.due_at) && !['done', 'cancelled'].includes(t.status) && new Date(t.due_at) < new Date();
+  const mine = t => t.owner_id === state.user.id || (t.participants && t.participants.includes(state.user.id)) || (t.reviewer_id === state.user.id && t.status === 'review');
+  const empty = (title, text) => `<div class="empty tasks-empty"><strong>${esc(title)}</strong><p>${esc(text)}</p>${canCreate() ? '<button class="button primary" data-quick-task>Создать задачу</button>' : ''}</div>`;
 
-  function reset(){prefs=null;account=null;current=null;descriptionEditing=false;descriptionDraft=null;fetchSerial++;busy=false;commentDraft='';commentRequest=null;document.querySelector('#task-quick-dialog')?.remove();}
-  function preferences(){
-    if(account!==state.user.id){account=state.user.id;try{prefs=JSON.parse(localStorage.getItem('linia-tasks-'+account));}catch{}prefs={scope:'mine',layout:'list',status:'active',owner:'all',search:'',saved:[],...prefs};}
+  function reset() { prefs = null; account = null; current = null; descriptionEditing = false; descriptionDraft = null; fetchSerial++; busy = false; commentDraft = ''; commentRequest = null; document.querySelector('#task-quick-dialog')?.remove(); }
+  function preferences() {
+    if (account !== state.user.id) {
+      account = state.user.id;
+      try { prefs = JSON.parse(localStorage.getItem('linia-tasks-' + account)); } catch {}
+      prefs = { scope: 'all', layout: 'board', status: 'active', owner: 'all', search: '', saved: [], ...prefs };
+      if (prefs.scope === 'mine') prefs.scope = 'doing';
+    }
     return prefs;
   }
-  function persist(){try{localStorage.setItem('linia-tasks-'+state.user.id,JSON.stringify(prefs));}catch{}}
-  function filtered(){
-    const p=preferences(),query=p.search.trim().toLocaleLowerCase('ru-RU');
-    return (data()?.tasks||[]).filter(t=>{
-      if(p.scope==='mine'&&!mine(t))return false;
-      if(p.scope==='review'&&t.status!=='review')return false;
-      if(p.scope==='overdue'&&!overdue(t))return false;
-      if(p.status==='active'&&['done','cancelled'].includes(t.status))return false;
-      if(p.status!=='active'&&p.status!=='all'&&t.status!==p.status)return false;
-      if(p.owner!=='all'&&t.owner_id!==Number(p.owner))return false;
-      return !query||[t.title,t.description,t.customer_name,name(t.owner_id),'№'+t.id].join(' ').toLocaleLowerCase('ru-RU').includes(query);
+  function persist() { try { localStorage.setItem('linia-tasks-' + state.user.id, JSON.stringify(prefs)); } catch {} }
+
+  function filtered() {
+    const p = preferences(), query = p.search.trim().toLocaleLowerCase('ru-RU');
+    return (data()?.tasks || []).filter(t => {
+      if (p.scope === 'doing' && t.owner_id !== state.user.id) return false;
+      if (p.scope === 'delegated' && (t.created_by !== state.user.id || t.owner_id === state.user.id)) return false;
+      if (p.scope === 'assisting' && !(t.participants && t.participants.includes(state.user.id))) return false;
+      if (p.scope === 'review' && (t.reviewer_id !== state.user.id && t.status !== 'review')) return false;
+      if (p.scope === 'overdue' && !overdue(t)) return false;
+      if (p.status === 'active' && ['done', 'cancelled'].includes(t.status)) return false;
+      if (p.status !== 'active' && p.status !== 'all' && t.status !== p.status) return false;
+      if (p.owner !== 'all' && t.owner_id !== Number(p.owner)) return false;
+      return !query || [t.title, t.description, t.customer_name, name(t.owner_id), '№' + t.id].join(' ').toLocaleLowerCase('ru-RU').includes(query);
     }).sort((a,b)=>Number(overdue(b))-Number(overdue(a))||Number(b.status==='review'&&b.reviewer_id===state.user.id)-Number(a.status==='review'&&a.reviewer_id===state.user.id)||({urgent:0,high:1,normal:2,low:3}[a.priority]??2)-({urgent:0,high:1,normal:2,low:3}[b.priority]??2)||(new Date(a.due_at||'9999-01-01')-new Date(b.due_at||'9999-01-01'))||b.id-a.id);
   }
-  function deadline(t){return `<span class="task-due ${overdue(t)?'late':''}">${overdue(t)?'Просрочена · ':''}${shortDate(t.due_at)}</span>`;}
-  function titleBlock(t){return `<span class="task-number">№${t.id}</span><strong>${esc(t.title)}</strong>${t.blocked_reason?`<span class="task-block-tag">${icon('lock',12)}Заблокирована</span>`:''}`;}
-  function metrics(t){return `${t.checklist_total?`<span title="Выполнено пунктов">${icon('check',12)}${t.checklist_done}/${t.checklist_total}</span>`:''}${t.comment_count?`<span title="Обсуждение">${icon('chat',12)}${t.comment_count}</span>`:''}${t.file_count?`<span title="Файлы">${icon('paperclip',12)}${t.file_count}</span>`:''}`;}
-  function stateSelect(t){return `<select class="task-inline-select task-status-${t.status}" aria-label="Статус задачи №${t.id}" data-task-status="${t.id}" ${t.can_edit?'':'disabled'}>${options(t.status==='cancelled'?statuses:Object.fromEntries(Object.entries(statuses).filter(([key])=>key!=='cancelled')),t.status)}</select>`;}
-  function list(items){return `<section class="panel tasks-list"><div class="task-list-heading"><span>Задача</span><span>Статус</span><span>Исполнитель</span><span>Срок</span></div>${items.map(t=>`<article class="task-list-row"><button class="task-title-button" data-task-open="${t.id}">${titleBlock(t)}<small>${esc(t.customer_name)}${t.blocked_reason?' · '+esc(t.blocked_reason):''}</small><span class="task-row-metrics">${metrics(t)}</span></button><div>${stateSelect(t)}</div><select class="task-inline-select task-owner-select" aria-label="Исполнитель задачи №${t.id}" data-task-owner="${t.id}" ${t.can_edit?'':'disabled'}>${personOptions(t.owner_id)}</select><div class="task-date-cell">${deadline(t)}${t.can_edit?`<input type="date" aria-label="Срок задачи №${t.id}" value="${isoLocal(t.due_at).slice(0,10)}" data-task-date="${t.id}" title="Изменить срок">`:''}</div></article>`).join('')}</section>`;}
-  function board(items){
-    const columns=Object.entries(statuses).filter(([key])=>key!=='cancelled'||items.some(t=>t.status==='cancelled'));
-    return `<section class="task-board" aria-label="Доска задач">${columns.map(([status,label])=>{const rows=items.filter(t=>t.status===status);return `<section class="task-board-column" data-drop-status="${status}" aria-label="${label}"><header><span class="task-status-dot task-status-${status}"></span><h2>${label}</h2><span>${rows.length}</span></header><div class="task-board-cards">${rows.map(t=>`<article class="task-board-card ${t.blocked_reason?'is-blocked':''}" ${t.can_edit?'draggable="true"':''} data-drag-task="${t.id}"><button class="task-title-button" data-task-open="${t.id}">${titleBlock(t)}<small>${esc(t.customer_name)}</small></button><div class="task-card-meta"><span>${esc(name(t.owner_id))}</span>${deadline(t)}</div><div class="task-card-bottom"><span class="task-row-metrics">${metrics(t)}</span>${t.priority&&t.priority!=='normal'?`<span class="task-priority ${t.priority}">${priorities[t.priority]}</span>`:''}</div><label class="visually-hidden" for="board-status-${t.id}">Переместить задачу №${t.id}</label><select id="board-status-${t.id}" class="task-board-move" data-task-status="${t.id}" ${t.can_edit?'':'disabled'}>${options(Object.fromEntries(columns),t.status)}</select></article>`).join('')||'<p class="task-column-empty">Задач нет</p>'}</div></section>`;}).join('')}</section>`;
+
+  function deadline(t) { return `<span class="task-due ${overdue(t) ? 'late' : ''}">${overdue(t) ? 'Просрочена · ' : ''}${shortDate(t.due_at)}</span>`; }
+  function titleBlock(t) { return `<span class="task-number">№${t.id}</span><strong>${esc(t.title)}</strong>${t.blocked_reason ? `<span class="task-block-tag">${icon('lock', 12)}Заблокирована</span>` : ''}`; }
+  function metrics(t) { return `${t.checklist_total ? `<span title="Выполнено пунктов">${icon('check', 12)}${t.checklist_done}/${t.checklist_total}</span>` : ''}${t.comment_count ? `<span title="Обсуждение">${icon('chat', 12)}${t.comment_count}</span>` : ''}${t.file_count ? `<span title="Файлы">${icon('paperclip', 12)}${t.file_count}</span>` : ''}`; }
+  function stateSelect(t) { return `<select class="task-inline-select task-status-${t.status}" aria-label="Статус задачи №${t.id}" data-task-status="${t.id}" ${t.can_edit ? '' : 'disabled'}>${options(t.status === 'cancelled' ? statuses : Object.fromEntries(Object.entries(statuses).filter(([key]) => key !== 'cancelled')), t.status)}</select>`; }
+
+  function list(items) {
+    return `<section class="panel tasks-list"><div class="task-list-heading"><span>Задача</span><span>Статус</span><span>Исполнитель</span><span>Срок</span></div>${items.map(t => `<article class="task-list-row"><button class="task-title-button" data-task-open="${t.id}">${titleBlock(t)}<small><span class="task-client-badge" data-filter-client="${esc(t.customer_name)}" role="button" title="Фильтровать по клиенту ${esc(t.customer_name)}">${icon('building', 11)} ${esc(t.customer_name)}</span>${t.blocked_reason ? ' · ' + esc(t.blocked_reason) : ''}</small><span class="task-row-metrics">${metrics(t)}</span></button><div>${stateSelect(t)}</div><select class="task-inline-select task-owner-select" aria-label="Исполнитель задачи №${t.id}" data-task-owner="${t.id}" ${t.can_edit ? '' : 'disabled'}>${personOptions(t.owner_id)}</select><div class="task-date-cell">${deadline(t)}${t.can_edit && !['done', 'cancelled'].includes(t.status) ? `<button type="button" class="button small task-quick-time-btn" data-quick-time-task="${t.id}" title="Списать время">${icon('clock', 11)} +Время</button>` : ''}${t.can_edit ? `<input type="date" aria-label="Срок задачи №${t.id}" value="${isoLocal(t.due_at).slice(0, 10)}" data-task-date="${t.id}" title="Изменить срок">` : ''}</div></article>`).join('')}</section>`;
   }
-  function alerts(){
-    const seen=new Set();return (data()?.events||[]).filter(e=>{if(e.entity!=='tasks'||e.read_at||seen.has(e.entity_id))return false;seen.add(e.entity_id);return true;});
+
+  function card(t, extra = {}) {
+    const isDone = ['done', 'cancelled'].includes(t.status);
+    const percent = t.checklist_total ? Math.round(t.checklist_done / t.checklist_total * 100) : 0;
+    return `<article class="task-board-card bitrix-task-card ${t.blocked_reason ? 'is-blocked' : ''} ${isDone ? 'is-done' : ''}" ${t.can_edit ? 'draggable="true"' : ''} data-drag-task="${t.id}">
+      <div class="task-card-header">
+        <span class="task-card-num">№${t.id}</span>
+        <div class="task-card-header-tags">
+          ${t.priority && t.priority !== 'normal' ? `<span class="task-priority-tag ${t.priority}">${priorities[t.priority]}</span>` : ''}
+          ${t.blocked_reason ? `<span class="task-block-tag" title="${esc(t.blocked_reason)}">${icon('lock', 11)} Блок</span>` : ''}
+        </div>
+      </div>
+      <button class="task-title-button bitrix-title-btn" data-task-open="${t.id}">
+        <strong>${esc(t.title)}</strong>
+        ${t.customer_name && t.customer_name !== 'Внутренняя задача' ? `<span class="task-client-badge" data-filter-client="${esc(t.customer_name)}" role="button" title="Фильтровать по клиенту ${esc(t.customer_name)}">${icon('building', 11)} ${esc(t.customer_name)}</span>` : ''}
+      </button>
+      ${t.checklist_total ? `
+        <div class="task-card-checklist" title="Чек-лист: ${t.checklist_done} из ${t.checklist_total}">
+          <div class="task-checklist-info">
+            <span>${icon('check', 11)} Чек-лист</span>
+            <span>${t.checklist_done}/${t.checklist_total} (${percent}%)</span>
+          </div>
+          <div class="task-checklist-bar"><div class="task-checklist-fill" style="width:${percent}%"></div></div>
+        </div>
+      ` : ''}
+      <div class="task-card-meta">
+        <div class="task-card-owner">
+          ${avatarOf(t.owner_id, name(t.owner_id))}
+          <span class="task-owner-label">${esc(name(t.owner_id))}</span>
+        </div>
+        ${deadline(t)}
+      </div>
+      <div class="task-card-bottom">
+        <div class="task-row-metrics">
+          ${t.comment_count ? `<span title="Комментариев: ${t.comment_count}">${icon('chat', 12)} ${t.comment_count}</span>` : ''}
+          ${t.file_count ? `<span title="Файлов: ${t.file_count}">${icon('paperclip', 12)} ${t.file_count}</span>` : ''}
+        </div>
+        <div class="task-card-actions-right">
+          ${t.can_edit && !['done', 'cancelled'].includes(t.status) ? `<button type="button" class="button small task-quick-time-btn" data-quick-time-task="${t.id}" title="Списать время по задаче">${icon('clock', 11)} <span>+Время</span></button>` : ''}
+          ${extra.customSelect || `<select id="board-status-${t.id}" class="task-board-move" aria-label="Статус задачи №${t.id}" data-task-status="${t.id}" ${t.can_edit ? '' : 'disabled'}>${options(Object.fromEntries(Object.entries(statuses).filter(([k]) => k !== 'cancelled' || t.status === 'cancelled')), t.status)}</select>`}
+        </div>
+      </div>
+    </article>`;
   }
-  function render(){
-    const p=preferences(),items=filtered();
-    if(!data()){shell('Мои задачи','',`<section class="panel">${empty('Не удалось загрузить задачи','Повторите загрузку кабинета.')}<button class="button" id="tasks-retry">Повторить</button></section>`);document.querySelector('#tasks-retry').onclick=()=>refresh();return;}
-    const counts={mine:(data().tasks||[]).filter(t=>mine(t)&&!['done','cancelled'].includes(t.status)).length,review:data().tasks.filter(t=>t.status==='review').length,overdue:data().tasks.filter(overdue).length,all:data().tasks.filter(t=>!['done','cancelled'].includes(t.status)).length};
-    const newEvents=alerts();
-    const body=`<div class="tasks-workbar"><div class="task-scope-tabs" role="group" aria-label="Быстрые фильтры">${Object.entries(scopes).map(([key,label])=>`<button class="${p.scope===key?'active':''}" data-task-scope="${key}" aria-pressed="${p.scope===key}">${label}<span>${counts[key]}</span></button>`).join('')}</div><div class="task-layout-tabs" role="group" aria-label="Представление задач"><button data-task-layout="list" class="${p.layout==='list'?'active':''}" aria-pressed="${p.layout==='list'}">${icon('queue',14)}Список</button><button data-task-layout="board" class="${p.layout==='board'?'active':''}" aria-pressed="${p.layout==='board'}">${icon('ticket',14)}Доска</button></div></div>
-      <div class="task-filterbar"><label class="team-search">${icon('search',16)}<span class="visually-hidden">Поиск задач</span><input type="search" id="tasks-search" placeholder="Название, описание или номер" value="${esc(p.search)}"></label><label><span class="visually-hidden">Фильтр по статусу</span><select class="field" id="tasks-status-filter">${options({active:'Открытые',all:'Все статусы',...statuses},p.status)}</select></label><label><span class="visually-hidden">Фильтр по исполнителю</span><select class="field" id="tasks-owner-filter"><option value="all">Все исполнители</option>${personOptions(Number(p.owner),false)}</select></label><button class="button small" id="tasks-save-view">Сохранить вид</button></div>
-      ${p.saved.length?`<div class="task-saved-views"><span>Мои виды</span>${p.saved.map((v,i)=>`<button class="button small" data-saved-view="${i}">${esc(v.name)}</button><button class="task-remove-view" data-remove-view="${i}" aria-label="Убрать вид ${esc(v.name)}">×</button>`).join('')}</div>`:''}
-      ${newEvents.length?`<details class="task-assignment-alert"><summary>${icon('bell',14)}${newEvents.length} ${plural(newEvents.length,['задача требует внимания','задачи требуют внимания','задач требуют внимания'])}</summary>${newEvents.map(e=>`<button class="task-alert-item" data-task-open="${e.entity_id}"><strong>${esc(e.title)}</strong><small>${{assignment:'Новое назначение',mention:'Вас упомянули',review:'Нужна проверка',change:'Существенное изменение'}[e.event_kind]||'Новое назначение'} · ${dateTime(e.created_at)}</small></button>`).join('')}</details>`:''}
-      <div class="task-results-line"><span>${items.length} ${plural(items.length,['задача','задачи','задач'])}</span><span><kbd>N</kbd> создать · <kbd>J</kbd> / <kbd>K</kbd> перейти · <kbd>/</kbd> поиск</span></div>
-      <div id="tasks-results">${items.length?(p.layout==='board'?board(items):list(items)):empty(p.search?'Ничего не найдено':p.scope==='mine'?'У вас пока нет открытых задач':'Задач в этом виде нет',p.search?'Измените запрос или фильтры.':'Создайте задачу или выберите другой фильтр.')}</div>`;
-    shell(scopes[p.scope],canCreate()?'<button class="button primary" data-quick-task>Новая задача</button>':'',body,{kicker:'Рабочее место',lead:'Поставить задачу, выполнить и проверить результат.'});
+
+  function board(items) {
+    const columns = Object.entries(statuses).filter(([key]) => key !== 'cancelled' || items.some(t => t.status === 'cancelled'));
+    return `<section class="task-board bitrix-board" aria-label="Доска задач">
+      ${columns.map(([status, label]) => {
+        const rows = items.filter(t => t.status === status);
+        return `<section class="task-board-column bitrix-column" data-drop-status="${status}" aria-label="${label}">
+          <header class="bitrix-col-header status-col-${status}">
+            <div class="bitrix-col-title-wrap">
+              <span class="bitrix-col-name">${label}</span>
+              <span class="bitrix-col-count">${rows.length}</span>
+            </div>
+            ${canCreate() ? `<button type="button" class="bitrix-col-add-btn" data-column-quick="${status}" title="Добавить задачу в «${label}»">+ Задача</button>` : ''}
+          </header>
+          <div class="task-board-cards">
+            ${canCreate() ? `
+              <div class="inline-task-composer" id="inline-composer-${status}" style="display:none;">
+                <input type="text" class="field inline-task-input" data-inline-input="${status}" placeholder="Что нужно сделать? (Enter — создать, Esc — отмена)" maxlength="200">
+                <div class="inline-task-actions">
+                  <button type="button" class="button small primary" data-inline-submit="${status}">Добавить</button>
+                  <button type="button" class="button small" data-inline-cancel="${status}">Отмена</button>
+                </div>
+              </div>
+            ` : ''}
+            ${rows.map(t => card(t)).join('') || '<div class="task-column-empty">Задач нет</div>'}
+          </div>
+        </section>`;
+      }).join('')}
+    </section>`;
+  }
+
+  function deadlines(items) {
+    const now = new Date();
+    const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const endToday = new Date(startToday.getTime() + 86400000);
+    const endWeek = new Date(startToday.getTime() + (7 - (now.getDay() || 7)) * 86400000 + 86400000);
+    const endNextWeek = new Date(endWeek.getTime() + 7 * 86400000);
+
+    const sections = [
+      { key: 'overdue', label: 'Просрочены', color: '#ff5752', filter: t => overdue(t) },
+      { key: 'today', label: 'На сегодня', color: '#f59e0b', filter: t => Boolean(t.due_at) && !overdue(t) && new Date(t.due_at) >= startToday && new Date(t.due_at) < endToday },
+      { key: 'this_week', label: 'На этой неделе', color: '#00aef9', filter: t => Boolean(t.due_at) && !overdue(t) && new Date(t.due_at) >= endToday && new Date(t.due_at) < endWeek },
+      { key: 'next_week', label: 'На след. неделе', color: '#3b82f6', filter: t => Boolean(t.due_at) && new Date(t.due_at) >= endWeek && new Date(t.due_at) < endNextWeek },
+      { key: 'later', label: 'Больше 2 недель', color: '#8c54ff', filter: t => Boolean(t.due_at) && new Date(t.due_at) >= endNextWeek },
+      { key: 'no_due', label: 'Без срока', color: '#94a3b8', filter: t => !t.due_at && !['done', 'cancelled'].includes(t.status) }
+    ];
+
+    return `<section class="task-board bitrix-board bitrix-deadlines-board" aria-label="Сроки задач">
+      ${sections.map(sec => {
+        const rows = items.filter(sec.filter);
+        return `<section class="task-board-column bitrix-column" data-drop-deadline="${sec.key}" aria-label="${sec.label}">
+          <header class="bitrix-col-header" style="background:${sec.color};color:#fff">
+            <div class="bitrix-col-title-wrap">
+              <span class="bitrix-col-name">${sec.label}</span>
+              <span class="bitrix-col-count">${rows.length}</span>
+            </div>
+            ${canCreate() ? `<button type="button" class="bitrix-col-add-btn" data-deadline-quick="${sec.key}" title="Добавить задачу">+ Задача</button>` : ''}
+          </header>
+          <div class="task-board-cards">
+            ${rows.map(t => card(t)).join('') || '<div class="task-column-empty">Задач нет</div>'}
+          </div>
+        </section>`;
+      }).join('')}
+    </section>`;
+  }
+
+  function alerts() {
+    const seen = new Set();
+    return (data()?.events || []).filter(e => {
+      if (e.entity !== 'tasks' || e.read_at || seen.has(e.entity_id)) return false;
+      seen.add(e.entity_id);
+      return true;
+    });
+  }
+
+  function render() {
+    const p = preferences(), items = filtered();
+    if (!data()) {
+      shell('Задачи и Проекты', '', `<section class="panel">${empty('Не удалось загрузить задачи', 'Повторите загрузку кабинета.')}<button class="button" id="tasks-retry">Повторить</button></section>`);
+      document.querySelector('#tasks-retry').onclick = () => refresh();
+      return;
+    }
+    const allTasks = data().tasks || [];
+    const counts = {
+      all: allTasks.filter(t => !['done', 'cancelled'].includes(t.status)).length,
+      doing: allTasks.filter(t => t.owner_id === state.user.id && !['done', 'cancelled'].includes(t.status)).length,
+      delegated: allTasks.filter(t => t.created_by === state.user.id && t.owner_id !== state.user.id && !['done', 'cancelled'].includes(t.status)).length,
+      assisting: allTasks.filter(t => (t.participants || []).includes(state.user.id) && !['done', 'cancelled'].includes(t.status)).length,
+      review: allTasks.filter(t => (t.reviewer_id === state.user.id || t.status === 'review') && !['done', 'cancelled'].includes(t.status)).length,
+      overdue: allTasks.filter(overdue).length,
+    };
+    const newEvents = alerts();
+    const body = `<div class="tasks-workbar">
+      <div class="task-scope-tabs bitrix-role-tabs" role="group" aria-label="Роли в задачах">
+        ${Object.entries(scopes).map(([key, label]) => `
+          <button class="${p.scope === key ? 'active' : ''} ${key === 'overdue' && counts[key] ? 'is-overdue-tab' : ''}" data-task-scope="${key}" aria-pressed="${p.scope === key}">
+            ${label}
+            <span class="role-count ${key === 'overdue' && counts[key] ? 'overdue-badge' : ''}">${counts[key]}</span>
+          </button>
+        `).join('')}
+      </div>
+      <div class="task-layout-tabs bitrix-view-tabs" role="group" aria-label="Представление задач">
+        <button data-task-layout="list" class="${p.layout === 'list' ? 'active' : ''}" aria-pressed="${p.layout === 'list'}">${icon('queue', 14)} Список</button>
+        <button data-task-layout="board" class="${p.layout === 'board' ? 'active' : ''}" aria-pressed="${p.layout === 'board'}">${icon('ticket', 14)} Канбан</button>
+        <button data-task-layout="deadlines" class="${p.layout === 'deadlines' ? 'active' : ''}" aria-pressed="${p.layout === 'deadlines'}">${icon('clock', 14)} Сроки</button>
+      </div>
+    </div>
+    <div class="task-filterbar">
+      <label class="team-search">
+        ${icon('search', 16)}
+        <span class="visually-hidden">Поиск задач</span>
+        <input type="search" id="tasks-search" placeholder="Название, описание, клиент или №..." value="${esc(p.search)}">
+      </label>
+      <label>
+        <span class="visually-hidden">Фильтр по статусу</span>
+        <select class="field" id="tasks-status-filter">${options({ active: 'Открытые', all: 'Все статусы', ...statuses }, p.status)}</select>
+      </label>
+      <label>
+        <span class="visually-hidden">Фильтр по исполнителю</span>
+        <select class="field" id="tasks-owner-filter"><option value="all">Все исполнители</option>${personOptions(Number(p.owner), false)}</select>
+      </label>
+      <button class="button small" id="tasks-save-view">Сохранить вид</button>
+    </div>
+    ${p.saved.length ? `<div class="task-saved-views"><span>Мои виды</span>${p.saved.map((v, i) => `<button class="button small" data-saved-view="${i}">${esc(v.name)}</button><button class="task-remove-view" data-remove-view="${i}" aria-label="Убрать вид ${esc(v.name)}">×</button>`).join('')}</div>` : ''}
+    ${newEvents.length ? `<details class="task-assignment-alert"><summary>${icon('bell', 14)}${newEvents.length} ${plural(newEvents.length, ['задача требует внимания', 'задачи требуют внимания', 'задач требуют внимания'])}</summary>${newEvents.map(e => `<button class="task-alert-item" data-task-open="${e.entity_id}"><strong>${esc(e.title)}</strong><small>${{ assignment: 'Новое назначение', mention: 'Вас упомянули', review: 'Нужна проверка', change: 'Существенное изменение' }[e.event_kind] || 'Новое назначение'} · ${dateTime(e.created_at)}</small></button>`).join('')}</details>` : ''}
+    <div class="task-results-line">
+      <span>${items.length} ${plural(items.length, ['задача', 'задачи', 'задач'])}</span>
+      <span><kbd>N</kbd> создать · <kbd>J</kbd> / <kbd>K</kbd> перейти · <kbd>/</kbd> поиск</span>
+    </div>
+    <div id="tasks-results">
+      ${items.length ? (p.layout === 'board' ? board(items) : p.layout === 'deadlines' ? deadlines(items) : list(items)) : empty(p.search ? 'Ничего не найдено' : p.scope === 'doing' ? 'У вас пока нет открытых задач' : 'Задач в этом виде нет', p.search ? 'Измените запрос или фильтры.' : 'Создайте задачу или выберите другой фильтр.')}
+    </div>`;
+
+    shell('Задачи и Проекты', canCreate() ? '<button class="button primary bitrix-btn-top" data-quick-task>' + icon('plus', 15) + '<span>Новая задача</span></button>' : '', body, { kicker: 'Рабочее место · ' + scopes[p.scope], lead: 'Поставить задачу, распределить по исполнителям и контролировать результат.' });
     bindList();
-    document.querySelectorAll('[data-task-scope]').forEach(b=>b.onclick=()=>{p.scope=b.dataset.taskScope;p.status='active';p.owner='all';persist();render();});
-    document.querySelectorAll('[data-task-layout]').forEach(b=>b.onclick=()=>{p.layout=b.dataset.taskLayout;persist();render();});
-    document.querySelector('#tasks-status-filter').onchange=e=>{p.status=e.target.value;persist();render();};
-    document.querySelector('#tasks-owner-filter').onchange=e=>{p.owner=e.target.value;persist();render();};
-    document.querySelector('#tasks-search').oninput=e=>{p.search=e.target.value;persist();const next=filtered();document.querySelector('#tasks-results').innerHTML=next.length?(p.layout==='board'?board(next):list(next)):empty('Ничего не найдено','Измените запрос или фильтры.');document.querySelector('.task-results-line>span').textContent=next.length+' '+plural(next.length,['задача','задачи','задач']);bindList();};
-    document.querySelector('#tasks-save-view').onclick=saveView;
-    document.querySelectorAll('[data-remove-view]').forEach(b=>b.onclick=()=>{p.saved.splice(Number(b.dataset.removeView),1);persist();render();});
-    document.querySelectorAll('[data-saved-view]').forEach(b=>b.onclick=()=>{const v=p.saved[Number(b.dataset.savedView)];Object.assign(p,v.filters);persist();render();});
+    document.querySelectorAll('[data-task-scope]').forEach(b => b.onclick = () => { p.scope = b.dataset.taskScope; p.status = 'active'; p.owner = 'all'; persist(); render(); });
+    document.querySelectorAll('[data-task-layout]').forEach(b => b.onclick = () => { p.layout = b.dataset.taskLayout; persist(); render(); });
+    document.querySelector('#tasks-status-filter').onchange = e => { p.status = e.target.value; persist(); render(); };
+    document.querySelector('#tasks-owner-filter').onchange = e => { p.owner = e.target.value; persist(); render(); };
+    document.querySelector('#tasks-search').oninput = e => {
+      p.search = e.target.value; persist();
+      const next = filtered();
+      document.querySelector('#tasks-results').innerHTML = next.length ? (p.layout === 'board' ? board(next) : p.layout === 'deadlines' ? deadlines(next) : list(next)) : empty('Ничего не найдено', 'Измените запрос или фильтры.');
+      document.querySelector('.task-results-line>span').textContent = next.length + ' ' + plural(next.length, ['задача', 'задачи', 'задач']);
+      bindList();
+    };
+    document.querySelector('#tasks-save-view').onclick = saveView;
+    document.querySelectorAll('[data-remove-view]').forEach(b => b.onclick = () => { p.saved.splice(Number(b.dataset.removeView), 1); persist(); render(); });
+    document.querySelectorAll('[data-saved-view]').forEach(b => b.onclick = () => { const v = p.saved[Number(b.dataset.savedView)]; Object.assign(p, v.filters); persist(); render(); });
   }
-  async function patch(id,changes,version){
-    const result=await api(`/tasks/${id}`,{method:'PATCH',body:JSON.stringify({version,...changes})});
-    apply(result);return result;
+
+  async function patch(id, changes, version) {
+    const result = await api(`/tasks/${id}`, { method: 'PATCH', body: JSON.stringify({ version, ...changes }) });
+    apply(result); return result;
   }
-  function apply(task){const index=data()?.tasks.findIndex(t=>t.id===task.id);if(index>=0)data().tasks[index]=task;else if(data())data().tasks.unshift(task);if(current?.id===task.id)current=task;}
-  function bindList(){
-    document.querySelectorAll('[data-quick-task]').forEach(b=>b.onclick=quickCreate);
-    document.querySelectorAll('[data-task-open]').forEach(b=>b.onclick=()=>open(Number(b.dataset.taskOpen)));
-    const inline=async(control,id,changes)=>{const task=data().tasks.find(t=>t.id===id);control.disabled=true;try{await patch(id,changes,task.version);render();toast('Задача обновлена');}catch(e){control.disabled=false;toast(e.message,'error');await TeamUI.reload();}};
-    document.querySelectorAll('[data-task-status]').forEach(el=>el.onchange=()=>inline(el,Number(el.dataset.taskStatus),{status:el.value}));
-    document.querySelectorAll('[data-task-owner]').forEach(el=>el.onchange=()=>inline(el,Number(el.dataset.taskOwner),{owner_id:Number(el.value)||null}));
-    document.querySelectorAll('[data-task-date]').forEach(el=>el.onchange=()=>inline(el,Number(el.dataset.taskDate),{due_at:el.value?new Date(el.value+'T18:00').toISOString():null}));
-    document.querySelectorAll('[data-drag-task][draggable]').forEach(el=>{el.ondragstart=e=>{if(e.target.closest('select,input'))return e.preventDefault();e.dataTransfer.setData('text/plain',el.dataset.dragTask);e.dataTransfer.effectAllowed='move';el.classList.add('dragging');};el.ondragend=()=>el.classList.remove('dragging');});
-    document.querySelectorAll('[data-drop-status]').forEach(el=>{el.ondragover=e=>{if(e.dataTransfer.types.includes('text/plain')){e.preventDefault();el.classList.add('drop-active');}};el.ondragleave=()=>el.classList.remove('drop-active');el.ondrop=async e=>{e.preventDefault();el.classList.remove('drop-active');const id=Number(e.dataTransfer.getData('text/plain')),task=data().tasks.find(t=>t.id===id);if(!task?.can_edit||task.status===el.dataset.dropStatus)return;try{await patch(id,{status:el.dataset.dropStatus},task.version);render();toast('Статус обновлён');}catch(err){toast(err.message,'error');}};});
+  function apply(task) {
+    const index = data()?.tasks.findIndex(t => t.id === task.id);
+    if (index >= 0) data().tasks[index] = task;
+    else if (data()) data().tasks.unshift(task);
+    if (current?.id === task.id) current = task;
   }
-  function modal(title,body,submit,label='Сохранить'){
-    document.querySelector('#task-quick-dialog')?.remove();const opener=document.activeElement,node=document.createElement('dialog');node.id='task-quick-dialog';node.className='team-dialog task-quick-dialog';node.setAttribute('aria-labelledby','task-quick-title');
-    node.innerHTML=`<form><header class="team-dialog-head"><h2 id="task-quick-title">${esc(title)}</h2><button class="icon-btn" type="button" aria-label="Закрыть окно" data-task-close>×</button></header><div class="team-dialog-body">${body}<p class="team-form-error" role="alert" hidden></p></div><footer><button type="button" class="button" data-task-close>Отмена</button><button class="button primary" type="submit">${label}</button></footer></form>`;
-    document.body.append(node);node.showModal();
-    const close=()=>{node.close();node.remove();if(opener?.isConnected)opener.focus();};node.querySelectorAll('[data-task-close]').forEach(b=>b.onclick=close);node.addEventListener('cancel',e=>{e.preventDefault();close();});
-    node.querySelector('form').onsubmit=async e=>{e.preventDefault();const btn=node.querySelector('[type="submit"]'),error=node.querySelector('[role="alert"]');btn.disabled=true;error.hidden=true;try{await submit(new FormData(e.target));close();}catch(err){error.textContent=err.message;error.hidden=false;btn.disabled=false;}};
+
+  function bindList() {
+    document.querySelectorAll('[data-quick-task]').forEach(b => b.onclick = () => quickCreate());
+    document.querySelectorAll('[data-column-quick]').forEach(b => b.onclick = () => {
+      const status = b.dataset.columnQuick;
+      const composer = document.querySelector(`#inline-composer-${status}`);
+      if (composer) {
+        const isHidden = composer.style.display === 'none';
+        document.querySelectorAll('.inline-task-composer').forEach(el => el.style.display = 'none');
+        if (isHidden) {
+          composer.style.display = 'flex';
+          const input = composer.querySelector('input');
+          input.focus();
+        }
+      } else {
+        quickCreate({ status });
+      }
+    });
+
+    const saveInlineTask = async (status) => {
+      const composer = document.querySelector(`#inline-composer-${status}`);
+      if (!composer) return;
+      const input = composer.querySelector('input');
+      const title = input.value.trim();
+      if (!title || title.length < 2) return;
+      input.disabled = true;
+      try {
+        const created = await api('/tasks', {
+          method: 'POST',
+          body: JSON.stringify({
+            title,
+            owner_id: state.user.id,
+            status,
+            priority: 'normal',
+            description: '',
+            request_id: crypto.randomUUID()
+          })
+        });
+        apply(created);
+        toast('Задача создана');
+        render();
+        setTimeout(() => {
+          const nextComp = document.querySelector(`#inline-composer-${status}`);
+          if (nextComp) {
+            nextComp.style.display = 'flex';
+            const nextInp = nextComp.querySelector('input');
+            if (nextInp) { nextInp.value = ''; nextInp.focus(); }
+          }
+        }, 50);
+      } catch (err) {
+        toast(err.message, 'error');
+        input.disabled = false;
+        input.focus();
+      }
+    };
+
+    document.querySelectorAll('[data-inline-input]').forEach(input => {
+      input.onkeydown = e => {
+        const status = input.dataset.inlineInput;
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          saveInlineTask(status);
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          input.value = '';
+          const comp = document.querySelector(`#inline-composer-${status}`);
+          if (comp) comp.style.display = 'none';
+        }
+      };
+    });
+
+    document.querySelectorAll('[data-inline-submit]').forEach(btn => {
+      btn.onclick = () => saveInlineTask(btn.dataset.inlineSubmit);
+    });
+
+    document.querySelectorAll('[data-inline-cancel]').forEach(btn => {
+      btn.onclick = () => {
+        const status = btn.dataset.inlineCancel;
+        const comp = document.querySelector(`#inline-composer-${status}`);
+        if (comp) {
+          const inp = comp.querySelector('input');
+          if (inp) inp.value = '';
+          comp.style.display = 'none';
+        }
+      };
+    });
+
+    document.querySelectorAll('[data-filter-client]').forEach(el => {
+      el.onclick = e => {
+        e.stopPropagation();
+        e.preventDefault();
+        const client = el.dataset.filterClient;
+        if (!client) return;
+        const p = preferences();
+        p.search = client;
+        persist();
+        render();
+        toast('Фильтр по клиенту: ' + client);
+      };
+    });
+
+    document.querySelectorAll('[data-quick-time-task]').forEach(btn => {
+      btn.onclick = e => {
+        e.stopPropagation();
+        e.preventDefault();
+        const tid = Number(btn.dataset.quickTimeTask);
+        const task = data()?.tasks.find(t => t.id === tid);
+        if (!task) return;
+        quickLogTime(task);
+      };
+    });
+    document.querySelectorAll('[data-deadline-quick]').forEach(b => b.onclick = () => {
+      const k = b.dataset.deadlineQuick;
+      const now = new Date();
+      let due = null;
+      if (k === 'today') due = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 18, 0).toISOString();
+      else if (k === 'this_week') due = new Date(now.getTime() + 2 * 86400000).toISOString();
+      else if (k === 'next_week') due = new Date(now.getTime() + 7 * 86400000).toISOString();
+      quickCreate({ due_at: due });
+    });
+    document.querySelectorAll('[data-task-open]').forEach(b => b.onclick = () => open(Number(b.dataset.taskOpen)));
+    const inline = async (control, id, changes) => {
+      const task = data().tasks.find(t => t.id === id);
+      control.disabled = true;
+      try { await patch(id, changes, task.version); render(); toast('Задача обновлена'); }
+      catch (e) { control.disabled = false; toast(e.message, 'error'); await TeamUI.reload(); }
+    };
+    document.querySelectorAll('[data-task-status]').forEach(el => el.onchange = () => inline(el, Number(el.dataset.taskStatus), { status: el.value }));
+    document.querySelectorAll('[data-task-owner]').forEach(el => el.onchange = () => inline(el, Number(el.dataset.taskOwner), { owner_id: Number(el.value) || null }));
+    document.querySelectorAll('[data-task-date]').forEach(el => el.onchange = () => inline(el, Number(el.dataset.taskDate), { due_at: el.value ? new Date(el.value + 'T18:00').toISOString() : null }));
+    document.querySelectorAll('[data-drag-task][draggable]').forEach(el => {
+      el.ondragstart = e => {
+        if (e.target.closest('select,input')) return e.preventDefault();
+        e.dataTransfer.setData('text/plain', el.dataset.dragTask);
+        e.dataTransfer.effectAllowed = 'move';
+        el.classList.add('dragging');
+      };
+      el.ondragend = () => el.classList.remove('dragging');
+    });
+    document.querySelectorAll('[data-drop-status]').forEach(el => {
+      el.ondragover = e => { if (e.dataTransfer.types.includes('text/plain')) { e.preventDefault(); el.classList.add('drop-active'); } };
+      el.ondragleave = () => el.classList.remove('drop-active');
+      el.ondrop = async e => {
+        e.preventDefault(); el.classList.remove('drop-active');
+        const id = Number(e.dataTransfer.getData('text/plain')), task = data().tasks.find(t => t.id === id);
+        if (!task?.can_edit || task.status === el.dataset.dropStatus) return;
+        try { await patch(id, { status: el.dataset.dropStatus }, task.version); render(); toast('Статус обновлён'); }
+        catch (err) { toast(err.message, 'error'); }
+      };
+    });
+    document.querySelectorAll('[data-drop-deadline]').forEach(el => {
+      el.ondragover = e => { if (e.dataTransfer.types.includes('text/plain')) { e.preventDefault(); el.classList.add('drop-active'); } };
+      el.ondragleave = () => el.classList.remove('drop-active');
+      el.ondrop = async e => {
+        e.preventDefault(); el.classList.remove('drop-active');
+        const id = Number(e.dataTransfer.getData('text/plain')), task = data().tasks.find(t => t.id === id);
+        if (!task?.can_edit) return;
+        const k = el.dataset.dropDeadline;
+        const now = new Date();
+        let due = null;
+        if (k === 'today') due = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 18, 0).toISOString();
+        else if (k === 'this_week') due = new Date(now.getTime() + 2 * 86400000).toISOString();
+        else if (k === 'next_week') due = new Date(now.getTime() + 7 * 86400000).toISOString();
+        else if (k === 'later') due = new Date(now.getTime() + 15 * 86400000).toISOString();
+        try { await patch(id, { due_at: due }, task.version); render(); toast('Срок изменён'); }
+        catch (err) { toast(err.message, 'error'); }
+      };
+    });
+  }
+
+  function quickLogTime(task) {
+    const dialogNode = modal(`Списание времени · Задача №${task.id}`, `<div class="form">
+      <p class="muted" style="margin-top:0">Задача: <strong>${esc(task.title)}</strong>${task.customer_name ? ` · <span>${esc(task.customer_name)}</span>` : ''}</p>
+      <label>Затраченное время (минуты)
+        <input class="field" type="number" id="quick-time-minutes" name="minutes" min="5" max="1440" step="5" value="60" required autofocus>
+      </label>
+      <div class="time-presets" style="display:flex;gap:6px;margin:6px 0 12px;flex-wrap:wrap">
+        <button type="button" class="button small time-preset-btn" data-time="15">15 мин</button>
+        <button type="button" class="button small time-preset-btn" data-time="30">30 мин</button>
+        <button type="button" class="button small time-preset-btn" data-time="60">1 час</button>
+        <button type="button" class="button small time-preset-btn" data-time="120">2 часа</button>
+        <button type="button" class="button small time-preset-btn" data-time="240">4 часа</button>
+      </div>
+      <label>Что было сделано
+        <textarea class="field" name="note" required minlength="3" maxlength="1000" placeholder="Кратко опишите выполненную работу..."></textarea>
+      </label>
+    </div>`, async fd => {
+      const minutes = Number(fd.get('minutes'));
+      const note = String(fd.get('note')).trim();
+      const requestId = crypto.randomUUID();
+      if (task.ticket_id) {
+        await api(`/tickets/${task.ticket_id}/time-entries`, {
+          method: 'POST',
+          body: JSON.stringify({
+            minutes,
+            note,
+            work_date: new Date().toISOString().slice(0, 10),
+            request_id: requestId
+          })
+        });
+      } else if (task.customer_id) {
+        await api('/service-entries', {
+          method: 'POST',
+          body: JSON.stringify({
+            customer_id: task.customer_id,
+            kind: 'other',
+            minutes,
+            note,
+            request_id: requestId
+          })
+        });
+      } else {
+        await api(`/tasks/${task.id}/comments`, {
+          method: 'POST',
+          body: JSON.stringify({
+            body: `⏱ Списано ${minutes} мин: ${note}`,
+            request_id: requestId
+          })
+        });
+      }
+      toast(`Списано ${minutes} мин по задаче №${task.id}`);
+      await TeamUI.reload();
+      render();
+    }, 'Списать время');
+
+    dialogNode.querySelectorAll('.time-preset-btn').forEach(b => {
+      b.onclick = () => {
+        const input = dialogNode.querySelector('#quick-time-minutes');
+        if (input) input.value = b.dataset.time;
+      };
+    });
+  }
+
+  function modal(title, body, submit, label = 'Сохранить') {
+    document.querySelector('#task-quick-dialog')?.remove();
+    const opener = document.activeElement, node = document.createElement('dialog');
+    node.id = 'task-quick-dialog'; node.className = 'team-dialog task-quick-dialog'; node.setAttribute('aria-labelledby', 'task-quick-title');
+    node.innerHTML = `<form><header class="team-dialog-head"><h2 id="task-quick-title">${esc(title)}</h2><button class="icon-btn" type="button" aria-label="Закрыть окно" data-task-close>×</button></header><div class="team-dialog-body">${body}<p class="team-form-error" role="alert" hidden></p></div><footer><button type="button" class="button" data-task-close>Отмена</button><button class="button primary" type="submit">${label}</button></footer></form>`;
+    document.body.append(node); node.showModal();
+    const close = () => { node.close(); node.remove(); if (opener?.isConnected) opener.focus(); };
+    node.querySelectorAll('[data-task-close]').forEach(b => b.onclick = close);
+    node.addEventListener('cancel', e => { e.preventDefault(); close(); });
+    node.querySelector('form').onsubmit = async e => {
+      e.preventDefault();
+      const btn = node.querySelector('[type="submit"]'), error = node.querySelector('[role="alert"]');
+      btn.disabled = true; error.hidden = true;
+      try { await submit(new FormData(e.target)); close(); }
+      catch (err) { error.textContent = err.message; error.hidden = false; btn.disabled = false; }
+    };
     return node;
   }
-  function quickCreate(source={}){
-    if(!source||!('title' in source))source={};
-    if(!canCreate())return toast('Нет права создавать задачи','error');
-    const requestId=crypto.randomUUID();
-    const node=modal('Новая задача',`<div class="form"><label>Что нужно сделать?<input class="field" name="title" required minlength="3" maxlength="200" placeholder="Например, исправить экспорт отчёта" value="${esc(source.title||'')}" autofocus></label><label>Исполнитель<select class="field" name="owner_id" required>${personOptions(source.owner_id||state.user.id)}</select></label><details class="task-extra-fields"><summary>Добавить описание, срок и другие детали</summary><div class="form"><label>Описание<textarea name="description" maxlength="5000" placeholder="Какой результат нужен?">${esc(source.description||'')}</textarea></label><div class="team-form-grid"><label>Срок<input class="field" type="datetime-local" name="due_at"></label><label>Приоритет<select class="field" name="priority">${options(priorities,'normal')}</select></label></div><label>Проверяющий<select class="field" name="reviewer_id">${personOptions(null)}</select></label><label>Клиент · необязательно<select class="field" name="customer_id"><option value="">Внутренняя задача</option>${source.customer_id&&!(data()?.clients||[]).some(c=>c.id===source.customer_id)?`<option value="${source.customer_id}" selected>${esc(source.customer_name||'Клиент заявки')}</option>`:''}${(data()?.clients||[]).map(c=>`<option value="${c.id}" ${c.id===source.customer_id?'selected':''}>${esc(c.name)}</option>`).join('')}</select></label></div></details><small class="muted">Для создания достаточно названия и исполнителя. Остальное можно добавить позже.</small></div>`,async fd=>{const created=await api('/tasks',{method:'POST',body:JSON.stringify({title:fd.get('title'),owner_id:Number(fd.get('owner_id')),description:fd.get('description')||'',due_at:fd.get('due_at')?new Date(fd.get('due_at')).toISOString():null,priority:fd.get('priority'),reviewer_id:Number(fd.get('reviewer_id'))||null,customer_id:Number(fd.get('customer_id'))||null,ticket_id:source.ticket_id||null,request_id:requestId})});apply(created);preferences().scope='mine';preferences().status='active';persist();await open(created.id);toast('Задача создана');},'Создать задачу');
-    node.querySelector('[name="title"]').focus();node.querySelector('form').addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){e.preventDefault();node.querySelector('form').requestSubmit();}});
+
+  function quickCreate(source = {}) {
+    if (!source || !('title' in source)) source = source || {};
+    if (!canCreate()) return toast('Нет права создавать задачи', 'error');
+    const requestId = crypto.randomUUID();
+    const node = modal('Новая задача', `<div class="form">
+      <label>Что нужно сделать?
+        <input class="field" name="title" required minlength="3" maxlength="200" placeholder="Например, исправить экспорт отчёта" value="${esc(source.title || '')}" autofocus>
+      </label>
+      <label>Исполнитель
+        <select class="field" name="owner_id" required>${personOptions(source.owner_id || state.user.id)}</select>
+      </label>
+      <label>Статус
+        <select class="field" name="status">${options(statuses, source.status || 'new')}</select>
+      </label>
+      <details class="task-extra-fields" ${source.description || source.due_at || source.customer_id ? 'open' : ''}>
+        <summary>Добавить описание, срок и детали</summary>
+        <div class="form">
+          <label>Описание
+            <textarea name="description" maxlength="5000" placeholder="Какой результат нужен?">${esc(source.description || '')}</textarea>
+          </label>
+          <div class="team-form-grid">
+            <label>Срок
+              <input class="field" type="datetime-local" name="due_at" value="${isoLocal(source.due_at)}">
+            </label>
+            <label>Приоритет
+              <select class="field" name="priority">${options(priorities, source.priority || 'normal')}</select>
+            </label>
+          </div>
+          <label>Проверяющий
+            <select class="field" name="reviewer_id">${personOptions(source.reviewer_id || null)}</select>
+          </label>
+          <label>Клиент · необязательно
+            <select class="field" name="customer_id">
+              <option value="">Внутренняя задача</option>
+              ${source.customer_id && !(data()?.clients || []).some(c => c.id === source.customer_id) ? `<option value="${source.customer_id}" selected>${esc(source.customer_name || 'Клиент заявки')}</option>` : ''}
+              ${(data()?.clients || []).map(c => `<option value="${c.id}" ${c.id === source.customer_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+            </select>
+          </label>
+        </div>
+      </details>
+      <small class="muted">Для создания достаточно названия и исполнителя. Остальное можно добавить позже.</small>
+    </div>`, async fd => {
+      const created = await api('/tasks', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: fd.get('title'),
+          owner_id: Number(fd.get('owner_id')),
+          description: fd.get('description') || '',
+          due_at: fd.get('due_at') ? new Date(fd.get('due_at')).toISOString() : null,
+          priority: fd.get('priority'),
+          status: fd.get('status') || 'new',
+          reviewer_id: Number(fd.get('reviewer_id')) || null,
+          customer_id: Number(fd.get('customer_id')) || null,
+          ticket_id: source.ticket_id || null,
+          request_id: requestId
+        })
+      });
+      apply(created);
+      preferences().status = 'active';
+      persist();
+      await open(created.id);
+      toast('Задача создана');
+    }, 'Создать задачу');
+    node.querySelector('[name="title"]').focus();
+    node.querySelector('form').addEventListener('keydown', e => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        node.querySelector('form').requestSubmit();
+      }
+    });
   }
+
   function saveView(){const p=preferences();modal('Сохранить вид',`<div class="form"><label>Название<input class="field" name="name" required minlength="2" maxlength="60" placeholder="Например, мои срочные"></label><p class="muted">Сохранятся поиск, фильтры и представление. Вид будет доступен в этом браузере для вашего аккаунта.</p></div>`,async fd=>{const label=String(fd.get('name')).trim();if(label.length<2)throw new Error('Укажите название вида');const filters={scope:p.scope,status:p.status,owner:p.owner,search:p.search,layout:p.layout};const found=p.saved.find(v=>v.name===label);if(found)found.filters=filters;else{if(p.saved.length>=20)throw new Error('Можно сохранить до 20 видов');p.saved.push({name:label,filters});}persist();render();toast('Вид сохранён');});}
   async function open(id){
     const uid=state.user.id,serial=++fetchSerial;
@@ -131,7 +613,25 @@ const TasksUI = (() => {
     form.onsubmit=e=>saveForm(e,async fd=>{const changes={};const candidates={owner_id:Number(fd.get('owner_id'))||null,due_at:fd.get('due_at')?new Date(fd.get('due_at')).toISOString():null,status:fd.get('status'),priority:fd.get('priority')};if(task.can_edit&&canReviewAssign(task))candidates.reviewer_id=Number(fd.get('reviewer_id'))||null;for(const[k,v]of Object.entries(candidates)){if(k==='due_at'?(v?new Date(v).getTime():null)!==(task[k]?new Date(task[k]).getTime():null):v!==task[k])changes[k]=v;}const participants=fd.getAll('participants').map(Number).sort((a,b)=>a-b);if(JSON.stringify(participants)!==JSON.stringify([...task.participants].sort((a,b)=>a-b)))changes.participants=participants;if(!Object.keys(changes).length)return toast('Изменений нет');await patch(task.id,changes,task.version);renderDetail();toast('Детали сохранены');});
     document.querySelector('#task-primary-action')?.addEventListener('click',async()=>{if(task.blocked_reason)return toast('Сначала снимите блокировку','error');const status={new:'working',working:task.reviewer_id?'review':'done',review:'done',done:'working',cancelled:'working'}[task.status];await action(()=>patch(task.id,{status},task.version));});
     const primary=document.querySelector('#task-primary-action');if(primary&&task.status==='working'&&!task.reviewer_id)primary.textContent='Завершить';if(primary&&task.status==='review'&&task.reviewer_id!==state.user.id&&!data()?.can_dispatch){primary.textContent='Ожидаем проверки';primary.disabled=true;}
-    document.querySelectorAll('[data-checklist-id]').forEach(el=>el.onchange=async()=>{const item=task.checklist.find(c=>c.id===Number(el.dataset.checklistId));el.disabled=true;try{current=await api(`/tasks/${task.id}/checklist/${item.id}`,{method:'PATCH',body:JSON.stringify({version:item.version,checked:el.checked})});apply(current);renderDetail();}catch(e){el.checked=Boolean(item.checked);el.disabled=false;toast(e.message,'error');}});
+    document.querySelectorAll('[data-checklist-id]').forEach(el=>el.onchange=async()=>{
+      const item=task.checklist.find(c=>c.id===Number(el.dataset.checklistId));
+      el.disabled=true;
+      try{
+        current=await api(`/tasks/${task.id}/checklist/${item.id}`,{method:'PATCH',body:JSON.stringify({version:item.version,checked:el.checked})});
+        apply(current);
+        renderDetail();
+        if (el.checked && current.checklist.length > 0 && current.checklist.every(c => c.checked) && current.status === 'working' && current.can_edit) {
+          if (confirm('Все пункты чек-листа выполнены! Передать задачу на проверку?')) {
+            await action(() => patch(current.id, { status: 'review' }, current.version));
+            toast('Задача переведена в статус «На проверке»');
+          }
+        }
+      }catch(e){
+        el.checked=Boolean(item.checked);
+        el.disabled=false;
+        toast(e.message,'error');
+      }
+    });
     document.querySelectorAll('[data-checklist-edit]').forEach(b=>b.onclick=()=>{const item=task.checklist.find(c=>c.id===Number(b.dataset.checklistEdit));modal('Пункт чек-листа',`<div class="form"><label>Что нужно сделать?<input class="field" name="body" required maxlength="500" value="${esc(item.body)}"></label></div>`,async fd=>{current=await api(`/tasks/${task.id}/checklist/${item.id}`,{method:'PATCH',body:JSON.stringify({version:item.version,body:fd.get('body')})});apply(current);renderDetail();});});
     document.querySelector('#task-check-add')?.addEventListener('submit',e=>saveForm(e,async fd=>{await api(`/tasks/${task.id}/checklist`,{method:'POST',body:JSON.stringify({body:fd.get('body')})});current=await api(`/tasks/${task.id}`);apply(current);renderDetail();}));
     bindComments(task);

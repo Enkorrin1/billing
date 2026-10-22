@@ -149,14 +149,17 @@ class BotEngine:
 
     def ticket(self, conn, link, user, ticket_id):
         t = self.desk.ticket_for(conn, ticket_id, user)
-        e = self.desk.latest_estimate(conn, ticket_id)
+        e_row = self.desk.latest_estimate(conn, ticket_id)
+        e = dict(e_row) if e_row else None
         text = f"Заявка №{t['id']} · {t['title']}\n{t['description']}\n\nСледующий шаг: {self.desk.customer_next_step(t, e)}"
         buttons = [[self.button(conn, link, "Переписка", "history", kind="ticket", record=ticket_id)]]
         if t["status"] != "closed":
             buttons.append([self.button(conn, link, f"Ответить по заявке №{ticket_id}", "reply", kind="ticket", record=ticket_id)])
-        if e and e["effort_minutes"] is not None:
+        if e and e.get("state") != "pending_pm":
             names = {"pending": "ожидает решения", "approved": "одобрена", "rejected": "отклонена", "revision_requested": "на корректировке"}
-            text += f"\n\nОценка, версия {e['version']}: {hours(e['effort_minutes'])}. {names.get(e['state'], e['state'])}\n{e['note']}"
+            amount_str = f"{e['amount_rub']:,} ₽".replace(",", " ") if e.get("amount_rub") else f"{e.get('amount_minor', 0)//100} ₽"
+            note_str = e.get("client_note") or e.get("note") or ""
+            text += f"\n\nСтоимость работ, версия {e['version']}: {amount_str}. {names.get(e['state'], e['state'])}\n{note_str}"
             if e["state"] == "pending" and t["status"] != "closed":
                 buttons += [[self.button(conn, link, label, "decision", ticket=ticket_id, estimate=e["id"], decision=decision)]
                             for label, decision in [("Одобрить", "approve"), ("Запросить корректировку", "request_revision"), ("Отклонить", "reject")]]
@@ -289,8 +292,9 @@ class BotEngine:
             return self.ticket(conn, link, user, ticket["id"])
         if action in ("decision", "confirm_decision"):
             self.desk.ticket_for(conn, data["ticket"], user)
-            estimate = self.desk.latest_estimate(conn, data["ticket"])
-            if not estimate or estimate["id"] != data["estimate"] or estimate["state"] != "pending" or estimate["effort_minutes"] is None:
+            est_row = self.desk.latest_estimate(conn, data["ticket"])
+            estimate = dict(est_row) if est_row else None
+            if not estimate or estimate["id"] != data["estimate"] or estimate["state"] != "pending":
                 self.queue(conn, link, "Оценка уже изменена или рассмотрена. Показываю актуальное состояние.")
                 return self.ticket(conn, link, user, data["ticket"])
             if action == "confirm_decision":
@@ -301,7 +305,8 @@ class BotEngine:
             if data["decision"] == "request_revision":
                 self.set_state(conn, link, {"mode": "revision_comment", "ticket": data["ticket"], "estimate": data["estimate"]})
                 return self.queue(conn, link, "Напишите пожелания к оценке (до 3000 символов). На следующем шаге можно предложить число часов.")
-            return self.queue(conn, link, f"{'Одобрить' if data['decision'] == 'approve' else 'Отклонить'} оценку заявки №{data['ticket']}?\nВерсия {estimate['version']} · {hours(estimate['effort_minutes'])}.\nОдобрение часов не списывает деньги.",
+            amount_str = f"{estimate['amount_rub']:,} ₽".replace(",", " ") if estimate.get("amount_rub") else f"{(estimate.get('amount_minor') or 0)//100} ₽"
+            return self.queue(conn, link, f"{'Одобрить' if data['decision'] == 'approve' else 'Отклонить'} стоимость по заявке №{data['ticket']}?\nВерсия {estimate['version']} · {amount_str}.",
                               [[self.button(conn, link, "Подтвердить", "confirm_decision", ticket=data["ticket"], estimate=data["estimate"], decision=data["decision"])],
                                [self.button(conn, link, "Вернуться к заявке", "ticket", record=data["ticket"])]], ("ticket", data["ticket"]))
         if action in ("acceptance", "confirm_acceptance"):
@@ -469,8 +474,14 @@ class BotEngine:
                 text += f"\n{msg['name']}:\n{msg['body']}"
         if event_kind == "estimate":
             e = self.desk.latest_estimate(conn, record)
-            if e and e["effort_minutes"] is not None:
-                text += f"\nВерсия {e['version']} · {hours(e['effort_minutes'])}\n{e['note']}"
+            if e:
+                est = dict(e)
+                if user["role"] == "customer":
+                    amt = est.get("amount_rub") or (est.get("amount_minor", 0) // 100)
+                    note = est.get("client_note") or est.get("note") or ""
+                    text += f"\nСтоимость: {amt:,} ₽ (версия {est['version']})\n{note}".replace(",", " ")
+                elif est.get("effort_minutes") is not None:
+                    text += f"\nВерсия {est['version']} · {hours(est['effort_minutes'])}\n{est.get('note') or ''}"
         for link in links:
             if user["role"] == "customer":
                 buttons = [[self.button(conn, link, "Открыть заявку" if kind == "ticket" else "Открыть чат",

@@ -11,6 +11,7 @@ const TeamUI = (() => {
   const empty = (title, text) => `<div class="empty"><strong>${esc(title)}</strong><p>${esc(text)}</p></div>`;
   const chips = codes => codes.map(c => `<span class="team-chip">${esc(fnName(c))}</span>`).join('') || '<span class="muted">Функции не назначены</span>';
   const dateTime = value => value ? new Date(value).toLocaleString('ru-RU',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}) : 'Без срока';
+  const shortDate = value => value ? new Date(value).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' }) : 'Без срока';
   const localDate = value => {if(!value)return '';const d=new Date(value);return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,16);};
   const selectOptions = (values, selected) => Object.entries(values).map(([k,v])=>`<option value="${esc(k)}" ${String(k)===String(selected)?'selected':''}>${esc(v)}</option>`).join('');
   const personOptions = (selected, blank=true, exclude=null) => (blank?'<option value="">Не назначен</option>':'') + data().people.filter(p=>(p.active||p.id===selected)&&p.id!==exclude).map(p=>`<option value="${p.id}" ${p.id===selected?'selected':''}>${esc(p.name)}${!p.active?' · отключён':p.availability!=='available'?' · '+availability[p.availability]:''}</option>`).join('');
@@ -107,7 +108,52 @@ const TeamUI = (() => {
     document.querySelectorAll('[data-edit-work]').forEach(b=>b.onclick=async()=>{const[k,id]=b.dataset.editWork.split(':');const events=(data().events||[]).filter(e=>e.entity===k&&e.entity_id===Number(id)&&!e.read_at);await Promise.allSettled(events.map(e=>api(`/team/notifications/${e.id}/read`,{method:'POST'})));events.forEach(e=>e.read_at=new Date().toISOString());const record=data()[k].find(r=>r.id===Number(id));render();workDialog(k,record);});
     document.querySelectorAll('[data-handoff]').forEach(b=>b.onclick=()=>handoffDialog(data().deals.find(r=>r.id===Number(b.dataset.handoff))));
     document.querySelectorAll('[data-publish-meeting]').forEach(b=>b.onclick=()=>publishDialog(data().meetings.find(r=>r.id===Number(b.dataset.publishMeeting))));
-    document.querySelectorAll('[data-meeting-task]').forEach(b=>b.onclick=()=>{const m=data().meetings.find(r=>r.id===Number(b.dataset.meetingTask));workDialog('tasks',null,{customer_id:m.customer_id,meeting_id:m.id,title:'По итогам: '+m.title,description:m.next_steps,owner_id:m.host_id,customer_name:m.customer_name});});
+    document.querySelectorAll('[data-meeting-task]').forEach(b => {
+      b.onclick = () => {
+        const m = data().meetings.find(r => r.id === Number(b.dataset.meetingTask));
+        if (!m) return;
+        TasksUI.quickCreate({
+          title: 'Итоги встречи: ' + m.title,
+          description: [m.summary, m.next_steps ? 'Следующие шаги:\n' + m.next_steps : ''].filter(Boolean).join('\n\n'),
+          customer_id: m.customer_id,
+          meeting_id: m.id,
+          ticket_id: m.ticket_id || null
+        });
+      };
+    });
+    document.querySelectorAll('[data-step-meeting]').forEach(b => {
+      b.onclick = () => {
+        const m = data().meetings.find(r => r.id === Number(b.dataset.stepMeeting));
+        const stepText = b.dataset.stepText;
+        if (!m) return;
+        TasksUI.quickCreate({
+          title: stepText.slice(0, 100).replace(/^[0-9\.\-\s\*]+/, '') || 'Шаг по встрече ' + m.title,
+          description: `Договорённость на встрече «${m.title}»:\n${stepText}`,
+          customer_id: m.customer_id,
+          meeting_id: m.id,
+          ticket_id: m.ticket_id || null
+        });
+      };
+    });
+    document.querySelectorAll('[data-share-meeting-link]').forEach(b => {
+      b.onclick = async () => {
+        const m = data().meetings.find(r => r.id === Number(b.dataset.shareMeetingLink));
+        if (!m || !m.url) return;
+        try {
+          await navigator.clipboard.writeText(m.url);
+          const text = `Ссылка на встречу «${m.title}»: ${m.url}\nВремя: ${dateTime(m.starts_at)}`;
+          if (m.ticket_id) {
+            await api(`/tickets/${m.ticket_id}/messages`, {
+              method: 'POST',
+              body: JSON.stringify({ body: text, reply_to_id: null })
+            }).catch(() => null);
+          }
+          toast('Ссылка скопирована и отправлена клиенту');
+        } catch (e) {
+          toast('Ссылка на встречу: ' + m.url);
+        }
+      };
+    });
   }
   function dialog(title,body,onSave,label='Сохранить') {
     document.querySelector('#team-dialog')?.remove();
@@ -173,5 +219,246 @@ const TeamUI = (() => {
       dialog('Участники заявки №'+tid,`<div class="form">${data().people.filter(p=>p.active).map(p=>`<label>${esc(p.name)}<select class="field" name="member_${p.id}"><option value="">Не участвует</option>${selectOptions(names,members.find(m=>m.user_id===p.id)?.participation)}</select></label>`).join('')}<p class="muted">Наблюдатель и проверяющий читают заявку. Соисполнитель может участвовать в работе при наличии права на задачи. Основной ответственный сохраняется.</p></div>`,isDispatcher()?fd=>api(`/team/tickets/${tid}/participants`,{method:'PUT',body:JSON.stringify({members:data().people.filter(p=>fd.get('member_'+p.id)).map(p=>({user_id:p.id,participation:fd.get('member_'+p.id)}))})}):null);
     }catch(e){toast(e.message,'error');}
   }
-  return {render,reset,reload,ticketParticipants};
+  
+  function renderDeals() {
+    const d = data();
+    if (!d) {
+      shell('CRM и Сделки', '', `<section class="panel">${empty('Данные сделок недоступны', 'Повторите загрузку.')}<button class="button" id="crm-retry">Повторить</button></section>`);
+      document.querySelector('#crm-retry').onclick = () => reload().catch(e => toast(e.message, 'error'));
+      return;
+    }
+    const stages = {
+      new: { label: 'Новая заявка', color: '#00b4e6' },
+      qualified: { label: 'Квалификация', color: '#2fc6f6' },
+      meeting: { label: 'Встреча', color: '#8c54ff' },
+      proposal: { label: 'КП и Оценка', color: '#3b82f6' },
+      decision: { label: 'Принятие решения', color: '#f59e0b' },
+      won: { label: 'Сделка успешна', color: '#22c55e' },
+      lost: { label: 'Сделка проиграна', color: '#94a3b8' }
+    };
+    let items = d.deals || [];
+    if (onlyMine) items = items.filter(r => r.owner_id === state.user.id);
+    const query = search.trim().toLocaleLowerCase('ru-RU');
+    if (query) items = items.filter(r => [r.title, r.customer_name, name(r.owner_id), r.next_action, r.proposal].join(' ').toLocaleLowerCase('ru-RU').includes(query));
+
+    const totalWon = (d.deals || []).filter(r => r.stage === 'won').length;
+    const inWork = (d.deals || []).filter(r => !['won', 'lost'].includes(r.stage)).length;
+
+    const body = `
+      <div class="team-toolbar bitrix-crm-toolbar">
+        <label class="team-search">
+          ${icon('search', 16)}
+          <span class="visually-hidden">Поиск сделок</span>
+          <input id="crm-search" type="search" placeholder="Поиск по сделке, клиенту, шагу или ответственным..." value="${esc(search)}">
+        </label>
+        <div class="crm-toolbar-right">
+          <label class="team-check"><input type="checkbox" id="crm-only-mine" ${onlyMine ? 'checked' : ''}>Только мои сделки</label>
+          <div class="crm-funnel-stats">
+            <span class="badge" title="Сделок в работе">В работе: <strong>${inWork}</strong></span>
+            <span class="badge closed" title="Выиграно сделок">Выиграно: <strong>${totalWon}</strong></span>
+          </div>
+        </div>
+      </div>
+      <section class="task-board bitrix-board bitrix-crm-board" aria-label="Воронка сделок">
+        ${Object.entries(stages).map(([stageKey, meta]) => {
+          const rows = items.filter(r => r.stage === stageKey);
+          return `<section class="task-board-column bitrix-column" data-drop-stage="${stageKey}" aria-label="${meta.label}">
+            <header class="bitrix-col-header" style="background:${meta.color};color:#fff">
+              <div class="bitrix-col-title-wrap">
+                <span class="bitrix-col-name">${meta.label}</span>
+                <span class="bitrix-col-count">${rows.length}</span>
+              </div>
+              ${can('sales') ? `<button type="button" class="bitrix-col-add-btn" data-stage-quick="${stageKey}" title="Новая сделка">+ Сделка</button>` : ''}
+            </header>
+            <div class="task-board-cards">
+              ${rows.map(r => `
+                <article class="task-board-card bitrix-deal-card ${r.stage === 'won' ? 'deal-won' : r.stage === 'lost' ? 'deal-lost' : ''}" ${r.can_edit ? 'draggable="true"' : ''} data-drag-deal="${r.id}">
+                  <div class="task-card-header">
+                    <span class="task-card-num">Сделка №${r.id}</span>
+                    ${r.due_at ? `<span class="task-due ${new Date(r.due_at) < new Date() && !['won','lost'].includes(r.stage) ? 'late' : ''}">${shortDate(r.due_at)}</span>` : ''}
+                  </div>
+                  <button class="task-title-button bitrix-title-btn" data-edit-work="deals:${r.id}">
+                    <strong>${esc(r.title)}</strong>
+                    <span class="task-client-badge" data-deal-filter-client="${esc(r.customer_name)}" role="button" title="Фильтровать по клиенту ${esc(r.customer_name)}">${icon('building', 11)} ${esc(r.customer_name)}</span>
+                  </button>
+                  <div class="deal-next-action-box">
+                    <small class="deal-action-label">Следующий шаг:</small>
+                    <p class="deal-action-text">${esc(r.next_action)}</p>
+                  </div>
+                  ${r.proposal ? `<p class="deal-proposal-snippet">${esc(r.proposal)}</p>` : ''}
+                  <div class="task-card-meta">
+                    <div class="task-card-owner">
+                      ${avatarOf(r.owner_id, name(r.owner_id))}
+                      <span class="task-owner-label">${esc(name(r.owner_id))}</span>
+                    </div>
+                    ${r.can_edit ? `<button class="button small" data-edit-work="deals:${r.id}">Изменить</button>` : ''}
+                  </div>
+                  ${r.stage === 'won' && r.can_edit ? `
+                    <div class="deal-handoff-banner">
+                      <button class="button small primary deal-handoff-btn" data-handoff="${r.id}" ${r.handoff_task_id ? 'disabled' : ''}>
+                        ${icon('check', 13)} ${r.handoff_task_id ? 'Передано · задача №' + r.handoff_task_id : 'Передать в работу'}
+                      </button>
+                    </div>
+                  ` : ''}
+                </article>
+              `).join('') || '<div class="task-column-empty">Нет сделок</div>'}
+            </div>
+          </section>`;
+        }).join('')}
+      </section>
+    `;
+
+    shell('CRM и Сделки', can('sales') ? `<button class="button primary bitrix-btn-top" id="crm-add-deal">${icon('plus', 15)}<span>Новая сделка</span></button>` : '', body, {
+      kicker: 'CRM · Воронка продаж',
+      lead: 'Ведение клиентов по стадиям сделок, фиксация договорённостей и передача выигранных заказов в работу.'
+    });
+
+    document.querySelector('#crm-add-deal')?.addEventListener('click', () => workDialog('deals'));
+    document.querySelector('#crm-search')?.addEventListener('input', e => { search = e.target.value; renderDeals(); });
+    document.querySelector('#crm-only-mine')?.addEventListener('change', e => { onlyMine = e.target.checked; renderDeals(); });
+    document.querySelectorAll('[data-stage-quick]').forEach(b => b.onclick = () => workDialog('deals', null, { status: b.dataset.stageQuick }));
+    document.querySelectorAll('[data-deal-filter-client]').forEach(el => {
+      el.onclick = e => {
+        e.stopPropagation();
+        search = el.dataset.dealFilterClient;
+        renderDeals();
+        toast('Фильтр по клиенту: ' + search);
+      };
+    });
+    bind();
+  }
+
+  function renderMeetings() {
+    const d = data();
+    if (!d) {
+      shell('Календарь и Встречи', '', `<section class="panel">${empty('Данные встреч недоступны', 'Повторите загрузку.')}<button class="button" id="meetings-retry">Повторить</button></section>`);
+      document.querySelector('#meetings-retry').onclick = () => reload().catch(e => toast(e.message, 'error'));
+      return;
+    }
+    let items = d.meetings || [];
+    if (onlyMine) items = items.filter(r => r.host_id === state.user.id || r.organizer_id === state.user.id || (r.participants || []).includes(state.user.id));
+    const query = search.trim().toLocaleLowerCase('ru-RU');
+    if (query) items = items.filter(r => [r.title, r.customer_name, name(r.host_id), r.agenda, r.summary, r.next_steps].join(' ').toLocaleLowerCase('ru-RU').includes(query));
+
+    items = [...items].sort((a,b) => (a.status !== 'planned' ? 1 : 0) - (b.status !== 'planned' ? 1 : 0) || (new Date(a.starts_at || '9999-01-01').getTime() - new Date(b.starts_at || '9999-01-01').getTime()));
+
+    const planned = items.filter(m => m.status === 'planned');
+    const held = items.filter(m => m.status === 'held');
+
+    const cardHtml = r => {
+      const isPast = new Date(r.starts_at) < new Date();
+      return `
+        <article class="meeting-card panel bitrix-meeting-card ${r.status}">
+          <div class="meeting-card-head">
+            <div class="meeting-datetime">
+              <span class="meeting-date-badge ${r.status === 'planned' && isPast ? 'late' : ''}">${dateTime(r.starts_at)}</span>
+              <span class="meeting-duration">${r.duration_minutes} мин</span>
+              <span class="badge ${r.status === 'held' ? 'closed' : r.status === 'planned' ? 'working' : ''}">${r.status === 'held' ? 'Проведена' : r.status === 'planned' ? 'Запланирована' : 'Отменена'}</span>
+            </div>
+            <div class="meeting-actions-top">
+              <button class="button small" data-edit-work="meetings:${r.id}">${r.can_edit ? 'Изменить' : 'Подробнее'}</button>
+            </div>
+          </div>
+          <h3 class="meeting-title">${esc(r.title)}</h3>
+          <div class="meeting-client-row">
+            <span class="task-client-badge">${icon('building', 12)} ${esc(r.customer_name)}</span>
+            ${r.ticket_id ? `<span class="badge" title="Связанная заявка">Заявка №${r.ticket_id}</span>` : ''}
+          </div>
+          ${r.url ? `
+            <div class="meeting-link-box">
+              <a href="${esc(r.url)}" target="_blank" rel="noopener" class="button small primary meeting-join-btn">
+                ${icon('send', 13)} Присоединиться к встрече
+              </a>
+              <button type="button" class="button small" data-share-meeting-link="${r.id}" title="Скопировать ссылку и отправить клиенту">
+                ${icon('reply', 13)} Отправить клиенту
+              </button>
+            </div>
+          ` : ''}
+          <div class="meeting-people">
+            <div class="meeting-person-entry">
+              <small class="muted">Ведущий:</small>
+              <div class="meeting-person-val">${avatarOf(r.host_id, name(r.host_id))}<span>${esc(name(r.host_id))}</span></div>
+            </div>
+            ${r.participants && r.participants.length ? `
+              <div class="meeting-person-entry">
+                <small class="muted">Участники:</small>
+                <div class="meeting-participants-avatars">
+                  ${r.participants.map(uid => `<span title="${esc(name(uid))}">${avatarOf(uid, name(uid))}</span>`).join('')}
+                </div>
+              </div>
+            ` : ''}
+          </div>
+          ${r.agenda ? `<div class="meeting-agenda-box"><strong>Повестка:</strong><p>${esc(r.agenda)}</p></div>` : ''}
+          ${r.summary ? `
+            <div class="meeting-summary-box">
+              <strong>Итоги встречи:</strong>
+              <p>${esc(r.summary)}</p>
+              ${r.next_steps ? `
+                <div class="meeting-steps-block" style="margin-top:8px;">
+                  <strong style="font-size:12px;color:var(--ink-light);display:block;margin-bottom:4px;">Следующие шаги:</strong>
+                  <div class="meeting-steps-list">
+                    ${r.next_steps.split('\n').filter(s => s.trim()).map(step => `
+                      <div class="meeting-step-row" style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px dashed var(--line-light);">
+                        <span style="font-size:13px;">${esc(step)}</span>
+                        ${can('tasks') ? `<button type="button" class="button small" data-step-meeting="${r.id}" data-step-text="${esc(step)}" title="Создать задачу по этому шагу">+ Задача</button>` : ''}
+                      </div>
+                    `).join('')}
+                  </div>
+                </div>
+              ` : ''}
+            </div>
+          ` : ''}
+          <div class="meeting-card-footer">
+            ${r.status === 'held' && r.can_edit ? `
+              <button class="button small ${r.shared_at ? '' : 'primary'}" data-publish-meeting="${r.id}" ${r.shared_at ? 'disabled' : ''}>
+                ${r.shared_at ? '✓ Итоги опубликованы клиенту' : icon('send', 13) + ' Опубликовать итоги клиенту'}
+              </button>
+            ` : ''}
+            ${r.status === 'held' && can('tasks') ? `
+              <button class="button small" data-meeting-task="${r.id}">${icon('check', 13)} Задача по итогам</button>
+            ` : ''}
+          </div>
+        </article>
+      `;
+    };
+
+    const body = `
+      <div class="team-toolbar">
+        <label class="team-search">
+          ${icon('search', 16)}
+          <span class="visually-hidden">Поиск встреч</span>
+          <input id="meetings-search" type="search" placeholder="Поиск по теме, клиенту, повестке..." value="${esc(search)}">
+        </label>
+        <label class="team-check"><input type="checkbox" id="meetings-only-mine" ${onlyMine ? 'checked' : ''}>Только мои встречи</label>
+      </div>
+      <div class="meetings-layout">
+        <section class="meetings-section">
+          <h2 class="meetings-section-title">Предстоящие встречи (${planned.length})</h2>
+          <div class="meetings-grid">
+            ${planned.map(cardHtml).join('') || '<div class="empty">Нет запланированных встреч. Запланируйте встречу с клиентом.</div>'}
+          </div>
+        </section>
+        ${held.length ? `
+          <section class="meetings-section" style="margin-top:32px">
+            <h2 class="meetings-section-title">Проведённые встречи (${held.length})</h2>
+            <div class="meetings-grid">
+              ${held.map(cardHtml).join('')}
+            </div>
+          </section>
+        ` : ''}
+      </div>
+    `;
+
+    shell('Календарь и Встречи', can('meetings') ? `<button class="button primary bitrix-btn-top" id="meetings-add-btn">${icon('plus', 15)}<span>Запланировать встречу</span></button>` : '', body, {
+      kicker: 'Совместная работа · Календарь',
+      lead: 'Планирование созвонов, повестка, протоколы встреч и формирование задач по итогам обсуждений.'
+    });
+
+    document.querySelector('#meetings-add-btn')?.addEventListener('click', () => workDialog('meetings'));
+    document.querySelector('#meetings-search')?.addEventListener('input', e => { search = e.target.value; renderMeetings(); });
+    document.querySelector('#meetings-only-mine')?.addEventListener('change', e => { onlyMine = e.target.checked; renderMeetings(); });
+    bind();
+  }
+
+  return {render,reset,reload,ticketParticipants,renderDeals,renderMeetings,workDialog,staffDialog,clientDialog};
 })();

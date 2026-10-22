@@ -129,6 +129,7 @@ def init_db():
             id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL REFERENCES users(id),
             assignee_id INTEGER REFERENCES users(id), title TEXT NOT NULL,
             description TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'new',
+            priority TEXT NOT NULL DEFAULT 'normal',
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS messages (
@@ -242,10 +243,46 @@ def init_db():
             if name not in user_columns:
                 conn.execute(f"ALTER TABLE users ADD COLUMN {name} {declaration}")
         estimate_columns = {row["name"] for row in conn.execute("PRAGMA table_info(estimates)")}
-        if "effort_minutes" not in estimate_columns:
-            conn.execute("ALTER TABLE estimates ADD COLUMN effort_minutes INTEGER")
-        if "proposed_effort_minutes" not in estimate_columns:
-            conn.execute("ALTER TABLE estimates ADD COLUMN proposed_effort_minutes INTEGER")
+        for name, declaration in {
+            "effort_minutes": "INTEGER",
+            "proposed_effort_minutes": "INTEGER",
+            "performer_effort_minutes": "INTEGER",
+            "pm_effort_minutes": "INTEGER NOT NULL DEFAULT 0",
+            "total_billable_minutes": "INTEGER",
+            "hourly_rate_rub": "INTEGER NOT NULL DEFAULT 3000",
+            "amount_rub": "INTEGER NOT NULL DEFAULT 0",
+            "client_note": "TEXT NOT NULL DEFAULT ''",
+            "pm_reviewed_by": "INTEGER REFERENCES users(id)",
+            "pm_reviewed_at": "TEXT",
+            "proposed_amount_rub": "INTEGER",
+        }.items():
+            if name not in estimate_columns:
+                conn.execute(f"ALTER TABLE estimates ADD COLUMN {name} {declaration}")
+
+        hour_request_columns = {row["name"] for row in conn.execute("PRAGMA table_info(hour_requests)")}
+        for name, declaration in {
+            "pm_approved_minutes": "INTEGER",
+            "bill_customer": "INTEGER NOT NULL DEFAULT 0",
+            "customer_minutes": "INTEGER NOT NULL DEFAULT 0",
+            "amount_rub": "INTEGER NOT NULL DEFAULT 0",
+            "client_explanation": "TEXT NOT NULL DEFAULT ''",
+            "pm_decided_by": "INTEGER REFERENCES users(id)",
+            "pm_decided_at": "TEXT",
+        }.items():
+            if name not in hour_request_columns:
+                conn.execute(f"ALTER TABLE hour_requests ADD COLUMN {name} {declaration}")
+
+        conn.execute("""
+            UPDATE estimates
+            SET performer_effort_minutes = COALESCE(performer_effort_minutes, effort_minutes),
+                total_billable_minutes = COALESCE(total_billable_minutes, effort_minutes),
+                amount_rub = CASE
+                    WHEN (amount_rub IS NULL OR amount_rub = 0) AND effort_minutes IS NOT NULL
+                    THEN ROUND(effort_minutes / 60.0 * 3000)
+                    ELSE COALESCE(amount_rub, 0)
+                END
+            WHERE effort_minutes IS NOT NULL AND (performer_effort_minutes IS NULL OR amount_rub = 0)
+        """)
         ticket_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tickets)")}
         if "created_by_id" not in ticket_columns:
             conn.execute("ALTER TABLE tickets ADD COLUMN created_by_id INTEGER REFERENCES users(id)")
@@ -253,6 +290,7 @@ def init_db():
             "organization_id": "INTEGER REFERENCES organizations(id)",
             "visibility": "TEXT NOT NULL DEFAULT 'private'",
             "service_type": "TEXT NOT NULL DEFAULT 'other'",
+            "priority": "TEXT NOT NULL DEFAULT 'normal'",
             "response_due_at": "TEXT",
             "estimate_due_at": "TEXT",
             "delivery_due_at": "TEXT",
@@ -389,6 +427,81 @@ def init_db():
                 "INSERT INTO kb_articles (category_id, title, content, is_internal, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
                 [(cid, title, content, internal, stamp, stamp) for cid, title, content, internal in default_articles]
             )
+
+        cat_gen_row = conn.execute("SELECT id FROM kb_categories WHERE slug='general'").fetchone()
+        cat_run_row = conn.execute("SELECT id FROM kb_categories WHERE slug='runbooks'").fetchone()
+        if cat_gen_row and cat_run_row:
+            stamp = now()
+            role_guides = [
+                (cat_run_row[0], "Инструкция Первой линии: приём, приоритизация, распределение и SLA",
+                 "Регламент работы 1-й линии поддержки (Диспетчер / Helpdesk L1 / Менеджер):\n\n"
+                 "1. Приём и квалификация обращений:\n"
+                 "- Мониторьте разделы «Рабочая очередь» и «Общий чат».\n"
+                 "- При поступлении вопроса в общий чат создайте заявку через «Создать заявку из сообщения», если требуется отдельная задача.\n"
+                 "- Проверьте тему, описание, ссылки и наличие вложений/логов. При нехватке данных запросите уточнение.\n\n"
+                 "2. Матрица приоритизации:\n"
+                 "- Критический (Urgent): авария, полная остановка сервиса, блокировка всех пользователей. SLA ответа: до 2 часов, оценка: до 12 часов. Эскалировать немедленно.\n"
+                 "- Высокий (High): серьёзный сбой основного функционала, блокировка ключевых процессов, частичный обходной путь. SLA ответа: до 4 часов, оценка: до 24 часов.\n"
+                 "- Обычный (Normal): плановые задачи, некритичные ошибки, доработки, консультации. SLA ответа: до 24 часов, оценка: до 3 рабочих дней.\n"
+                 "- Низкий (Low): мелкие правки, косметические улучшения, несрочные вопросы. SLA ответа: до 48 часов, оценка: до 5 рабочих дней.\n\n"
+                 "3. Назначение ответственного и команды:\n"
+                 "- Назначьте ответственного исполнителя и при необходимости соисполнителей/проверяющих.\n"
+                 "- В карточке клиента настройте постоянную команду специалистов (client_team).\n\n"
+                 "4. Контроль сроков и эскалация:\n"
+                 "- Следите за индикаторами SLA в очереди. При просрочках подключайтесь к решению.\n"
+                 "- Если клиент не отвечает на шаги (статус «done» или «waiting»), система напоминает каждые 48ч. При статусе «Заказчик молчит» свяжитесь лично или закройте заявку.\n\n"
+                 "5. Внутренние заметки:\n"
+                 "- Фиксируйте пароли, технические нюансы и ход расследования во внутренних заметках — клиент их не видит.", 1),
+                (cat_run_row[0], "Инструкция Исполнителю: оценки, тайм-трекинг, доп. часы и сдача работ",
+                 "Регламент работы Исполнителя (Специалист / Разработчик / L2/L3 / Инженер):\n\n"
+                 "1. Получение заявки:\n"
+                 "- Проверьте назначенные вам заявки в разделах «Заявки» (фильтр «Мои») и «Мои задачи».\n"
+                 "- Изучите описание и установленный приоритет (Критический, Высокий, Обычный, Низкий).\n\n"
+                 "2. Подготовка и отправка оценки:\n"
+                 "- Укажите плановые часы и отдельно зафиксируйте минуты на подготовку оценки (они оплачиваются!).\n"
+                 "- Добавьте понятное для клиента описание («Что входит в работу»).\n"
+                 "- Дождитесь одобрения клиентом! Не приступайте к работе до согласования оценки без подтверждения менеджера.\n\n"
+                 "3. Выполнение работы и учёт времени:\n"
+                 "- После одобрения переведите заявку в «В работу».\n"
+                 "- Вносите фактические трудозатраты с понятным описанием выполненных шагов.\n"
+                 "- Нельзя превысить согласованный лимит часов без нового согласования.\n\n"
+                 "4. Запрос дополнительных часов:\n"
+                 "- Если часов не хватает — заблаговременно создайте «Запрос дополнительных часов» с подробным обоснованием для клиента.\n\n"
+                 "5. Сдача работы:\n"
+                 "- Проверьте результат на тестовом стенде, внесите финальное время.\n"
+                 "- Переведите заявку в статус «На проверке» (Готово).\n"
+                 "- Напишите клиенту понятный отчёт: что готово, где проверить, какие доступы нужны.\n"
+                 "- Дождитесь приёмки клиентом («Принять работу») либо исправьте замечания при возврате на доработку.", 1),
+                (cat_gen_row[0], "Инструкция Клиенту: создание заявок, выбор приоритета, команда и приёмка",
+                 "Руководство пользователя личного кабинета Заказчика:\n\n"
+                 "1. Создание заявки и выбор приоритета:\n"
+                 "- Нажмите «Новая заявка».\n"
+                 "- Выберите тему, тип задачи и приоритет:\n"
+                 "  • Критический (Urgent) — авария, сервис недоступен. Реакция инженера: до 2 часов.\n"
+                 "  • Высокий (High) — серьёзный сбой, блокирует работу. Реакция: до 4 часов.\n"
+                 "  • Обычный (Normal) — плановая задача или вопрос. Реакция: до 24 часов.\n"
+                 "  • Низкий (Low) — пожелания, мелкие улучшения. Реакция: до 48 часов.\n"
+                 "- Опишите задачу и прикрепите файлы/скриншоты.\n\n"
+                 "2. Ваша команда специалистов:\n"
+                 "- В разделе «Наша команда» доступны профили всех специалистов, закреплённых за вами и работающих над вашими заявками.\n"
+                 "- В карточке каждой заявки отображается ответственный специалист и его соисполнители.\n\n"
+                 "3. Согласование трудозатрат:\n"
+                 "- Инженер направляет вам оценку в часах. Вы можете:\n"
+                 "  • «Одобрить» — утвердить часы и запустить выполнение.\n"
+                 "  • «Запросить корректировку» — предложить свои часы или задать вопросы.\n"
+                 "  • «Отклонить» — отказаться от выполнения задачи.\n\n"
+                 "4. Общение и файлы:\n"
+                 "- Общайтесь с инженерами в чате заявки или в общем чате компании.\n"
+                 "- Прикрепляйте файлы и изображения до 10 МБ.\n\n"
+                 "5. Приёмка результата:\n"
+                 "- Когда задача готова, она переходит в статус «На проверке».\n"
+                 "- Проверьте результат и нажмите «Принять работу» (заявка завершится) или «Вернуть на доработку» с описанием замечаний.\n"
+                 "- Поставьте оценку качества работы (1–5 звёзд) и оставьте отзыв.", 0)
+            ]
+            for cid, title, content, internal in role_guides:
+                if not conn.execute("SELECT 1 FROM kb_articles WHERE title=?", (title,)).fetchone():
+                    conn.execute("INSERT INTO kb_articles (category_id, title, content, is_internal, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                                 (cid, title, content, internal, stamp, stamp))
 
         # Billing schema extensions
         org_columns = {row["name"] for row in conn.execute("PRAGMA table_info(organizations)")}
@@ -686,11 +799,28 @@ def customer_can_decide(conn, ticket, user):
 
 def approved_minutes(conn, ticket_id):
     estimate = latest_estimate(conn, ticket_id)
-    if not estimate or estimate["state"] != "approved" or estimate["effort_minutes"] is None:
+    if not estimate or estimate["state"] != "approved":
         return 0
-    extra = conn.execute("""SELECT COALESCE(SUM(minutes),0) FROM hour_requests
+    base = estimate["performer_effort_minutes"] or estimate["effort_minutes"] or 0
+    extra = conn.execute("""SELECT COALESCE(SUM(COALESCE(pm_approved_minutes, minutes)),0) FROM hour_requests
         WHERE ticket_id=? AND state='approved'""", (ticket_id,)).fetchone()[0]
-    return estimate["effort_minutes"] + extra
+    return base + extra
+
+
+def ticket_cost_rub(conn, ticket_id, rate_rub):
+    estimate = latest_estimate(conn, ticket_id)
+    if not estimate or estimate["state"] != "approved":
+        return 0
+    base_cost = estimate["amount_rub"]
+    if base_cost is None:
+        base_mins = estimate["performer_effort_minutes"] or estimate["effort_minutes"] or 0
+        base_cost = round(base_mins / 60.0 * rate_rub)
+    extra_cost = conn.execute("""SELECT COALESCE(SUM(
+        CASE WHEN amount_rub IS NOT NULL THEN amount_rub
+             ELSE ROUND(COALESCE(pm_approved_minutes, minutes) / 60.0 * ?)
+        END), 0) FROM hour_requests WHERE ticket_id=? AND state='approved' AND bill_customer=1""",
+        (rate_rub, ticket_id)).fetchone()[0]
+    return base_cost + int(extra_cost)
 
 
 def actual_minutes(conn, ticket_id):
@@ -734,33 +864,159 @@ MEETING_SUMMARY_SELECT = """SELECT s.id,s.kind,s.ticket_id,s.occurred_at,s.share
 SUPPORT_NAME = "Служба поддержки"
 
 
+def staff_public_profile(conn, user_id):
+    if not user_id:
+        return None
+    user = conn.execute("SELECT id, name, role, email FROM users WHERE id=?", (user_id,)).fetchone()
+    if not user:
+        return None
+    profile = conn.execute("SELECT job_title, bio, avatar_updated_at FROM staff_profiles WHERE user_id=?", (user_id,)).fetchone()
+    avatar_url = f"/api/staff/{user_id}/avatar?v={profile['avatar_updated_at']}" if profile and profile["avatar_updated_at"] else None
+    func_codes = team_management.function_codes(conn, user_id)
+    func_names = [r[0] for r in conn.execute("SELECT f.name FROM staff_functions sf JOIN team_functions f ON f.code=sf.function_code WHERE sf.user_id=? ORDER BY f.name", (user_id,))]
+    return {
+        "id": user_id,
+        "name": user["name"],
+        "job_title": profile["job_title"] if profile and profile["job_title"] else ("Специалист поддержки" if "support" in func_codes else "Специалист"),
+        "bio": profile["bio"] if profile and profile["bio"] else "",
+        "avatar_url": avatar_url,
+        "functions": func_codes,
+        "function_names": func_names,
+    }
+
+
+def staff_is_involved_with_customer(conn, staff_id, customer_id):
+    org_id = None
+    org_member_ids = [customer_id]
+    org_row = conn.execute("SELECT organization_id FROM organization_members WHERE user_id=?", (customer_id,)).fetchone()
+    if org_row:
+        org_id = org_row["organization_id"]
+        org_member_ids = [r[0] for r in conn.execute("SELECT user_id FROM organization_members WHERE organization_id=?", (org_id,)).fetchall()]
+    placeholders = ",".join("?" for _ in org_member_ids)
+    if conn.execute(f"SELECT 1 FROM client_team WHERE user_id=? AND customer_id IN ({placeholders})", [staff_id] + org_member_ids).fetchone():
+        return True
+    query = f"SELECT 1 FROM tickets WHERE assignee_id=? AND (customer_id IN ({placeholders}) {'OR organization_id=?' if org_id else ''})"
+    params = [staff_id] + org_member_ids + ([org_id] if org_id else [])
+    if conn.execute(query, params).fetchone():
+        return True
+    query = f"SELECT 1 FROM ticket_participants p JOIN tickets t ON t.id=p.ticket_id WHERE p.user_id=? AND (t.customer_id IN ({placeholders}) {'OR t.organization_id=?' if org_id else ''})"
+    if conn.execute(query, params).fetchone():
+        return True
+    query = f"SELECT 1 FROM chats WHERE assignee_id=? AND (customer_id IN ({placeholders}) {'OR organization_id=?' if org_id else ''})"
+    if conn.execute(query, params).fetchone():
+        return True
+    return False
+
+
+def customer_specialists(conn, customer):
+    """Return all staff members working with this customer or involved in their tickets/chats."""
+    cid = customer["id"]
+    org_id = None
+    org_member_ids = [cid]
+    org_row = conn.execute("SELECT organization_id FROM organization_members WHERE user_id=?", (cid,)).fetchone()
+    if org_row:
+        org_id = org_row["organization_id"]
+        org_member_ids = [r[0] for r in conn.execute("SELECT user_id FROM organization_members WHERE organization_id=?", (org_id,)).fetchall()]
+    placeholders = ",".join("?" for _ in org_member_ids)
+    team_rows = conn.execute(f"""
+        SELECT ct.user_id, ct.responsibility
+        FROM client_team ct
+        JOIN users u ON u.id = ct.user_id
+        WHERE ct.customer_id IN ({placeholders}) AND u.active = 1
+    """, org_member_ids).fetchall()
+    staff_responsibilities = {}
+    for r in team_rows:
+        staff_responsibilities.setdefault(r["user_id"], set()).add(r["responsibility"])
+    ticket_query = f"""
+        SELECT t.id, t.title, t.status, t.priority, t.assignee_id AS user_id, 'assignee' AS role
+        FROM tickets t
+        JOIN users u ON u.id = t.assignee_id
+        WHERE (t.customer_id IN ({placeholders}) {"OR t.organization_id = ?" if org_id else ""})
+          AND t.assignee_id IS NOT NULL AND u.active = 1
+    """
+    params = list(org_member_ids)
+    if org_id:
+        params.append(org_id)
+    assignee_tickets = conn.execute(ticket_query, params).fetchall()
+    part_query = f"""
+        SELECT t.id, t.title, t.status, t.priority, p.user_id, p.participation AS role
+        FROM ticket_participants p
+        JOIN tickets t ON t.id = p.ticket_id
+        JOIN users u ON u.id = p.user_id
+        WHERE (t.customer_id IN ({placeholders}) {"OR t.organization_id = ?" if org_id else ""})
+          AND u.active = 1
+    """
+    params_part = list(org_member_ids)
+    if org_id:
+        params_part.append(org_id)
+    participant_tickets = conn.execute(part_query, params_part).fetchall()
+    chat_query = f"""
+        SELECT c.assignee_id AS user_id
+        FROM chats c
+        JOIN users u ON u.id = c.assignee_id
+        WHERE (c.customer_id IN ({placeholders}) {"OR c.organization_id = ?" if org_id else ""})
+          AND c.assignee_id IS NOT NULL AND u.active = 1
+    """
+    params_chat = list(org_member_ids)
+    if org_id:
+        params_chat.append(org_id)
+    chat_staff = conn.execute(chat_query, params_chat).fetchall()
+    all_staff_ids = set(staff_responsibilities.keys()) | {r["user_id"] for r in assignee_tickets} | {r["user_id"] for r in participant_tickets} | {r["user_id"] for r in chat_staff}
+    specialists = []
+    for sid in all_staff_ids:
+        person = conn.execute("SELECT id, name, role, email FROM users WHERE id=?", (sid,)).fetchone()
+        if not person:
+            continue
+        profile = conn.execute("SELECT job_title, bio, avatar_updated_at FROM staff_profiles WHERE user_id=?", (sid,)).fetchone()
+        avatar_url = f"/api/staff/{sid}/avatar?v={profile['avatar_updated_at']}" if profile and profile["avatar_updated_at"] else None
+        staff_tickets = []
+        seen_t = set()
+        for t in list(assignee_tickets) + list(participant_tickets):
+            if t["user_id"] == sid and t["id"] not in seen_t:
+                seen_t.add(t["id"])
+                staff_tickets.append({
+                    "id": t["id"],
+                    "title": t["title"],
+                    "status": t["status"],
+                    "priority": dict(t).get("priority", "normal"),
+                    "role": "Ответственный" if t["role"] == "assignee" else "Соисполнитель" if t["role"] == "executor" else "Участник"
+                })
+        func_codes = team_management.function_codes(conn, sid)
+        func_names = [r[0] for r in conn.execute("SELECT f.name FROM staff_functions sf JOIN team_functions f ON f.code=sf.function_code WHERE sf.user_id=? ORDER BY f.name", (sid,))]
+        resp_list = list(staff_responsibilities.get(sid, []))
+        resp_names = [team_management.DEFAULT_FUNCTIONS.get(r, (r, ""))[0] if r in team_management.DEFAULT_FUNCTIONS else r for r in resp_list]
+        specialists.append({
+            "id": sid,
+            "name": person["name"],
+            "email": person["email"],
+            "job_title": profile["job_title"] if profile and profile["job_title"] else ("Специалист поддержки" if "support" in func_codes else "Специалист"),
+            "bio": profile["bio"] if profile and profile["bio"] else "",
+            "avatar_url": avatar_url,
+            "functions": func_codes,
+            "function_names": func_names,
+            "responsibilities": resp_list,
+            "responsibility_names": resp_names,
+            "tickets": staff_tickets,
+            "active_tickets_count": len([t for t in staff_tickets if t["status"] not in ("closed", "done")])
+        })
+    specialists.sort(key=lambda s: (-s["active_tickets_count"], s["name"]))
+    return specialists
+
+
 def customer_record(conn, row, viewer):
-    """Expose service identities to customers; retain staff attribution internally."""
+    """Expose service identities and involved staff to customers; retain staff attribution."""
     item = dict(row)
     if viewer["role"] != "customer":
         return item
-    for key in ("assignee_id", "assignee_name", "assignee_profile", "participants"):
+    for key in ("performer_effort_minutes", "pm_effort_minutes", "proposed_effort_minutes", "contractor_total_minutes"):
         item.pop(key, None)
-    for prefix in ("author", "actor", "created_by"):
-        identity = item.get(f"{prefix}_id")
-        person = conn.execute("SELECT role FROM users WHERE id=?", (identity,)).fetchone() if identity else None
-        if person and person["role"] != "customer":
-            item.pop(f"{prefix}_id", None)
-            if f"{prefix}_name" in item:
-                item[f"{prefix}_name"] = SUPPORT_NAME
+    if item.get("assignee_id") and not item.get("assignee_profile"):
+        item["assignee_profile"] = staff_public_profile(conn, item["assignee_id"])
     return item
 
 
 def message_dict(row, viewer=None):
     item = dict(row)
-    if viewer is not None and viewer["role"] == "customer":
-        if item.get("author_role") != "customer":
-            item["author_name"] = SUPPORT_NAME
-            item.pop("author_id", None)
-            item["author_role"] = "support"
-        if item.get("reply_author_role") and item["reply_author_role"] != "customer":
-            item["reply_author_name"] = SUPPORT_NAME
-            item["reply_author_role"] = "support"
     if item.get("reply_body") and len(item["reply_body"]) > 240:
         item["reply_body"] = item["reply_body"][:240].rstrip() + "…"
     return item
@@ -829,6 +1085,23 @@ def available_owners(conn, organization_id, exclude_id=0):
         (organization_id, exclude_id, now())).fetchall()
 
 
+def get_customer_rate(conn, ticket):
+    rate_rub = 3000
+    if not ticket:
+        return rate_rub
+    org_id = ticket["organization_id"] if "organization_id" in ticket.keys() else None
+    cust_id = ticket["customer_id"] if "customer_id" in ticket.keys() else None
+    if org_id:
+        org_row = conn.execute("SELECT hourly_rate_rub FROM organizations WHERE id=?", (org_id,)).fetchone()
+        if org_row and org_row["hourly_rate_rub"]:
+            return org_row["hourly_rate_rub"]
+    if cust_id:
+        p_row = conn.execute("SELECT hourly_rate_rub FROM customer_profiles WHERE user_id=?", (cust_id,)).fetchone()
+        if p_row and p_row["hourly_rate_rub"]:
+            return p_row["hourly_rate_rub"]
+    return rate_rub
+
+
 def customer_next_step(ticket, estimate, conn=None, user=None):
     if conn is not None and user is not None:
         can_decide = customer_can_decide(conn, ticket, user)
@@ -849,32 +1122,40 @@ def customer_next_step(ticket, estimate, conn=None, user=None):
         return "Нужен ваш ответ"
     if ticket["status"] == "working":
         if isinstance(ticket, dict) and ticket.get("pending_hour_request"):
-            return "Согласуйте дополнительные часы"
+            return "Согласуйте дополнительную стоимость"
         return "Работа идёт"
     if not ticket["assignee_id"]:
         return "Ожидает обработки"
-    if not estimate or estimate["effort_minutes"] is None:
+    est = dict(estimate) if estimate else {}
+    if not estimate or est.get("state") == "pending_pm" or (est.get("effort_minutes") is None and not est.get("amount_rub")):
         return "Готовим оценку"
     return {
         "pending": "Одобрите оценку трудозатрат",
         "approved": "Работа согласована и скоро начнётся",
         "rejected": "Ожидаем новую оценку",
         "revision_requested": "Пересчитываем трудозатраты",
-    }.get(estimate["state"], "Готовим оценку")
+        "pm_revision_requested": "Готовим оценку",
+    }.get(est.get("state"), "Готовим оценку")
 
 
-def auto_approve_estimate(conn, ticket_id, customer_id, estimate_id, effort_minutes):
+def auto_approve_estimate(conn, ticket_id, customer_id, estimate_id, amount_rub_or_minutes):
     """Оценку в пределах лимита заказчика одобряем сразу — его не дёргаем по мелким задачам."""
     ticket = conn.execute("SELECT * FROM tickets WHERE id=?", (ticket_id,)).fetchone()
     customer = conn.execute("SELECT * FROM users WHERE id=?", (customer_id,)).fetchone()
     if not customer or not customer_can_decide(conn, ticket, customer):
         return False
     row = conn.execute("SELECT auto_approve_minutes FROM customer_profiles WHERE user_id=?", (customer_id,)).fetchone()
-    if not row or not row["auto_approve_minutes"] or effort_minutes > row["auto_approve_minutes"]:
+    if not row or not row["auto_approve_minutes"]:
+        return False
+    rate = get_customer_rate(conn, ticket)
+    auto_limit_rub = round(row["auto_approve_minutes"] / 60.0 * rate)
+    if amount_rub_or_minutes > auto_limit_rub and amount_rub_or_minutes > row["auto_approve_minutes"]:
         return False
     stamp = now()
     conn.execute("UPDATE estimates SET state='approved',customer_comment=?,decided_at=? WHERE id=?",
                  (f"Одобрено автоматически: в пределах лимита {fmt_hours(row['auto_approve_minutes'])}", stamp, estimate_id))
+    if ticket["status"] in ("new", "waiting"):
+        conn.execute("UPDATE tickets SET status='working', updated_at=? WHERE id=?", (stamp, ticket_id))
     dispatch_webhooks("estimate.decided", {"event": "estimate.decided", "ticket_id": ticket_id, "action": "approve",
                                            "new_state": "approved", "auto": True, "timestamp": stamp})
     return True
@@ -1009,10 +1290,15 @@ class TicketCreate(BaseModel):
     assignee_id: int | None = None
     visibility: Literal["private", "organization"] = "private"
     service_type: str = Field(default="other", max_length=87, pattern=r"^(development|new_development|integration|support|maintenance|consultation|other|custom:\S[^\r\n]{0,79})$")
+    priority: Literal["low", "normal", "high", "urgent"] = "normal"
     # Сотрудник может сразу приложить оценку: заказчику останется только согласовать её.
     effort_minutes: int | None = Field(default=None, ge=1, le=100_000)
     assessment_minutes: int | None = Field(default=None, ge=1, le=100_000)
     estimate_note: str = Field(default="", max_length=3000)
+
+
+class PriorityChange(BaseModel):
+    priority: Literal["low", "normal", "high", "urgent"]
 
 
 class TicketDecline(BaseModel):
@@ -1055,10 +1341,30 @@ class StatusChange(BaseModel):
     status: Literal["new", "working", "waiting", "done", "closed"]
 
 
+class BulkTicketAction(BaseModel):
+    ticket_ids: list[int]
+    action: Literal["assignee", "status", "priority", "close"]
+    assignee_id: int | None = None
+    status: Literal["new", "working", "waiting", "closed"] | None = None
+    priority: Literal["low", "normal", "high", "urgent"] | None = None
+
+
 class EstimateCreate(BaseModel):
     effort_minutes: int = Field(ge=1, le=100_000)
     assessment_minutes: int = Field(ge=1, le=100_000)
     note: str = Field(default="", max_length=3000)
+    pm_effort_minutes: int | None = Field(default=None, ge=0, le=100_000)
+    custom_amount_rub: int | None = Field(default=None, ge=0, le=100_000_000)
+    client_note: str = Field(default="", max_length=3000)
+    send_to_customer: bool | None = None
+
+
+class EstimatePmReview(BaseModel):
+    action: Literal["send_to_customer", "reject_to_performer"] = "send_to_customer"
+    pm_effort_minutes: int = Field(default=0, ge=0, le=100_000)
+    custom_amount_rub: int | None = Field(default=None, ge=0, le=100_000_000)
+    client_note: str = Field(default="", max_length=3000)
+    comment: str = Field(default="", max_length=3000)
 
 
 class EstimateDecision(BaseModel):
@@ -1066,6 +1372,7 @@ class EstimateDecision(BaseModel):
     action: Literal["approve", "reject", "request_revision"]
     comment: str = Field(default="", max_length=3000)
     proposed_effort_minutes: int | None = Field(default=None, ge=1, le=100_000)
+    proposed_amount_rub: int | None = Field(default=None, ge=0, le=100_000_000)
 
 
 class ChatTicketCreate(BaseModel):
@@ -1109,6 +1416,17 @@ class HourRequestCreate(BaseModel):
     minutes: int = Field(ge=1, le=100_000)
     reason: str = Field(min_length=3, max_length=2000)
     request_id: str | None = Field(default=None, min_length=8, max_length=100)
+
+
+class HourRequestPmDecision(BaseModel):
+    action: Literal["approve", "reject"] = "approve"
+    approved_performer_minutes: int | None = Field(default=None, ge=0, le=100_000)
+    pm_approved_minutes: int | None = Field(default=None, ge=0, le=100_000)
+    bill_customer: bool = False
+    customer_minutes: int = Field(default=0, ge=0, le=100_000)
+    custom_amount_rub: int | None = Field(default=None, ge=0, le=100_000_000)
+    client_explanation: str = Field(default="", max_length=3000)
+    comment: str = Field(default="", max_length=3000)
 
 
 class HourRequestDecision(BaseModel):
@@ -1596,7 +1914,8 @@ def staff_profile(conn, user):
 
 def visible_staff(conn, staff_id, viewer):
     if viewer["role"] == "customer":
-        raise HTTPException(404, "Сотрудник не найден")
+        if not staff_is_involved_with_customer(conn, staff_id, viewer["id"]):
+            raise HTTPException(404, "Сотрудник не найден")
     person = conn.execute("SELECT * FROM users WHERE id=? AND role IN ('employee','admin') AND active=1", (staff_id,)).fetchone()
     if not person:
         raise HTTPException(404, "Сотрудник не найден")
@@ -2246,13 +2565,21 @@ def tickets(desk_session: str | None = Cookie(default=None)):
         for row in rows:
             item = ticket_dict(row)
             estimate = latest_estimate(conn, row["id"])
+            if user["role"] == "customer" and estimate and estimate["state"] == "pending_pm":
+                estimate = None
             item["estimate_state"] = estimate["state"] if estimate else None
+            item["estimate_amount_rub"] = estimate["amount_rub"] if estimate else None
+            rate_rub = get_customer_rate(conn, item)
+            app_mins = approved_minutes(conn, row["id"])
+            item["cost_rub"] = round(app_mins / 60.0 * rate_rub)
             item["effort_minutes"] = estimate["effort_minutes"] if estimate else None
-            item["approved_minutes"] = approved_minutes(conn, row["id"])
+            item["approved_minutes"] = app_mins
             item["actual_minutes"] = actual_minutes(conn, row["id"])
             if user["role"] != "customer":
                 item.update(contractor_time_summary(conn, row["id"], item["actual_minutes"]))
-            item["pending_hour_request"] = bool(conn.execute("SELECT 1 FROM hour_requests WHERE ticket_id=? AND state='pending'", (row["id"],)).fetchone())
+            item["pending_hour_request"] = bool(conn.execute(
+                f"SELECT 1 FROM hour_requests WHERE ticket_id=? AND state='{'pending' if user['role']=='customer' else 'pending_pm'}'",
+                (row["id"],)).fetchone())
             item["has_available_owner"] = bool(available_owners(conn, row["organization_id"])) if row["organization_id"] else None
             if user["role"] == "customer":
                 item["next_step"] = customer_next_step(item, estimate, conn, user)
@@ -2268,7 +2595,7 @@ def work_queue(desk_session: str | None = Cookie(default=None)):
     require_staff(user)
     with db() as conn:
         ticket_rows = conn.execute("""SELECT t.id,t.title,t.status,t.customer_id,t.assignee_id,t.updated_at,
-            t.response_due_at,t.estimate_due_at,t.delivery_due_at,t.first_staff_response_at,
+            t.response_due_at,t.estimate_due_at,t.delivery_due_at,t.first_staff_response_at,t.priority,
             c.name AS customer_name,a.name AS assignee_name,
             (SELECT author_id FROM messages WHERE ticket_id=t.id ORDER BY id DESC LIMIT 1) AS last_author_id,
             (SELECT state FROM estimates WHERE ticket_id=t.id ORDER BY version DESC LIMIT 1) AS estimate_state,
@@ -2325,6 +2652,7 @@ def work_queue(desk_session: str | None = Cookie(default=None)):
                       "customer_name":row["customer_name"], "assignee_name":row["assignee_name"],
                       "assignee_id":row["assignee_id"],
                       "updated_at":row["updated_at"], "next_action":action, "priority":priority,
+                      "ticket_priority": row["priority"] if "priority" in row.keys() else "normal",
                       "deadline":deadline, "overdue":overdue})
     for row in chat_rows:
         if row["assignee_id"] is None:
@@ -2336,8 +2664,10 @@ def work_queue(desk_session: str | None = Cookie(default=None)):
         items.append({"source":"chat", "id":row["id"], "title":"Общий чат",
                       "customer_name":row["customer_name"], "assignee_name":row["assignee_name"],
                       "assignee_id":row["assignee_id"],
-                      "updated_at":row["updated_at"], "next_action":action, "priority":priority})
-    return sorted(items, key=lambda item: (item["priority"], -datetime.fromisoformat(item["updated_at"]).timestamp()))
+                      "updated_at":row["updated_at"], "next_action":action, "priority":priority,
+                      "ticket_priority": "normal"})
+    p_weight = {"urgent": 0, "high": 1, "normal": 2, "low": 3}
+    return sorted(items, key=lambda item: (item["priority"], p_weight.get(item.get("ticket_priority", "normal"), 2), -datetime.fromisoformat(item["updated_at"]).timestamp()))
 
 
 @app.post("/api/tickets", status_code=201)
@@ -2388,13 +2718,15 @@ def add_ticket_service(conn, user, data: TicketCreate):
     if data.visibility == "organization" and user["role"] == "customer" and organization["role"] == "viewer":
         raise HTTPException(403, "Наблюдатель не может создавать общие заявки")
     stamp = now()
-    response_due = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
-    estimate_due = (datetime.now(timezone.utc) + timedelta(days=3)).isoformat()
+    sla_hours = {"urgent": (2, 12), "high": (4, 24), "normal": (24, 72), "low": (48, 120)}
+    resp_h, est_h = sla_hours.get(data.priority, (24, 72))
+    response_due = (datetime.now(timezone.utc) + timedelta(hours=resp_h)).isoformat()
+    estimate_due = (datetime.now(timezone.utc) + timedelta(hours=est_h)).isoformat()
     cursor = conn.execute("""INSERT INTO tickets(customer_id,assignee_id,created_by_id,title,description,status,
-        created_at,updated_at,organization_id,visibility,response_due_at,estimate_due_at,service_type)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        created_at,updated_at,organization_id,visibility,response_due_at,estimate_due_at,service_type,priority)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (customer_id, assignee_id, user["id"], data.title.strip(), data.description.strip(), "new", stamp, stamp,
-         organization["id"] if organization else None, data.visibility, response_due, estimate_due, data.service_type))
+         organization["id"] if organization else None, data.visibility, response_due, estimate_due, data.service_type, data.priority))
     if user["role"] != "customer":
         conn.execute("UPDATE tickets SET first_staff_response_at=? WHERE id=?", (stamp, cursor.lastrowid))
     auto_approved = False
@@ -2488,33 +2820,44 @@ def get_ticket(ticket_id: int, desk_session: str | None = Cookie(default=None)):
             except HTTPException:
                 linked = None
         item = ticket_dict(ticket)
+        participants_rows = conn.execute("""
+            SELECT p.user_id, p.participation, u.name, sp.job_title, sp.avatar_updated_at
+            FROM ticket_participants p
+            JOIN users u ON u.id = p.user_id
+            LEFT JOIN staff_profiles sp ON sp.user_id = p.user_id
+            WHERE p.ticket_id = ?
+        """, (ticket_id,)).fetchall()
+        item["participants"] = [{
+            "user_id": r["user_id"],
+            "name": r["name"],
+            "participation": r["participation"],
+            "job_title": r["job_title"] or "Специалист",
+            "avatar_url": f"/api/staff/{r['user_id']}/avatar?v={r['avatar_updated_at']}" if r["avatar_updated_at"] else None
+        } for r in participants_rows]
+        if ticket["assignee_id"]:
+            item["assignee_profile"] = staff_public_profile(conn, ticket["assignee_id"])
         if user["role"] != "customer":
             membership = team_management.ticket_participation(conn, ticket_id, user["id"])
             item["participation"] = membership
             item["can_write"] = (user["role"] == "admin" or bool(user["is_manager"]) or ticket["assignee_id"] == user["id"]
                                  or (membership == "executor" and team_management.has_permission(conn, user, "tasks")))
-            item["participants"] = [dict(r) for r in conn.execute("SELECT p.user_id,p.participation,u.name FROM ticket_participants p JOIN users u ON u.id=p.user_id WHERE p.ticket_id=?", (ticket_id,))]
-        item["estimate_state"] = estimates[0]["state"] if estimates else None
-        item["effort_minutes"] = estimates[0]["effort_minutes"] if estimates else None
+        active_estimates = [e for e in estimates if user["role"] != "customer" or e["state"] != "pending_pm"]
+        latest_est = active_estimates[0] if active_estimates else None
+        item["estimate_state"] = latest_est["state"] if latest_est else None
+        item["estimate_amount_rub"] = latest_est["amount_rub"] if latest_est else None
+        item["effort_minutes"] = latest_est["effort_minutes"] if latest_est else None
         item["approved_minutes"] = approved_minutes(conn, ticket_id)
         item["actual_minutes"] = actual_minutes(conn, ticket_id)
         if user["role"] != "customer":
             item.update(contractor_time_summary(conn, ticket_id, item["actual_minutes"]))
-        item["pending_hour_request"] = bool(conn.execute("SELECT 1 FROM hour_requests WHERE ticket_id=? AND state='pending'", (ticket_id,)).fetchone())
+        
+        item["pending_hour_request"] = bool(conn.execute(
+            f"SELECT 1 FROM hour_requests WHERE ticket_id=? AND state='{'pending' if user['role']=='customer' else 'pending_pm'}'",
+            (ticket_id,)).fetchone())
 
-        client_org = customer_organization(conn, ticket["customer_id"])
-        rate_rub = 3000
-        if client_org:
-            org_row = conn.execute("SELECT hourly_rate_rub FROM organizations WHERE id=?", (client_org["id"],)).fetchone()
-            if org_row and org_row["hourly_rate_rub"]:
-                rate_rub = org_row["hourly_rate_rub"]
-        else:
-            p_row = conn.execute("SELECT hourly_rate_rub FROM customer_profiles WHERE user_id=?", (ticket["customer_id"],)).fetchone()
-            if p_row and p_row["hourly_rate_rub"]:
-                rate_rub = p_row["hourly_rate_rub"]
-
+        rate_rub = get_customer_rate(conn, ticket)
         item["hourly_rate_rub"] = rate_rub
-        item["cost_rub"] = round(item["approved_minutes"] / 60.0 * rate_rub)
+        item["cost_rub"] = round(approved_minutes(conn, ticket_id) / 60.0 * rate_rub)
         act_info = None
         if "act_invoice_id" in ticket.keys() and ticket["act_invoice_id"]:
             act_row = conn.execute("SELECT id, number, status, created_at FROM invoices WHERE id=?", (ticket["act_invoice_id"],)).fetchone()
@@ -2524,8 +2867,8 @@ def get_ticket(ticket_id: int, desk_session: str | None = Cookie(default=None)):
         item["has_available_owner"] = bool(available_owners(conn, ticket["organization_id"])) if ticket["organization_id"] else None
 
         if user["role"] == "customer":
-            item["pending_hour_request"] = bool(conn.execute("SELECT 1 FROM hour_requests WHERE ticket_id=? AND state='pending'", (ticket_id,)).fetchone())
-            item["next_step"] = customer_next_step(item, estimates[0] if estimates else None, conn, user)
+            item["pending_hour_request"] = bool(conn.execute("SELECT 1 FROM hour_requests WHERE ticket_id=? AND state='pending' AND bill_customer=1", (ticket_id,)).fetchone())
+            item["next_step"] = customer_next_step(item, latest_est, conn, user)
         time_rows = conn.execute("""SELECT w.*,u.name AS author_name FROM time_entries w JOIN users u ON u.id=w.author_id
             WHERE w.ticket_id=? ORDER BY w.id DESC""", (ticket_id,)).fetchall()
         hour_rows = conn.execute("""SELECT h.*,u.name AS author_name FROM hour_requests h JOIN users u ON u.id=h.author_id
@@ -2548,13 +2891,24 @@ def get_ticket(ticket_id: int, desk_session: str | None = Cookie(default=None)):
             item["can_write"] = customer_can_write_ticket(conn, ticket, user)
             item["can_decline"] = customer_can_decline(conn, ticket, user)
         reads = read_state(conn, "ticket", ticket_id)
+
+        formatted_estimates = []
+        for x in active_estimates:
+            rec = customer_record(conn, x, user)
+            if user["role"] == "customer" and rec.get("client_note"):
+                rec["note"] = rec["client_note"]
+            formatted_estimates.append(rec)
+
         return {"ticket": customer_record(conn, item, user), "messages": [message_dict(x, user) for x in messages],
             "meeting_summaries": [customer_record(conn, x, user) for x in summaries], "read_state": reads,
             "service_entries": [dict(x) for x in service_rows],
-            "events": [customer_record(conn, x, user) for x in events if user["role"] != "customer" or x["kind"] != "assignment"], "estimates": [customer_record(conn, x, user) for x in estimates],
+            "events": [customer_record(conn, x, user) for x in events], "estimates": formatted_estimates,
             "linked_chat": dict(linked) if linked else None,
-            "time_entries": [customer_record(conn, x, user) for x in time_rows], "hour_requests": [customer_record(conn, x, user) for x in hour_rows],
-            "attachments": [customer_record(conn, x, user) for x in file_rows]}
+            "time_entries": [customer_record(conn, x, user) for x in time_rows],
+            "hour_requests": [customer_record(conn, x, user) for x in hour_rows],
+            "attachments": [customer_record(conn, x, user) for x in file_rows],
+            "participants": item.get("participants", []),
+            "assignee_profile": item.get("assignee_profile")}
 
 
 @app.post("/api/tickets/{ticket_id}/estimates", status_code=201)
@@ -2563,31 +2917,114 @@ def create_estimate(ticket_id: int, data: EstimateCreate, desk_session: str | No
     require_staff(user)
     with db() as conn:
         ticket = ticket_for(conn, ticket_id, user)
-        if ticket["assignee_id"] != user["id"]:
-            raise HTTPException(403, "Оценку создаёт ответственный сотрудник")
+        is_dispatcher = (user["role"] == "admin" or bool(dict(user).get("is_manager")))
+        if ticket["assignee_id"] != user["id"] and not is_dispatcher:
+            raise HTTPException(403, "Оценку создаёт ответственный сотрудник или менеджер")
         if ticket["status"] == "closed":
             raise HTTPException(409, "Заявка закрыта")
         previous = latest_estimate(conn, ticket_id)
-        if previous and previous["effort_minutes"] is not None and previous["state"] in ("pending", "approved"):
+        if previous and previous["effort_minutes"] is not None and previous["state"] in ("pending_pm", "pending", "approved"):
             raise HTTPException(409, "Предыдущая оценка ожидает решения или уже одобрена")
         version = previous["version"] + 1 if previous else 1
         stamp = now()
         if previous and previous["effort_minutes"] is None:
             conn.execute("UPDATE estimates SET state='superseded' WHERE id=?", (previous["id"],))
-        cursor = conn.execute("""INSERT INTO estimates(ticket_id,author_id,version,amount_minor,
-            assessment_minutes,note,state,created_at,effort_minutes) VALUES(?,?,?,?,?,?,?,?,?)""",
-            (ticket_id, user["id"], version, 0, data.assessment_minutes,
-             data.note.strip(), "pending", stamp, data.effort_minutes))
+
+        rate_rub = get_customer_rate(conn, ticket)
+        pm_mins = data.pm_effort_minutes or 0
+        total_billable = data.effort_minutes + pm_mins
+        if data.custom_amount_rub is not None:
+            amount_rub = data.custom_amount_rub
+        else:
+            amount_rub = round(total_billable / 60.0 * rate_rub)
+
+        should_send = is_dispatcher and (data.send_to_customer is not False)
+        state = "pending" if should_send else "pending_pm"
+        client_note = data.client_note.strip() if data.client_note else ""
+
+        cursor = conn.execute("""INSERT INTO estimates(
+            ticket_id, author_id, version, amount_minor, assessment_minutes, note, state,
+            created_at, effort_minutes, performer_effort_minutes, pm_effort_minutes,
+            total_billable_minutes, hourly_rate_rub, amount_rub, client_note,
+            pm_reviewed_by, pm_reviewed_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (ticket_id, user["id"], version, amount_rub * 100, data.assessment_minutes,
+         data.note.strip(), state, stamp, data.effort_minutes,
+         data.effort_minutes, pm_mins, total_billable,
+         rate_rub, amount_rub, client_note,
+         user["id"] if should_send else None, stamp if should_send else None))
+
+        estimate_id = cursor.lastrowid
         conn.execute("UPDATE tickets SET updated_at=? WHERE id=?", (stamp, ticket_id))
         if ticket["first_staff_response_at"] is None:
             conn.execute("UPDATE tickets SET first_staff_response_at=? WHERE id=?", (stamp, ticket_id))
-        if auto_approve_estimate(conn, ticket_id, ticket["customer_id"], cursor.lastrowid, data.effort_minutes):
-            text = f"Оценка заявки №{ticket_id} ({fmt_hours(data.effort_minutes)}) одобрена автоматически по вашему лимиту"
+
+        if should_send:
+            if auto_approve_estimate(conn, ticket_id, ticket["customer_id"], estimate_id, amount_rub):
+                text = f"Оценка стоимости заявки №{ticket_id} ({amount_rub:,} ₽) одобрена автоматически по вашему лимиту".replace(",", " ")
+            else:
+                text = f"Оценка стоимости заявки №{ticket_id} ({amount_rub:,} ₽) готова к рассмотрению".replace(",", " ")
+            for recipient in customer_recipients(conn, ticket):
+                notify(conn, recipient, ticket_id, "estimate", text)
         else:
-            text = f"Оценка заявки №{ticket_id} готова к рассмотрению"
+            dispatchers = conn.execute("SELECT id FROM users WHERE (role='admin' OR is_manager=1) AND active=1").fetchall()
+            for d in dispatchers:
+                notify(conn, d["id"], ticket_id, "estimate_pm",
+                       f"Оценка по заявке №{ticket_id} ({fmt_hours(data.effort_minutes)}) ожидает проверки PM")
+
+        return dict(conn.execute("SELECT * FROM estimates WHERE id=?", (estimate_id,)).fetchone())
+
+
+@app.post("/api/tickets/{ticket_id}/estimates/{estimate_id}/pm-review")
+def pm_review_estimate(ticket_id: int, estimate_id: int, data: EstimatePmReview, desk_session: str | None = Cookie(default=None)):
+    user = current_user(desk_session)
+    require_dispatcher(user)
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        ticket = ticket_for(conn, ticket_id, user)
+        if ticket["status"] == "closed":
+            raise HTTPException(409, "Заявка закрыта")
+        estimate = conn.execute("SELECT * FROM estimates WHERE id=? AND ticket_id=?", (estimate_id, ticket_id)).fetchone()
+        if not estimate or estimate["state"] != "pending_pm":
+            raise HTTPException(409, "Оценка не ожидает проверки PM")
+
+        stamp = now()
+        if data.action == "reject_to_performer":
+            conn.execute("UPDATE estimates SET state='pm_revision_requested',customer_comment=?,decided_at=? WHERE id=?",
+                         (data.comment.strip() or "Требуется пересмотр оценки", stamp, estimate_id))
+            conn.execute("UPDATE tickets SET updated_at=? WHERE id=?", (stamp, ticket_id))
+            if ticket["assignee_id"]:
+                notify(conn, ticket["assignee_id"], ticket_id, "estimate_pm_revision",
+                       f"PM запросил пересмотр оценки заявки №{ticket_id}: {data.comment.strip()}")
+            return dict(conn.execute("SELECT * FROM estimates WHERE id=?", (estimate_id,)).fetchone())
+
+        rate_rub = get_customer_rate(conn, ticket)
+        performer_mins = estimate["performer_effort_minutes"] or estimate["effort_minutes"] or 0
+        pm_mins = data.pm_effort_minutes
+        total_billable = performer_mins + pm_mins
+        if data.custom_amount_rub is not None:
+            amount_rub = data.custom_amount_rub
+        else:
+            amount_rub = round(total_billable / 60.0 * rate_rub)
+        client_note = data.client_note.strip() if data.client_note else estimate["client_note"]
+
+        conn.execute("""UPDATE estimates SET
+            pm_effort_minutes=?, total_billable_minutes=?, hourly_rate_rub=?,
+            amount_rub=?, amount_minor=?, client_note=?, state='pending',
+            pm_reviewed_by=?, pm_reviewed_at=?
+            WHERE id=?""",
+            (pm_mins, total_billable, rate_rub, amount_rub, amount_rub * 100,
+             client_note, user["id"], stamp, estimate_id))
+        conn.execute("UPDATE tickets SET updated_at=? WHERE id=?", (stamp, ticket_id))
+
+        if auto_approve_estimate(conn, ticket_id, ticket["customer_id"], estimate_id, amount_rub):
+            text = f"Оценка стоимости заявки №{ticket_id} ({amount_rub:,} ₽) одобрена автоматически по вашему лимиту".replace(",", " ")
+        else:
+            text = f"Оценка стоимости заявки №{ticket_id} ({amount_rub:,} ₽) готова к рассмотрению".replace(",", " ")
         for recipient in customer_recipients(conn, ticket):
             notify(conn, recipient, ticket_id, "estimate", text)
-        return dict(conn.execute("SELECT * FROM estimates WHERE id=?", (cursor.lastrowid,)).fetchone())
+
+        return dict(conn.execute("SELECT * FROM estimates WHERE id=?", (estimate_id,)).fetchone())
 
 
 @app.post("/api/tickets/{ticket_id}/estimates/decision")
@@ -2601,8 +3038,8 @@ def decide_estimate(ticket_id: int, data: EstimateDecision, desk_session: str | 
 def decide_estimate_service(conn, user, ticket_id: int, data: EstimateDecision):
     if user["role"] != "customer":
         raise HTTPException(403, "Решение принимает заказчик")
-    if data.action == "request_revision" and not data.comment.strip() and data.proposed_effort_minutes is None:
-        raise HTTPException(422, "Укажите желаемые трудозатраты или комментарий")
+    if data.action == "request_revision" and not data.comment.strip() and data.proposed_effort_minutes is None and data.proposed_amount_rub is None:
+        raise HTTPException(422, "Укажите ваши пожелания или комментарий")
     ticket = ticket_for(conn, ticket_id, user)
     if not customer_can_decide(conn, ticket, user):
         raise HTTPException(403, "Личную заявку согласует автор, общую — владелец компании")
@@ -2613,19 +3050,41 @@ def decide_estimate_service(conn, user, ticket_id: int, data: EstimateDecision):
         raise HTTPException(409, "Оценка уже изменена или рассмотрена")
     new_state = {"approve": "approved", "reject": "rejected", "request_revision": "revision_requested"}[data.action]
     stamp = now()
-    conn.execute("""UPDATE estimates SET state=?,customer_comment=?,proposed_effort_minutes=?,decided_at=? WHERE id=?""",
+
+    prop_amount = data.proposed_amount_rub
+    if prop_amount is None and data.proposed_effort_minutes is not None:
+        rate = dict(estimate).get("hourly_rate_rub") or get_customer_rate(conn, ticket)
+        prop_amount = round(data.proposed_effort_minutes / 60.0 * rate)
+
+    conn.execute("""UPDATE estimates SET state=?,customer_comment=?,proposed_effort_minutes=?,proposed_amount_rub=?,decided_at=? WHERE id=?""",
                  (new_state, data.comment.strip() or None,
-                  data.proposed_effort_minutes if data.action == "request_revision" else None, stamp, estimate["id"]))
-    conn.execute("UPDATE tickets SET updated_at=? WHERE id=?", (stamp, ticket_id))
-    decision_text = {"approved":"одобрил", "rejected":"отклонил", "revision_requested":"запросил корректировку"}[new_state]
-    notify(conn, ticket["assignee_id"], ticket_id, "estimate_decision",
-           f"Заказчик {decision_text} оценку заявки №{ticket_id}")
+                  data.proposed_effort_minutes if data.action == "request_revision" else None,
+                  prop_amount if data.action == "request_revision" else None,
+                  stamp, estimate["id"]))
+    if data.action == "approve" and ticket["status"] in ("new", "waiting"):
+        conn.execute("UPDATE tickets SET status='working', updated_at=? WHERE id=?", (stamp, ticket_id))
+        conn.execute("INSERT INTO ticket_events(ticket_id,actor_id,kind,old_value,new_value,created_at) VALUES(?,?,?,?,?,?)",
+                     (ticket_id, user["id"], "status", ticket["status"], "working", stamp))
+    else:
+        conn.execute("UPDATE tickets SET updated_at=? WHERE id=?", (stamp, ticket_id))
+
+    amount_str = f" ({estimate['amount_rub']:,} ₽)".replace(",", " ") if dict(estimate).get("amount_rub") else ""
+    decision_text = {"approved": f"согласовал стоимость{amount_str}", "rejected": "отклонил оценку", "revision_requested": "запросил корректировку"}[new_state]
+    if ticket["assignee_id"]:
+        notify(conn, ticket["assignee_id"], ticket_id, "estimate_decision",
+               f"Заказчик {decision_text} по заявке №{ticket_id}")
+    for d in conn.execute("SELECT id FROM users WHERE (role='admin' OR is_manager=1) AND id!=?",
+                          (ticket["assignee_id"] or 0,)).fetchall():
+        notify(conn, d["id"], ticket_id, "estimate_decision",
+               f"Заказчик {decision_text} по заявке №{ticket_id}")
+
     res = dict(conn.execute("SELECT * FROM estimates WHERE id=?", (estimate["id"],)).fetchone())
     dispatch_webhooks("estimate.decided", {
         "event": "estimate.decided",
         "ticket_id": ticket_id,
         "action": data.action,
         "new_state": new_state,
+        "amount_rub": dict(estimate).get("amount_rub"),
         "timestamp": stamp
     })
     return res
@@ -2747,6 +3206,91 @@ def assign(ticket_id: int, data: Assignment, desk_session: str | None = Cookie(d
         return customer_record(conn, ticket_for(conn, ticket_id, user), user)
 
 
+@app.patch("/api/tickets/{ticket_id}/priority")
+def change_priority(ticket_id: int, data: PriorityChange, desk_session: str | None = Cookie(default=None)):
+    user = current_user(desk_session)
+    require_staff(user)
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        ticket = ticket_for(conn, ticket_id, user)
+        if ticket["status"] == "closed":
+            raise HTTPException(409, "Заявка закрыта")
+        old_priority = dict(ticket).get("priority") or "normal"
+        if old_priority != data.priority:
+            stamp = now()
+            conn.execute("UPDATE tickets SET priority=?,updated_at=? WHERE id=?", (data.priority, stamp, ticket_id))
+            conn.execute("INSERT INTO ticket_events(ticket_id,actor_id,kind,old_value,new_value,created_at) VALUES(?,?,?,?,?,?)",
+                         (ticket_id, user["id"], "priority", old_priority, data.priority, stamp))
+            if ticket["first_staff_response_at"] is None:
+                created = datetime.fromisoformat(ticket["created_at"])
+                sla_hours = {"urgent": (2, 12), "high": (4, 24), "normal": (24, 72), "low": (48, 120)}
+                resp_h, est_h = sla_hours.get(data.priority, (24, 72))
+                new_resp_due = (created + timedelta(hours=resp_h)).isoformat()
+                new_est_due = (created + timedelta(hours=est_h)).isoformat()
+                conn.execute("UPDATE tickets SET response_due_at=?, estimate_due_at=? WHERE id=?",
+                             (new_resp_due, new_est_due, ticket_id))
+            
+            p_names = {"low": "Низкий", "normal": "Обычный", "high": "Высокий", "urgent": "Критический"}
+            recipients = set(customer_recipients(conn, ticket)) | dispatcher_ids(conn)
+            if ticket["assignee_id"]:
+                recipients.add(ticket["assignee_id"])
+            for recipient in customer_recipients(conn, ticket):
+                notify(conn, recipient, ticket_id, "priority", f"Приоритет заявки №{ticket_id} изменён на «{p_names.get(data.priority, data.priority)}»")
+            realtime_bus.broadcast(recipients, {"type": "ticket_updated", "ticket_id": ticket_id})
+            dispatch_webhooks("ticket.priority_changed", {"event": "ticket.priority_changed", "ticket_id": ticket_id,
+                                                         "old_priority": old_priority, "new_priority": data.priority, "timestamp": stamp})
+        return customer_record(conn, ticket_for(conn, ticket_id, user), user)
+
+
+@app.get("/api/customer/specialists")
+def get_customer_specialists(desk_session: str | None = Cookie(default=None)):
+    user = current_user(desk_session)
+    with db() as conn:
+        return customer_specialists(conn, user)
+
+
+@app.post("/api/tickets/bulk")
+def bulk_tickets_action(data: BulkTicketAction, desk_session: str | None = Cookie(default=None)):
+    user = current_user(desk_session)
+    require_staff(user)
+    dispatcher = user["role"] == "admin" or bool(user.get("is_manager"))
+    updated = []
+    stamp = now()
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for tid in data.ticket_ids:
+            try:
+                ticket = ticket_for(conn, tid, user)
+                if ticket["status"] == "closed" and data.action != "status":
+                    continue
+                if data.action == "assignee":
+                    target_id = data.assignee_id
+                    if target_id is not None:
+                        target = conn.execute("SELECT id,role,active FROM users WHERE id=?", (target_id,)).fetchone()
+                        if not target or not target["active"] or target["role"] not in ("admin", "employee"):
+                            continue
+                    old_assignee = ticket["assignee_id"]
+                    conn.execute("UPDATE tickets SET assignee_id=?, updated_at=? WHERE id=?", (target_id, stamp, tid))
+                    conn.execute("INSERT INTO ticket_events(ticket_id,actor_id,kind,old_value,new_value,created_at) VALUES(?,?,?,?,?,?)",
+                                 (tid, user["id"], "assignment", str(old_assignee or ""), str(target_id or ""), stamp))
+                    updated.append(tid)
+                elif data.action == "status":
+                    if data.status and data.status in ("new", "working", "waiting", "closed"):
+                        if data.status == "closed" and not dispatcher:
+                            continue
+                        old_st = ticket["status"]
+                        conn.execute("UPDATE tickets SET status=?, updated_at=? WHERE id=?", (data.status, stamp, tid))
+                        conn.execute("INSERT INTO ticket_events(ticket_id,actor_id,kind,old_value,new_value,created_at) VALUES(?,?,?,?,?,?)",
+                                     (tid, user["id"], "status", old_st, data.status, stamp))
+                        updated.append(tid)
+                elif data.action == "priority":
+                    if data.priority in ("low", "normal", "high", "urgent"):
+                        conn.execute("UPDATE tickets SET priority=?, updated_at=? WHERE id=?", (data.priority, stamp, tid))
+                        updated.append(tid)
+            except Exception:
+                continue
+        return {"ok": True, "count": len(updated), "ticket_ids": updated, "updated": updated}
+
 @app.patch("/api/tickets/{ticket_id}/status")
 def change_status(ticket_id: int, data: StatusChange, desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
@@ -2768,7 +3312,7 @@ def change_status(ticket_id: int, data: StatusChange, desk_session: str | None =
             estimate = latest_estimate(conn, ticket_id)
             if not estimate or estimate["state"] != "approved" or estimate["effort_minutes"] is None:
                 raise HTTPException(409, "Для выполнения нужно одобрение оценки заказчиком")
-        if data.status in ("done", "closed") and conn.execute("SELECT 1 FROM hour_requests WHERE ticket_id=? AND state='pending'", (ticket_id,)).fetchone():
+        if data.status in ("done", "closed") and conn.execute("SELECT 1 FROM hour_requests WHERE ticket_id=? AND state IN ('pending', 'pending_pm')", (ticket_id,)).fetchone():
             raise HTTPException(409, "Дождитесь решения по дополнительным часам")
         if data.status in ("done", "closed") and not actual_minutes(conn, ticket_id):
             raise HTTPException(409, "Перед завершением внесите фактически потраченное время")
@@ -2934,7 +3478,8 @@ def request_hours(ticket_id: int, data: HourRequestCreate, desk_session: str | N
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         ticket = ticket_for(conn, ticket_id, user)
-        if ticket["assignee_id"] != user["id"]:
+        is_dispatcher = (user["role"] == "admin" or bool(dict(user).get("is_manager")))
+        if ticket["assignee_id"] != user["id"] and not is_dispatcher:
             raise HTTPException(403, "Дополнительные часы запрашивает ответственный")
         if data.request_id:
             existing = conn.execute("SELECT * FROM hour_requests WHERE ticket_id=? AND author_id=? AND request_id=?",
@@ -2945,15 +3490,88 @@ def request_hours(ticket_id: int, data: HourRequestCreate, desk_session: str | N
             raise HTTPException(409, "Работа ещё не согласована")
         if not data.reason.strip():
             raise HTTPException(422, "Объясните, зачем нужны дополнительные часы")
-        if conn.execute("SELECT 1 FROM hour_requests WHERE ticket_id=? AND state='pending'", (ticket_id,)).fetchone():
+        if conn.execute("SELECT 1 FROM hour_requests WHERE ticket_id=? AND state IN ('pending_pm', 'pending')", (ticket_id,)).fetchone():
             raise HTTPException(409, "Предыдущий запрос ещё рассматривается")
         stamp = now()
-        cursor = conn.execute("INSERT INTO hour_requests(ticket_id,author_id,minutes,reason,created_at,request_id) VALUES(?,?,?,?,?,?)",
-                              (ticket_id, user["id"], data.minutes, data.reason.strip(), stamp, data.request_id))
+        state = "pending" if is_dispatcher else "pending_pm"
+        rate_rub = get_customer_rate(conn, ticket)
+        amount_rub = round(data.minutes / 60.0 * rate_rub)
+        cursor = conn.execute("""INSERT INTO hour_requests(
+            ticket_id, author_id, minutes, reason, state, created_at, request_id,
+            pm_approved_minutes, bill_customer, customer_minutes, amount_rub
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+        (ticket_id, user["id"], data.minutes, data.reason.strip(), state, stamp, data.request_id,
+         data.minutes if is_dispatcher else 0, 1 if is_dispatcher else 0,
+         data.minutes if is_dispatcher else 0, amount_rub if is_dispatcher else 0))
         conn.execute("UPDATE tickets SET updated_at=? WHERE id=?", (stamp, ticket_id))
-        for recipient in customer_decision_recipients(conn, ticket):
-            notify(conn, recipient, ticket_id, "extra_hours", f"Согласуйте дополнительные часы по заявке №{ticket_id}")
+        if is_dispatcher:
+            for recipient in customer_decision_recipients(conn, ticket):
+                notify(conn, recipient, ticket_id, "extra_hours", f"Запрос на дополнительные часы ({amount_rub:,} ₽) по заявке №{ticket_id}".replace(",", " "))
+        else:
+            for d in conn.execute("SELECT id FROM users WHERE (role='admin' OR is_manager=1) AND active=1").fetchall():
+                notify(conn, d["id"], ticket_id, "extra_hours_pm",
+                       f"Запрос +{fmt_hours(data.minutes)} по заявке №{ticket_id} ожидает решения PM")
         return dict(conn.execute("SELECT * FROM hour_requests WHERE id=?", (cursor.lastrowid,)).fetchone())
+
+
+@app.post("/api/tickets/{ticket_id}/hour-requests/{request_id}/pm-decision")
+def pm_decide_hours(ticket_id: int, request_id: int, data: HourRequestPmDecision,
+                    desk_session: str | None = Cookie(default=None)):
+    user = current_user(desk_session)
+    require_dispatcher(user)
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        ticket = ticket_for(conn, ticket_id, user)
+        row = conn.execute("SELECT * FROM hour_requests WHERE id=? AND ticket_id=?", (request_id, ticket_id)).fetchone()
+        if not row or row["state"] != "pending_pm":
+            raise HTTPException(409, "Запрос не ожидает решения PM")
+
+        stamp = now()
+        if data.action == "reject":
+            conn.execute("UPDATE hour_requests SET state='rejected', pm_decided_by=?, pm_decided_at=? WHERE id=?",
+                         (user["id"], stamp, request_id))
+            conn.execute("UPDATE tickets SET updated_at=? WHERE id=?", (stamp, ticket_id))
+            notify(conn, row["author_id"], ticket_id, "extra_hours_decision",
+                   f"PM отклонил запрос дополнительных часов по заявке №{ticket_id}")
+            return dict(conn.execute("SELECT * FROM hour_requests WHERE id=?", (request_id,)).fetchone())
+
+        rate_rub = get_customer_rate(conn, ticket)
+        if data.approved_performer_minutes is not None:
+            pm_approved_mins = data.approved_performer_minutes
+        elif data.pm_approved_minutes is not None:
+            pm_approved_mins = data.pm_approved_minutes
+        else:
+            pm_approved_mins = row["minutes"]
+
+        if not data.bill_customer:
+            conn.execute("""UPDATE hour_requests SET
+                state='approved', pm_approved_minutes=?, bill_customer=0,
+                pm_decided_by=?, pm_decided_at=?, decided_at=?
+                WHERE id=?""",
+                (pm_approved_mins, user["id"], stamp, stamp, request_id))
+            conn.execute("UPDATE tickets SET updated_at=? WHERE id=?", (stamp, ticket_id))
+            notify(conn, row["author_id"], ticket_id, "extra_hours_decision",
+                   f"PM одобрил +{fmt_hours(pm_approved_mins)} без выставления заказчику")
+            return dict(conn.execute("SELECT * FROM hour_requests WHERE id=?", (request_id,)).fetchone())
+        else:
+            cust_mins = data.customer_minutes or pm_approved_mins
+            if data.custom_amount_rub is not None:
+                amount_rub = data.custom_amount_rub
+            else:
+                amount_rub = round(cust_mins / 60.0 * rate_rub)
+            client_exp = data.client_explanation.strip() or row["reason"]
+
+            conn.execute("""UPDATE hour_requests SET
+                state='pending', pm_approved_minutes=?, bill_customer=1, customer_minutes=?,
+                amount_rub=?, client_explanation=?, pm_decided_by=?, pm_decided_at=?
+                WHERE id=?""",
+                (pm_approved_mins, cust_mins, amount_rub, client_exp, user["id"], stamp, request_id))
+            conn.execute("UPDATE tickets SET updated_at=? WHERE id=?", (stamp, ticket_id))
+
+            text = f"Согласуйте дополнительную стоимость ({amount_rub:,} ₽) по заявке №{ticket_id}".replace(",", " ")
+            for recipient in customer_decision_recipients(conn, ticket):
+                notify(conn, recipient, ticket_id, "extra_hours", text)
+            return dict(conn.execute("SELECT * FROM hour_requests WHERE id=?", (request_id,)).fetchone())
 
 
 @app.post("/api/tickets/{ticket_id}/hour-requests/{request_id}/decision")
@@ -2981,8 +3599,12 @@ def decide_hours_service(conn, user, ticket_id: int, request_id: int, data: Hour
     conn.execute("UPDATE hour_requests SET state=?,decided_by=?,decided_at=? WHERE id=?",
                  (state, user["id"], stamp, request_id))
     conn.execute("UPDATE tickets SET updated_at=? WHERE id=?", (stamp, ticket_id))
-    notify(conn, ticket["assignee_id"], ticket_id, "extra_hours_decision",
-           f"Заказчик {'одобрил' if state == 'approved' else 'отклонил'} дополнительные часы по заявке №{ticket_id}")
+    amount_str = f" ({row['amount_rub']:,} ₽)".replace(",", " ") if dict(row).get("amount_rub") else ""
+    notify(conn, row["author_id"], ticket_id, "extra_hours_decision",
+           f"Заказчик {'одобрил' if state == 'approved' else 'отклонил'} дополнительную стоимость{amount_str} по заявке №{ticket_id}")
+    if dict(row).get("pm_decided_by"):
+        notify(conn, row["pm_decided_by"], ticket_id, "extra_hours_decision",
+               f"Заказчик {'одобрил' if state == 'approved' else 'отклонил'} дополнительную стоимость{amount_str} по заявке №{ticket_id}")
     return dict(conn.execute("SELECT * FROM hour_requests WHERE id=?", (request_id,)).fetchone())
 
 
@@ -5115,15 +5737,25 @@ def customer_pending_actions(conn, user):
         base = {"ticket_id": t["id"], "title": t["title"]}
         if customer_can_decide(conn, t, user):
             estimate = latest_estimate(conn, t["id"])
-            if estimate and estimate["state"] == "pending" and estimate["effort_minutes"] is not None:
+            if estimate and estimate["state"] == "pending":
+                est_d = dict(estimate)
+                amt = est_d.get("amount_rub") or (est_d.get("amount_minor", 0) // 100)
+                effort = est_d.get("effort_minutes")
                 items.append({**base, "kind": "estimate", "ref_id": estimate["id"], "since": estimate["created_at"],
-                              "effort_minutes": estimate["effort_minutes"],
+                              "effort_minutes": effort,
                               "action": "Одобрите оценку",
-                              "detail": f"Версия {estimate['version']} · {fmt_hours(estimate['effort_minutes'])}"})
-            for request in conn.execute("SELECT * FROM hour_requests WHERE ticket_id=? AND state='pending'", (t["id"],)):
-                items.append({**base, "kind": "hours", "ref_id": request["id"], "since": request["created_at"],
-                              "action": "Согласуйте дополнительные часы",
-                              "detail": f"+{fmt_hours(request['minutes'])}: {snippet(request['reason'], 120)}"})
+                              "detail": f"Версия {estimate['version']} · {fmt_hours(effort)}" if effort is not None else (f"Версия {estimate['version']} · {amt:,} ₽".replace(",", " ") if amt else f"Версия {estimate['version']}"),
+                              "amount_rub": amt})
+            for request in conn.execute("SELECT * FROM hour_requests WHERE ticket_id=? AND state='pending' AND bill_customer=1", (t["id"],)):
+                req = dict(request)
+                amt = req.get("amount_rub", 0)
+                mins = req.get("minutes", 0)
+                reason_txt = req.get("client_explanation") or req.get("reason")
+                items.append({**base, "kind": "hours", "ref_id": req["id"], "since": req["created_at"],
+                              "effort_minutes": mins,
+                              "action": "Согласуйте доплату",
+                              "detail": f"+{fmt_hours(mins)}: {snippet(reason_txt, 120)}" if mins else (f"+{amt:,} ₽: {snippet(reason_txt, 120)}".replace(",", " ") if amt else snippet(reason_txt, 120)),
+                              "amount_rub": amt})
             if t["status"] == "done":
                 event = last_status_event(conn, t["id"], "done")
                 items.append({**base, "kind": "acceptance", "ref_id": event["id"] if event else 0,
@@ -5469,15 +6101,25 @@ def render_outbox_email(conn, job):
     buttons = []
     if customer and target == "ticket" and customer_can_decide(conn, record, user):
         estimate = latest_estimate(conn, record_id)
-        if estimate and estimate["state"] == "pending" and estimate["effort_minutes"] is not None and record["status"] != "closed":
-            body += (f"<p>Оценка, версия {estimate['version']}: <strong>{fmt_hours(estimate['effort_minutes'])}</strong>"
-                     f"{'<br>' + html.escape(snippet(estimate['note'], 600)) if estimate['note'] else ''}</p>")
-            buttons.append(("Одобрить оценку", action_url(conn, user["id"], "approve_estimate", ticket_id=record_id, ref_id=estimate["id"])))
-        hours_request = conn.execute("SELECT * FROM hour_requests WHERE ticket_id=? AND state='pending' ORDER BY id DESC LIMIT 1",
+        if estimate and estimate["state"] == "pending" and record["status"] != "closed":
+            est = dict(estimate)
+            note_display = est.get("client_note") or est.get("note") or ""
+            effort_str = fmt_hours(est["effort_minutes"]) if est.get("effort_minutes") is not None else ""
+            amt_str = f"{est['amount_rub']:,} ₽".replace(",", " ") if est.get("amount_rub") else (f"{est.get('amount_minor', 0)//100} ₽" if est.get("amount_minor") else "")
+            val_display = f"{effort_str} ({amt_str})" if effort_str and amt_str else (effort_str or amt_str)
+            body += (f"<p>Оценка, версия {est['version']}: <strong>{val_display}</strong>"
+                     f"{'<br>' + html.escape(snippet(note_display, 600)) if note_display else ''}</p>")
+            buttons.append(("Одобрить оценку", action_url(conn, user["id"], "approve_estimate", ticket_id=record_id, ref_id=est["id"])))
+        hours_request = conn.execute("SELECT * FROM hour_requests WHERE ticket_id=? AND state='pending' AND bill_customer=1 ORDER BY id DESC LIMIT 1",
                                      (record_id,)).fetchone()
         if hours_request and record["status"] in ("working", "waiting"):
-            body += f"<p>Запрошено ещё <strong>{fmt_hours(hours_request['minutes'])}</strong>: {html.escape(snippet(hours_request['reason'], 400))}</p>"
-            buttons.append(("Одобрить часы", action_url(conn, user["id"], "approve_hours", ticket_id=record_id, ref_id=hours_request["id"])))
+            hr = dict(hours_request)
+            hr_amount = f"{hr['amount_rub']:,} ₽".replace(",", " ") if hr.get("amount_rub") else ""
+            hr_mins = fmt_hours(hr["minutes"]) if hr.get("minutes") is not None else ""
+            hr_val = f"{hr_mins} ({hr_amount})" if hr_mins and hr_amount else (hr_mins or hr_amount)
+            hr_reason = hr.get("client_explanation") or hr.get("reason") or ""
+            body += f"<p>Дополнительная стоимость: <strong>{hr_val}</strong>: {html.escape(snippet(hr_reason, 400))}</p>"
+            buttons.append(("Согласовать доплату", action_url(conn, user["id"], "approve_hours", ticket_id=record_id, ref_id=hr["id"])))
         if record["status"] == "done":
             buttons.append(("Принять работу", action_url(conn, user["id"], "accept_work", ticket_id=record_id)))
         if customer_can_decline(conn, record, user):
@@ -5506,7 +6148,7 @@ def render_outbox_email(conn, job):
 
 # ---------- Почта: действия из писем ----------
 
-EMAIL_ACTIONS = {"approve_estimate": "Одобрить оценку", "approve_hours": "Одобрить дополнительные часы",
+EMAIL_ACTIONS = {"approve_estimate": "Согласовать стоимость", "approve_hours": "Согласовать доплату",
                  "accept_work": "Принять работу", "decline_ticket": "Отказаться от заявки", "unsubscribe": "Отключить письма об изменениях",
                  "unsubscribe_digest": "Отключить ежемесячную сводку"}
 
@@ -5533,10 +6175,27 @@ def email_action_token(conn, token):
 def describe_email_action(conn, row):
     if row["action"] == "approve_estimate":
         estimate = conn.execute("SELECT * FROM estimates WHERE id=?", (row["ref_id"],)).fetchone()
-        return f"Одобрить оценку заявки №{row['ticket_id']}: версия {estimate['version']}, {fmt_hours(estimate['effort_minutes'] or 0)}? После одобрения команда приступит к работе."
+        est = dict(estimate) if estimate else {}
+        val = []
+        if est.get("effort_minutes") is not None:
+            val.append(fmt_hours(est["effort_minutes"]))
+        if est.get("amount_rub"):
+            val.append(f"{est['amount_rub']:,} ₽".replace(",", " "))
+        elif est.get("amount_minor"):
+            val.append(f"{est['amount_minor'] // 100:,} ₽".replace(",", " "))
+        val_str = " · ".join(val) if val else "0 ч"
+        return f"Одобрить оценку по заявке №{row['ticket_id']}: версия {est.get('version', 1)}, {val_str}? После одобрения команда приступит к работе."
     if row["action"] == "approve_hours":
         request = conn.execute("SELECT * FROM hour_requests WHERE id=?", (row["ref_id"],)).fetchone()
-        return f"Одобрить ещё {fmt_hours(request['minutes'])} по заявке №{row['ticket_id']}? {snippet(request['reason'], 300)}"
+        req = dict(request) if request else {}
+        val = []
+        if req.get("minutes") is not None:
+            val.append(fmt_hours(req["minutes"]))
+        if req.get("amount_rub"):
+            val.append(f"{req['amount_rub']:,} ₽".replace(",", " "))
+        val_str = " · ".join(val) if val else ""
+        reason_txt = req.get("client_explanation") or req.get("reason") or ""
+        return f"Согласовать доплату {val_str} по заявке №{row['ticket_id']}? {snippet(reason_txt, 300)}"
     if row["action"] == "accept_work":
         return f"Принять работу по заявке №{row['ticket_id']}? Заявка будет закрыта. Если нужна доработка, откройте кабинет и верните её с комментарием."
     if row["action"] == "decline_ticket":
