@@ -4382,3 +4382,47 @@ button.csat-star:hover, button.csat-star[aria-pressed="true"] { background: var(
   .topbar .connection-state:not(:empty) { position: absolute; top: 100%; right: 12px; max-width: calc(100vw - 24px); background: var(--card); }
   .topbar .workday-menu { right: auto; left: -80px; }
 }
+
+/* Keep the work list and reply composer reachable on small screens. */
+.ticket-overview > summary { display: none; }
+.ticket-overview > .overview-card { margin-bottom: 20px; }
+.msg-body a { color: var(--accent-ink); text-decoration: underline; overflow-wrap: anywhere; }
+.msg-body .meeting-connect { display: flex; width: fit-content; white-space: normal; margin-top: 12px; text-decoration: none; }
+.profile-actions { flex-wrap: wrap; }
+@media (max-width: 600px) {
+  .ticket-overview { margin-bottom: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); }
+  .ticket-overview > summary { display: block; cursor: pointer; padding: 12px 16px; min-height: 44px; font-weight: 700; font-size: 13px; }
+  .ticket-overview > summary::after { content: ' +'; float: right; }
+  .ticket-overview[open] > summary::after { content: ' −'; }
+  .ticket-overview > .overview-card { margin: 0; border: 0; box-shadow: none; }
+  .waiting-panel { padding: 12px; margin-bottom: 12px; }
+  .waiting-head { margin-bottom: 8px; align-items: center; }
+  .waiting-head .eyebrow, .waiting-detail, .waiting-hint { display: none; }
+  .waiting-head h2 { margin: 0; font-size: 16px; }
+  .waiting-row { grid-template-columns: 28px minmax(0, 1fr); padding: 8px; gap: 6px 8px; }
+  .waiting-ico { width: 28px; height: 28px; }
+  .waiting-text strong { font-size: 13px; }
+  .waiting-text small { white-space: nowrap; }
+  .waiting-age { display: none; }
+  .customer-ticket-list .toolbar { padding: 12px; gap: 10px; }
+  .customer-ticket-list .chips { flex-wrap: nowrap; overflow-x: auto; max-width: 100%; padding-bottom: 4px; }
+  .customer-ticket-list .chips .chip { flex-shrink: 0; }
+}
+@media (max-width: 900px) {
+  .chat-thread-open #main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
+  .chat-thread-open #main > .top { margin-bottom: 12px; padding-bottom: 12px; }
+  .chat-thread-open .inbox.has-thread { min-height: 0; overflow: hidden; }
+  .chat-thread-open .inbox-thread { height: 100%; min-height: 0; }
+  .chat-thread-open .inbox-thread-head, .chat-thread-open .composer { flex-shrink: 0; }
+  .chat-thread-open .inbox-thread .messages { flex: 1 1 0; min-height: 0; max-height: none; overflow-y: auto; overscroll-behavior: contain; }
+  .chat-thread-open .composer { padding: 10px 12px; gap: 8px; }
+  .chat-thread-open .composer textarea { min-height: 44px; height: 52px; max-height: 96px; padding: 8px 10px; }
+  .chat-thread-open .inbox-thread-head { padding: 10px 12px; }
+  .chat-thread-open .inbox-thread-head strong { font-size: 13px; }
+  .chat-keyboard-open .tabbar, .chat-keyboard-open #main > .top { display: none; }
+}
+@media (max-width: 900px) and (max-height: 600px) {
+  .chat-thread-open #main > .top { display: none; }
+  .chat-thread-open #main { padding-top: 8px; }
+  .chat-thread-open .inbox-thread-head small { display: none; }
+}

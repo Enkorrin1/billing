@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
 import test_flows
@@ -75,5 +76,15 @@ class MeetingLinkShare(unittest.TestCase):
         self.assertEqual(self.send().json()['message_id'],first.json()['message_id'])
         messages=self.customer.get(f"/api/tickets/{ticket['id']}").json()['messages']
         self.assertEqual(sum(self.payload['url'] in m['body'] for m in messages),1)
+
+    def test_invitation_uses_local_calendar_date_and_explicit_timezone(self):
+        payload={**self.payload,'starts_at':'2026-10-23T22:30:00+00:00','version':self.meeting['version']}
+        self.assertEqual(self.admin.put(f"/api/team/meetings/{self.meeting['id']}",json=payload).status_code,200)
+        with mock.patch.object(service,'local_tz',return_value=timezone(timedelta(hours=3))):
+            sent=self.send()
+        self.assertEqual(sent.status_code,200,sent.text)
+        body=self.customer.get(f"/api/chats/{sent.json()['target_id']}").json()['messages'][0]['body']
+        self.assertIn('24.10.2026, 01:30 (UTC+03:00)',body)
+        self.assertNotIn('T22:30',body)
 
 if __name__ == '__main__': unittest.main()

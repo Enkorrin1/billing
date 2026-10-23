@@ -80,7 +80,7 @@ const canManageFinance = () => isDispatcher() || Boolean(state.teamWorkspace?.my
 const billingOn = () => Boolean(state.settings?.billing_enabled) && (state.user?.role==='customer' || isDispatcher() || Boolean(state.teamWorkspace?.my_permissions.some(p=>['billing_read','billing_manage'].includes(p))));
 const isDispatcher = () => state.user.role === 'admin' || Boolean(state.user.is_manager);
 const personById = id => state.staff.find(person => person.id === id);
-const avatarOf = (id, name) => id ? avatar(personById(id) || { name }, 'small') : '<span class="person-avatar small vacant" title="Не назначен" aria-label="Не назначен">+</span>';
+const avatarOf = (id, name) => state.user?.role === 'customer' && name === 'Служба поддержки' ? avatar({name}, 'small') : id ? avatar(personById(id) || { name }, 'small') : '<span class="person-avatar small vacant" title="Не назначен" aria-label="Не назначен">+</span>';
 const reduceMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 let lastViewKey = '';
 function toast(text, tone = 'success') {
@@ -357,6 +357,29 @@ function bindTicketDraft(form){
   form.addEventListener('input',save);form.addEventListener('change',save);
 }
 function clearDraft(name) { try { localStorage.removeItem(draftKey(name)); } catch {} }
+function bindProfileDraft(form) {
+  const key = draftKey('profile');
+  const fields = [...form.elements].filter(el => el.name && !['hidden', 'file', 'password', 'submit'].includes(el.type));
+  const original = Object.fromEntries(fields.map(el => [el.name, el.value]));
+  const status = form.querySelector('#profile-saved');
+  const discard = document.createElement('button');
+  discard.type = 'button'; discard.className = 'button small'; discard.textContent = 'Отменить изменения';
+  status.after(discard);
+  const save = () => {
+    const changed = Object.fromEntries(fields.filter(el => el.value !== original[el.name]).map(el => [el.name, el.value]));
+    const dirty = Object.keys(changed).length > 0;
+    try { dirty ? sessionStorage.setItem(key, JSON.stringify(changed)) : sessionStorage.removeItem(key); } catch {}
+    status.textContent = dirty ? 'Не сохранено · черновик сохранён в этой вкладке' : '';
+    discard.hidden = !dirty;
+  };
+  try {
+    const draft = JSON.parse(sessionStorage.getItem(key) || '{}');
+    for (const el of fields) if (Object.hasOwn(draft, el.name)) el.value = draft[el.name];
+  } catch {}
+  discard.onclick = () => { for (const el of fields) el.value = original[el.name]; save(); };
+  form.addEventListener('input', save); form.addEventListener('change', save); save();
+}
+function clearProfileDraft() { try { sessionStorage.removeItem(draftKey('profile')); } catch {} }
 /* ---------- Тема ---------- */
 const themeMedia = window.matchMedia('(prefers-color-scheme: dark)');
 const effectiveTheme = () => document.documentElement.dataset.theme || (themeMedia.matches ? 'dark' : 'light');
@@ -897,6 +920,8 @@ function shell(title, action, body, opts = {}) {
   const admin = state.user.role === 'admin';
   const dispatcher = isDispatcher();
   const v = state.view;
+  document.body.classList.toggle('chat-thread-open', ['chat', 'ticket-chat'].includes(v));
+  if (!['chat', 'ticket-chat'].includes(v)) document.body.classList.remove('chat-keyboard-open');
   const unread = state.notifications.filter(n => !n.read_at).length+(staff?(state.teamWorkspace?.events||[]).filter(e=>e.entity==='tasks'&&!e.read_at).length:0);
   const chatUnread = state.notifications.filter(n => ['chat', 'ticket'].includes(n.target) && !n.read_at).length;
   const activeTasks=(state.teamWorkspace?.tasks||[]).filter(t=>t.status!=='done'&&t.status!=='cancelled'&&(t.owner_id===state.user.id||(t.participants||[]).includes(state.user.id)||(t.reviewer_id===state.user.id&&t.status==='review'))).length;
@@ -935,7 +960,7 @@ function shell(title, action, body, opts = {}) {
   : [
     ['Мой кабинет', [
       item('tickets', 'Мои заявки', 'ticket', ticketsActive, activeTickets),
-      item('specialists', 'Наша команда', 'users', v === 'specialists'),
+      item('specialists', 'Служба поддержки', 'users', v === 'specialists'),
       item('chats', 'Чат с поддержкой', 'chat', chatsActive, chatUnread, 'accent'),
       state.organizations.length && item('organizations', 'Моя компания', 'building', v === 'organizations'),
       item('kb', 'База знаний', 'book', v === 'kb'),
@@ -1157,9 +1182,30 @@ function shell(title, action, body, opts = {}) {
   document.querySelector('#theme-toggle').onclick = toggleTheme;
   syncThemeUi();paintConnection();
   if (entering) queueMicrotask(animateEntrance);
-  queueMicrotask(() => { bindDrafts(); if (preserved) restoreUi(preserved); });
-  document.querySelector('#logout').onclick = async () => { await disablePush(); await api('/logout', { method: 'POST' }); state.user = null; resetAccountState();initRealtime();state.current = null; state.bots = null; state.pairings = {}; state.pendingOps = {}; state.error = ''; renderAuth(); };
+  queueMicrotask(() => { bindDrafts(); if (preserved) restoreUi(preserved); fitConversationViewport(); });
+  document.querySelector('#logout').onclick = async () => { await disablePush(); await api('/logout', { method: 'POST' }); clearProfileDraft(); state.user = null; resetAccountState();initRealtime();state.current = null; state.bots = null; state.pairings = {}; state.pendingOps = {}; state.error = ''; renderAuth(); };
 }
+function fitConversationViewport() {
+  const inbox = document.querySelector('.inbox.has-thread');
+  if (!inbox) return;
+  if (!matchMedia('(max-width: 900px)').matches) { inbox.style.height = ''; return; }
+  const viewport = window.visualViewport;
+  const keyboard = Boolean(viewport && innerHeight - viewport.height > 100 && document.activeElement?.closest('.composer'));
+  document.body.classList.toggle('chat-keyboard-open', keyboard);
+  const nav = document.querySelector('.tabbar');
+  const bottom = nav?.getBoundingClientRect().height || 0;
+  const available = (viewport?.height || innerHeight) + (viewport?.offsetTop || 0) - inbox.getBoundingClientRect().top - bottom - 12;
+  inbox.style.height = `${Math.max(180, available)}px`;
+}
+window.addEventListener('resize', fitConversationViewport);
+window.visualViewport?.addEventListener('resize', fitConversationViewport);
+window.visualViewport?.addEventListener('scroll', fitConversationViewport);
+document.addEventListener('focusin', () => requestAnimationFrame(fitConversationViewport));
+document.addEventListener('focusout', () => requestAnimationFrame(fitConversationViewport));
+matchMedia('(max-width: 600px)').addEventListener('change', event => {
+  const overview = document.querySelector('.ticket-overview');
+  if (overview) overview.open = !event.matches;
+});
 function recentActivity() {
   const items = state.notifications.slice(0, 3).map(n => `<div class="activity-item"><span class="activity-dot ${n.read_at ? '' : 'fresh'}"></span><div><strong>${esc(n.text)}</strong><small>${date(n.created_at)}</small></div></div>`).join('');
   return `<section class="activity-panel"><div class="activity-heading"><h2>Последние события</h2><span>${state.notifications.length ? `всего ${state.notifications.length}` : ''}</span></div>${items || '<p class="muted">Новых событий пока нет.</p>'}</section>`;
@@ -1167,7 +1213,7 @@ function recentActivity() {
 function portfolioOverview(all) {
   const staff = state.user.role !== 'customer';
   const total = all.length;
-  const done = all.filter(t => ['done', 'closed'].includes(t.status)).length;
+  const done = all.filter(t => t.status === 'closed').length;
   const approvedTickets = all.filter(t => t.estimate_state === 'approved');
   const approved = approvedTickets.reduce((sum, t) => sum + (t.effort_minutes || 0), 0);
   const pending = all.filter(t => t.estimate_state === 'pending' && (staff || t.can_decide));
@@ -1243,8 +1289,7 @@ function renderTickets() {
   state.selectedTickets = state.selectedTickets || new Set();
   const ticketRow = t => {
     const sla = nearestSla(t);
-    const finished = ['done', 'closed'].includes(t.status);
-    const deadline = sla ? slaTag(sla) : finished ? `<span class="sla met">${icon('check', 13)}Завершена</span>` : `<span class="tdate">${esc(t.next_step || '—')}</span>`;
+    const deadline = t.status === 'done' ? `<span class="sla soon">${icon('clock', 13)}${staff ? 'Ждёт приёмки' : t.can_decide ? 'Ждёт вашей приёмки' : 'Ждёт приёмки владельцем'}</span>` : t.status === 'closed' ? `<span class="sla met">${icon('check', 13)}Завершена</span>` : sla ? slaTag(sla) : `<span class="tdate">${esc(t.next_step || '—')}</span>`;
     const prioBadge = t.priority && t.priority !== 'normal' ? `<span class="badge priority-${esc(t.priority)}">${esc(priorityNames[t.priority] || t.priority)}</span>` : '<span class="muted" style="font-size:11px">Обычный</span>';
     const estimateCol = staff
       ? (t.effort_minutes ? hours(t.effort_minutes) : '—')
@@ -1283,7 +1328,7 @@ function renderTickets() {
       </div>
     </div>
   ` : '';
-  shell(staff ? 'Заявки клиентов' : 'Мои заявки', staff ? `<button class="button primary bitrix-btn-top" id="tickets-new-btn">${icon('plus', 15)}<span>Новая заявка</span></button>` : '', `${ticketTabs}${staff ? '' : waitingPanel()}${portfolioOverview(owned)}<section class="panel ${staff ? 'staff-ticket-list' : 'customer-ticket-list'}"><div class="toolbar"><div class="chips" role="group" aria-label="Фильтр по статусу">${chips}</div><div class="ticket-tools"><input class="field ticket-search" id="ticket-search" type="search" maxlength="100" aria-label="Поиск по заявкам" placeholder="Номер, тема, клиент" value="${esc(state.search)}">${prioritySelect}${ownerSelect}</div></div><div class="ticket-table-container">${head}<div id="ticket-list"></div></div><div class="toolbar" style="border-top:1px solid var(--line-light);border-bottom:0;min-height:52px"><span class="muted" id="ticket-count"></span><span class="kbd-hint"><kbd>J</kbd><kbd>K</kbd> по строкам · <kbd>Enter</kbd> открыть</span></div></section>${bulkBarHtml}`, { kicker: staff ? (dispatcher ? 'Все клиенты' : 'Назначенные мне и команде') : 'Личный кабинет' });
+  shell(staff ? 'Заявки клиентов' : 'Мои заявки', staff ? `<button class="button primary bitrix-btn-top" id="tickets-new-btn">${icon('plus', 15)}<span>Новая заявка</span></button>` : '', `${ticketTabs}${staff ? '' : waitingPanel()}<details class="ticket-overview" ${matchMedia('(max-width: 600px)').matches ? '' : 'open'}><summary>Сводка по заявкам · ${owned.length}</summary>${portfolioOverview(owned)}</details><section class="panel ${staff ? 'staff-ticket-list' : 'customer-ticket-list'}"><div class="toolbar"><div class="chips" role="group" aria-label="Фильтр по статусу">${chips}</div><div class="ticket-tools"><input class="field ticket-search" id="ticket-search" type="search" maxlength="100" aria-label="Поиск по заявкам" placeholder="Номер, тема, клиент" value="${esc(state.search)}">${prioritySelect}${ownerSelect}</div></div><div class="ticket-table-container">${head}<div id="ticket-list"></div></div><div class="toolbar" style="border-top:1px solid var(--line-light);border-bottom:0;min-height:52px"><span class="muted" id="ticket-count"></span><span class="kbd-hint"><kbd>J</kbd><kbd>K</kbd> по строкам · <kbd>Enter</kbd> открыть</span></div></section>${bulkBarHtml}`, { kicker: staff ? (dispatcher ? 'Все клиенты' : 'Назначенные мне и команде') : 'Личный кабинет' });
   let matchingTickets = visible;
   const updateList = () => {
     const query = state.search.trim().toLocaleLowerCase('ru-RU');
@@ -1660,13 +1705,36 @@ async function openTicket(id) {
 const viewerSide = () => state.user.role === 'customer' ? 'customer' : 'team';
 const messageSide = m => m.author_role === 'customer' ? 'customer' : 'team';
 const meetingKindNames = { call: 'созвона', meeting: 'встречи', chat: 'переписки', other: 'обсуждения' };
+function messageLinks(body) {
+  return [...String(body).matchAll(/https?:\/\/[^\s<>"']+/giu)].map(match => {
+    let url = match[0].replace(/[.,!?;:]+$/u, '');
+    while (/[)\]}]$/u.test(url) && [...url].filter(c => c === url.at(-1)).length > [...url].filter(c => c === ({')':'(',']':'[','}':'{'})[url.at(-1)]).length) url = url.slice(0, -1);
+    try { const parsed = new URL(url); return ['http:', 'https:'].includes(parsed.protocol) ? {url, index: match.index} : null; } catch { return null; }
+  }).filter(Boolean);
+}
+function messageBodyHtml(body) {
+  // Format legacy invitations too; all other message text remains literal.
+  const text = String(body).replace(/(^|\n)Время: (\d{4}-\d\d-\d\dT[^\s]+)/gu, (whole, newline, iso) => {
+    const stamp = new Date(iso);
+    return Number.isNaN(stamp.getTime()) ? whole : `${newline}Время: ${stamp.toLocaleString('ru-RU', {timeZoneName:'short'})}`;
+  });
+  let html = '', cursor = 0;
+  const links = messageLinks(text);
+  for (const {url, index} of links) {
+    html += esc(text.slice(cursor, index)) + `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>`;
+    cursor = index + url.length;
+  }
+  html += esc(text.slice(cursor));
+  if (text.startsWith('Ссылка на встречу «') && links.length) html += `<a class="button small meeting-connect" href="${esc(links[0].url)}" target="_blank" rel="noopener noreferrer">Подключиться к встрече</a>`;
+  return html;
+}
 function messageHtml(m, { header, extra = '', canReply = false }) {
   const side = messageSide(m);
   const quote = m.reply_to_id ? `<button type="button" class="reply-quote" data-jump="${m.reply_to_id}" aria-label="Перейти к исходному сообщению"><strong>${esc(m.reply_author_name || 'Сообщение')}</strong><span>${esc(m.reply_body || 'Сообщение удалено')}</span></button>` : '';
   const reply = canReply ? `<button type="button" class="msg-reply" data-reply="${m.id}" aria-label="Ответить на сообщение ${esc(m.author_name)}">${icon('reply', 14)}<span>Ответить</span></button>` : '';
   const toTask = state.user?.role !== 'customer' ? `<button type="button" class="msg-to-task" data-chat-to-task="${m.id}" title="Создать задачу из этого сообщения">${icon('check', 13)}<span>В задачу</span></button>` : '';
   const status = side === viewerSide() ? '<span class="msg-status" aria-live="off"></span>' : '';
-  return `<div class="message ${m.author_id === state.user.id ? 'mine' : ''}" id="msg-${m.id}" data-msg="${m.id}" data-side="${side}"><div class="msg-head"><small>${header}</small><div class="msg-actions-wrap">${toTask}${reply}</div></div>${quote}<div class="msg-body">${esc(m.body)}</div>${extra}<div class="msg-foot">${status}</div></div>`;
+  return `<div class="message ${m.author_id === state.user.id ? 'mine' : ''}" id="msg-${m.id}" data-msg="${m.id}" data-side="${side}"><div class="msg-head"><small>${header}</small><div class="msg-actions-wrap">${toTask}${reply}</div></div>${quote}<div class="msg-body">${messageBodyHtml(m.body)}</div>${extra}<div class="msg-foot">${status}</div></div>`;
 }
 function summaryCard(s) {
   return `<article class="meeting-card" aria-label="Итоги ${meetingKindNames[s.kind] || 'встречи'}"><div class="meeting-head"><span class="meeting-ico">${icon('users', 16)}</span><div><strong>Итоги ${meetingKindNames[s.kind] || 'встречи'} · ${new Date(s.occurred_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}</strong><small>${esc(s.author_name)}</small></div></div><span class="eyebrow">О чём договорились</span><p>${esc(s.client_summary)}</p>${s.client_next_steps ? `<span class="eyebrow">Что дальше</span><p>${esc(s.client_next_steps)}</p>` : ''}</article>`;
@@ -2838,13 +2906,15 @@ function renderProfile(){
   if(state.user.role==='customer'){
     shell('Мой профиль','',`<div class="profile-layout"><section class="panel content profile-main"><div class="profile-heading customer-profile-heading">${avatar(p,'large')}<div><span class="eyebrow">КАБИНЕТ ЗАКАЗЧИКА</span><h2>${esc(p.name)}</h2><p>${esc(p.company_name||'Добавьте название компании')}</p><small>${esc(p.email)}</small></div></div><form class="form" id="customer-profile-form"><label>Ваше имя<input class="field" name="name" required minlength="2" maxlength="100" autocomplete="name" value="${esc(p.name)}"></label><label>Компания или команда<input class="field" name="company_name" maxlength="150" autocomplete="organization" placeholder="Например, Студия Север" value="${esc(p.company_name)}"></label><label>Контактный телефон<input class="field" name="phone" type="tel" maxlength="40" autocomplete="tel" placeholder="+7 999 123-45-67" value="${esc(p.phone)}"></label><label>Одобрять оценки автоматически — до, часов<input class="field" name="auto_approve_hours" type="number" min="0" max="1666" step="0.25" placeholder="0" value="${p.auto_approve_minutes?p.auto_approve_minutes/60:''}"><small>Небольшие задачи в пределах лимита уйдут в работу сразу, без вашего подтверждения. Пусто или 0 — всегда спрашивать.</small></label><p class="profile-hint">Email для входа: <strong>${esc(p.email)}</strong></p><div class="profile-actions"><button class="button primary">Сохранить изменения</button><span id="profile-saved" role="status"></span></div></form></section><div class="profile-note"><span class="eyebrow">НА СВЯЗИ С КОМАНДОЙ</span><h2>Ваши обращения в одном месте</h2><p>Имя и название компании помогут команде узнавать ваши задачи в заявках и общем чате. Контактный телефон доступен только вам в этом кабинете.</p><div class="profile-facts"><div><strong>${state.tickets.length}</strong><span>заявок</span></div><div><strong>${state.chats.length}</strong><span>общих чатов</span></div></div></div></div>`);
     if(state.organizations[0]){document.querySelector('.customer-profile-heading p').textContent=state.organizations[0].name;document.querySelector('#customer-profile-form [name="company_name"]').parentElement.innerHTML=`Компания <strong>${esc(state.organizations[0].name)}</strong><input type="hidden" name="company_name" value="${esc(p.company_name)}"><small>Состав компании управляется в разделе «Моя компания».</small>`;}
+    bindProfileDraft(document.querySelector('#customer-profile-form'));
     mountPushCard();
-    document.querySelector('#customer-profile-form').onsubmit=async e=>{e.preventDefault();const button=e.target.querySelector('button');button.disabled=true;try{const data=Object.fromEntries(new FormData(e.target));data.auto_approve_minutes=Math.round(Number(data.auto_approve_hours||0)*60);delete data.auto_approve_hours;state.profile=await api('/customer-profile/me',{method:'PATCH',body:JSON.stringify(data)});state.user.name=state.profile.name;state.error='';renderProfile();document.querySelector('#profile-saved').textContent='✓ Изменения сохранены';}catch(error){showError(error);}};
+    document.querySelector('#customer-profile-form').onsubmit=async e=>{e.preventDefault();const button=e.target.querySelector('button');button.disabled=true;try{const data=Object.fromEntries(new FormData(e.target));data.auto_approve_minutes=Math.round(Number(data.auto_approve_hours||0)*60);delete data.auto_approve_hours;state.profile=await api('/customer-profile/me',{method:'PATCH',body:JSON.stringify(data)});state.user.name=state.profile.name;state.error='';clearProfileDraft();renderProfile();document.querySelector('#profile-saved').textContent='✓ Изменения сохранены';}catch(error){showError(error);}};
     return;
   }
   shell('Мой профиль','',`<div class="profile-layout"><section class="panel content profile-main"><div class="profile-heading"><div>${avatar(p,'large')}<label class="avatar-upload" for="avatar-file">Загрузить фото</label><input id="avatar-file" class="visually-hidden" type="file" aria-label="Загрузить фото профиля" accept="image/png,image/jpeg,image/webp">${p.avatar_url?'<button class="avatar-remove" id="avatar-remove">Удалить фото</button>':''}</div><div><span class="eyebrow">ПРОФИЛЬ СОТРУДНИКА</span><h2>${esc(p.name)}</h2><p>${esc([(p.functions||[p.team_role]).filter(Boolean).map(c=>state.teamWorkspace?.functions.find(f=>f.code===c)?.name||teamRoleNames[c]||c).join(', '),p.job_title].filter(Boolean).join(' · ')||'Укажите должность')}</p><small>${esc(p.email)}</small></div></div><form class="form" id="profile-form"><label>ФИО<input class="field" name="name" required minlength="2" maxlength="100" autocomplete="name" value="${esc(p.name)}"></label><label>Должность<input class="field" name="job_title" maxlength="100" placeholder="Например, ведущий разработчик" value="${esc(p.job_title)}"></label><label>О себе<textarea name="bio" maxlength="1000" placeholder="Чем вы помогаете заказчикам, ваш опыт и специализация">${esc(p.bio)}</textarea></label><div class="profile-actions"><button class="button primary">Сохранить изменения</button><span id="profile-saved" role="status"></span></div></form></section><aside class="profile-note"><span class="eyebrow">КАК ЭТО РАБОТАЕТ</span><h2>Ваш профиль для команды</h2><p>Имя, должность, описание и фотография доступны вашим коллегам. Заказчики общаются с единым контактом «Служба поддержки».</p><p>Подойдёт PNG, JPEG или WebP до 2 МБ. Изображение автоматически подстроится под кабинет.</p></aside></div>`);
+  bindProfileDraft(document.querySelector('#profile-form'));
   mountPushCard();
-  document.querySelector('#profile-form').onsubmit=async e=>{e.preventDefault();const button=e.target.querySelector('button');button.disabled=true;try{state.profile=await api('/profile/me',{method:'PATCH',body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});state.user.name=state.profile.name;state.error='';renderProfile();document.querySelector('#profile-saved').textContent='✓ Изменения сохранены';}catch(error){showError(error);}};
+  document.querySelector('#profile-form').onsubmit=async e=>{e.preventDefault();const button=e.target.querySelector('button');button.disabled=true;try{state.profile=await api('/profile/me',{method:'PATCH',body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});state.user.name=state.profile.name;state.error='';clearProfileDraft();renderProfile();document.querySelector('#profile-saved').textContent='✓ Изменения сохранены';}catch(error){showError(error);}};
   document.querySelector('#avatar-file').onchange=async e=>{const file=e.target.files?.[0];if(!file)return;if(file.size>2_000_000){showError(new Error('Фото должно быть меньше 2 МБ'));return;}try{const dataUrl=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('Не удалось прочитать файл'));reader.readAsDataURL(file);});state.profile=await api('/profile/me/avatar',{method:'POST',body:JSON.stringify({data_url:dataUrl})});await refresh();setView('profile');}catch(error){showError(error);}};
   document.querySelector('#avatar-remove')?.addEventListener('click',async()=>{try{state.profile=await api('/profile/me/avatar',{method:'DELETE'});await refresh();setView('profile');}catch(error){showError(error);}});
 }
@@ -2909,69 +2979,8 @@ async function openSpecialists() {
 }
 
 function renderSpecialists() {
-  const list = state.specialists || [];
-  const empty = `<div class="empty">
-    <h3>Специалисты пока не назначены</h3>
-    <p>Здесь появятся сотрудники службы поддержки, кураторы и инженеры, закреплённые за вашей компанией или назначенные на ваши заявки.</p>
-  </div>`;
-
-  const cards = list.map(s => {
-    const responsibilitiesHtml = (s.responsibilities && s.responsibilities.length)
-      ? `<div class="specialist-tags">
-          <span class="muted">Направления:</span>
-          ${s.responsibilities.map(r => `<span class="badge role">${esc(r)}</span>`).join('')}
-         </div>`
-      : '';
-
-    const functionsHtml = (s.functions && s.functions.length)
-      ? `<div class="specialist-tags">
-          <span class="muted">Компетенции:</span>
-          ${s.functions.map(f => `<span class="badge">${esc(f)}</span>`).join('')}
-         </div>`
-      : '';
-
-    const ticketsHtml = (s.tickets && s.tickets.length)
-      ? `<div class="specialist-tickets">
-          <h4>Заявки с участием специалиста (${s.tickets.length})</h4>
-          <ul class="specialist-ticket-list">
-            ${s.tickets.map(t => `
-              <li class="specialist-ticket-item">
-                <div class="row" style="gap:8px;align-items:center;">
-                  <span class="badge ${esc(t.status)}">${statusNames[t.status] || t.status}</span>
-                  <span class="badge priority-${esc(t.priority || 'normal')}">${esc(priorityNames[t.priority] || 'Обычный')}</span>
-                  <span class="specialist-role-tag">${esc(t.role)}</span>
-                </div>
-                <button type="button" class="link-button specialist-ticket-title" data-open-ticket="${t.id}">
-                  №${t.id} · ${esc(t.title)}
-                </button>
-              </li>
-            `).join('')}
-          </ul>
-         </div>`
-      : '<p class="muted">Сейчас нет активных заявок с участием этого специалиста.</p>';
-
-    return `
-      <section class="panel content specialist-card" data-specialist-id="${s.id}">
-        <div class="specialist-header">
-          ${avatar(s, 'large')}
-          <div class="specialist-info">
-            <span class="eyebrow">${esc(s.job_title || 'Специалист команды')}</span>
-            <h2>${esc(s.name)}</h2>
-            ${s.bio ? `<p class="specialist-bio">${esc(s.bio)}</p>` : ''}
-            ${responsibilitiesHtml}
-            ${functionsHtml}
-          </div>
-        </div>
-        ${ticketsHtml}
-      </section>
-    `;
-  }).join('');
-
-  shell('Наша команда', '', `<div class="specialists-container">${list.length ? `<div class="specialists-grid">${cards}</div>` : empty}</div>`, { kicker: 'Сотрудники, работающие с вами' });
-
-  document.querySelectorAll('[data-open-ticket]').forEach(btn => {
-    btn.onclick = () => openTicket(Number(btn.dataset.openTicket));
-  });
+  shell('Служба поддержки', '', `<section class="panel content"><h2>Команда поддержки</h2><p>Помогаем с заявками, согласованием и выполнением работ. В общем чате можно задать вопрос без создания заявки.</p><button type="button" class="button primary" id="contact-support">Написать в поддержку</button></section>`, {kicker:'На связи с вами'});
+  document.querySelector('#contact-support').onclick = () => setView('chats');
 }
 
 async function openAnalytics(){
@@ -3631,7 +3640,7 @@ function renderBilling() {
 
   const actions = !canManage && staff ? '' : staff
     ? `<button class="button" id="btn-company-profile">Реквизиты исполнителя</button><button class="button" id="btn-create-deposit">Пополнить баланс</button><button class="button" id="btn-create-invoice">Выставить счёт</button><button class="button primary" id="btn-create-act">${icon('plus', 16)}Сформировать акт</button>`
-    : `<button class="button primary" id="btn-customer-deposit">${icon('plus', 16)}Купить пакет часов</button>`;
+    : `<button class="button primary" id="btn-customer-deposit">${icon('plus', 16)}Пополнить депозит</button>`;
 
   const availableTabs = staff ? ['docs', 'clients', 'service', 'tx'] : ['docs', 'tx'];
   const activeTab = availableTabs.includes(state.billingTab) ? state.billingTab : 'docs';
@@ -4242,14 +4251,14 @@ function openCustomerInvoiceModal() {
     <div class="billing-modal-backdrop" id="billing-modal">
       <div class="billing-modal-card">
         <div class="billing-modal-head">
-          <h2>Заказ пакета часов поддержки</h2>
+          <h2>Пополнение денежного депозита</h2>
           <button class="billing-modal-close" id="modal-close">&times;</button>
         </div>
         <form id="cust-invoice-form" class="form">
           <p class="muted" style="margin-bottom:12px">
-            Выберите желаемый объём часов. Система сформирует счёт с реквизитами для оплаты. Часы поступят на баланс после подтверждения платежа менеджером.
+            Выберите сумму по эквиваленту часов. После подтверждения оплаты на депозит поступят рубли. Эквивалент часов рассчитывается по текущему тарифу и меняется при смене тарифа.
           </p>
-          <label>Пакет часов
+          <label>Сумма пополнения по текущему тарифу
             <select class="field" name="deposit_hours" id="cust-hours-select">
               <option value="5">5 часов (${(5 * rate).toLocaleString('ru-RU')} ₽)</option>
               <option value="10" selected>10 часов (${(10 * rate).toLocaleString('ru-RU')} ₽)</option>
@@ -4258,7 +4267,7 @@ function openCustomerInvoiceModal() {
             </select>
           </label>
           <div id="cust-inv-preview" style="padding:10px 14px; background:var(--accent-soft); border-radius:var(--radius-sm); font-size:14px; margin: 8px 0">
-            Ваша ставка: <strong>${rate.toLocaleString('ru-RU')} ₽/ч</strong> | К оплате: <strong>${(10 * rate).toLocaleString('ru-RU')} ₽</strong>
+            На депозит: <strong>${(10 * rate).toLocaleString('ru-RU')} ₽</strong> — эквивалент 10 часов по текущему тарифу ${rate.toLocaleString('ru-RU')} ₽/ч
           </div>
           <button class="button primary">Сформировать счёт</button>
         </form>
@@ -4273,7 +4282,7 @@ function openCustomerInvoiceModal() {
 
   select.onchange = () => {
     const h = Number(select.value);
-    preview.innerHTML = `Ваша ставка: <strong>${rate.toLocaleString('ru-RU')} ₽/ч</strong> | К оплате: <strong>${(h * rate).toLocaleString('ru-RU')} ₽</strong>`;
+    preview.innerHTML = `На депозит: <strong>${(h * rate).toLocaleString('ru-RU')} ₽</strong> — эквивалент ${h} ${plural(h, ['часа', 'часов', 'часов'])} по текущему тарифу ${rate.toLocaleString('ru-RU')} ₽/ч`;
   };
 
   slot.querySelector('#cust-invoice-form').onsubmit = async (e) => {
@@ -4287,7 +4296,7 @@ function openCustomerInvoiceModal() {
           client_type: b.client_type,
           client_id: b.client_id,
           hours: h,
-          notes: `Предоплата пакета ${h} часов технической поддержки`
+          notes: `Пополнение денежного депозита: эквивалент ${h} ч по тарифу ${rate} ₽/ч`
         })
       });
       slot.innerHTML = '';

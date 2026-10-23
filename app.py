@@ -1054,19 +1054,31 @@ def customer_specialists(conn, customer):
 
 
 def customer_record(conn, row, viewer):
-    """Expose service identities and involved staff to customers; retain staff attribution."""
+    """Keep employee attribution inside the team; expose one service to customers."""
     item = dict(row)
     if viewer["role"] != "customer":
         return item
     for key in ("performer_effort_minutes", "pm_effort_minutes", "proposed_effort_minutes", "contractor_total_minutes"):
         item.pop(key, None)
-    if item.get("assignee_id") and not item.get("assignee_profile"):
-        item["assignee_profile"] = staff_public_profile(conn, item["assignee_id"])
+    for id_key, name_key in (("assignee_id", "assignee_name"), ("author_id", "author_name"), ("actor_id", "actor_name")):
+        person_id = item.get(id_key)
+        if person_id:
+            person = conn.execute("SELECT role FROM users WHERE id=?", (person_id,)).fetchone()
+            if person and person["role"] != "customer":
+                item[id_key] = None
+                item[name_key] = SUPPORT_NAME
+    item.pop("assignee_profile", None)
+    item.pop("participants", None)
     return item
 
 
 def message_dict(row, viewer=None):
     item = dict(row)
+    if viewer is not None and viewer["role"] == "customer":
+        for prefix in ("author", "reply_author"):
+            if item.get(prefix + "_role") and item[prefix + "_role"] != "customer":
+                item[prefix + "_name"] = SUPPORT_NAME
+                item[prefix + "_id"] = None
     if item.get("reply_body") and len(item["reply_body"]) > 240:
         item["reply_body"] = item["reply_body"][:240].rstrip() + "…"
     return item
@@ -1991,8 +2003,7 @@ def staff_profile(conn, user):
 
 def visible_staff(conn, staff_id, viewer):
     if viewer["role"] == "customer":
-        if not staff_is_involved_with_customer(conn, staff_id, viewer["id"]):
-            raise HTTPException(404, "Сотрудник не найден")
+        raise HTTPException(404, "Сотрудник не найден")
     person = conn.execute("SELECT * FROM users WHERE id=? AND role IN ('employee','admin') AND active=1", (staff_id,)).fetchone()
     if not person:
         raise HTTPException(404, "Сотрудник не найден")
@@ -2979,16 +2990,17 @@ def get_ticket(ticket_id: int, desk_session: str | None = Cookie(default=None)):
                 rec["note"] = rec["client_note"]
             formatted_estimates.append(rec)
 
-        return {"ticket": customer_record(conn, item, user), "messages": [message_dict(x, user) for x in messages],
+        public_item = customer_record(conn, item, user)
+        return {"ticket": public_item, "messages": [message_dict(x, user) for x in messages],
             "meeting_summaries": [customer_record(conn, x, user) for x in summaries], "read_state": reads,
             "service_entries": [dict(x) for x in service_rows],
-            "events": [customer_record(conn, x, user) for x in events], "estimates": formatted_estimates,
+            "events": [customer_record(conn, x, user) for x in events if user["role"] != "customer" or x["kind"] != "assignment"], "estimates": formatted_estimates,
             "linked_chat": dict(linked) if linked else None,
             "time_entries": [customer_record(conn, x, user) for x in time_rows],
             "hour_requests": [customer_record(conn, x, user) for x in hour_rows],
             "attachments": [customer_record(conn, x, user) for x in file_rows],
-            "participants": item.get("participants", []),
-            "assignee_profile": item.get("assignee_profile")}
+            "participants": public_item.get("participants", []),
+            "assignee_profile": public_item.get("assignee_profile")}
 
 
 @app.post("/api/tickets/{ticket_id}/estimates", status_code=201)
@@ -3325,6 +3337,10 @@ def change_priority(ticket_id: int, data: PriorityChange, desk_session: str | No
 @app.get("/api/customer/specialists")
 def get_customer_specialists(desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
+    if user["role"] == "customer":
+        return [{"id": None, "name": SUPPORT_NAME, "job_title": "Команда поддержки",
+                 "bio": "Помогаем с заявками, согласованием и выполнением работ. Напишите нам в общий чат.",
+                 "avatar_url": None, "functions": [], "responsibilities": [], "tickets": []}]
     with db() as conn:
         return customer_specialists(conn, user)
 

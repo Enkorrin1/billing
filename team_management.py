@@ -722,7 +722,12 @@ def install_routes(app, domain):
             if row['status'] in ('cancelled','missed'):
                 raise HTTPException(409,'Сначала запланируйте встречу снова')
             request_id=f"meeting-{eid}-link-{data.request_id}"
-            text=f"Ссылка на встречу «{row['title']}»: {row['url']}\nВремя: {row['starts_at']}"
+            start=datetime.fromisoformat(row['starts_at'].replace('Z','+00:00'))
+            if start.tzinfo is None:start=start.replace(tzinfo=timezone.utc)
+            start=start.astimezone(domain.local_tz())
+            offset=start.strftime('%z')
+            zone=f"UTC{offset[:3]}:{offset[3:]}"
+            text=f"Ссылка на встречу «{row['title']}»: {row['url']}\nВремя: {start:%d.%m.%Y, %H:%M} ({zone})"
             stamp=domain.now()
             ticket=conn.execute('SELECT * FROM tickets WHERE id=?',(row['ticket_id'],)).fetchone() if row['ticket_id'] else None
             if row['ticket_id'] and not ticket:
