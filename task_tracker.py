@@ -1,8 +1,9 @@
 """Focused task-tracker operations, sharing the team's access and lifecycle rules."""
+import hashlib
 import json
 import re
 import secrets
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -55,6 +56,15 @@ def init_schema(conn):
         size INTEGER NOT NULL, request_id TEXT NOT NULL, created_at TEXT NOT NULL, deleted_at TEXT,
         UNIQUE(task_id,author_id,request_id)
     );
+    CREATE TABLE IF NOT EXISTS task_time_entries (
+        id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL REFERENCES team_tasks(id) ON DELETE CASCADE,
+        author_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        minutes INTEGER NOT NULL CHECK(minutes>0), note TEXT NOT NULL,
+        work_date TEXT NOT NULL, created_at TEXT NOT NULL, request_id TEXT,
+        ticket_time_entry_id INTEGER REFERENCES time_entries(id) ON DELETE CASCADE,
+        UNIQUE(task_id,author_id,request_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_time_entries ON task_time_entries(task_id,id);
     CREATE TABLE IF NOT EXISTS task_watches (
         task_id INTEGER NOT NULL REFERENCES team_tasks(id) ON DELETE CASCADE,
         user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, muted INTEGER NOT NULL DEFAULT 0,
@@ -120,8 +130,23 @@ class CommentCreate(Input):
     mention_ids:list[int]=Field(default_factory=list,max_length=30)
 
 
+class TaskTimeInput(Input):
+    minutes:int=Field(strict=True,ge=1,le=100_000)
+    summary:str=Field(min_length=3,max_length=2000)
+    entry_date:date|None=None
+    request_id:str|None=Field(default=None,min_length=8,max_length=100)
+
+
 class WatchInput(Input):
     muted:bool
+
+
+def can_log_time(conn,user,row,can_edit):
+    if not can_edit or row['status']=='cancelled':return False
+    if row['ticket_id']:
+        linked=conn.execute('SELECT * FROM tickets WHERE id=?',(row['ticket_id'],)).fetchone()
+        return bool(linked and linked['assignee_id']==user['id'] and linked['status'] in ('working','waiting','done'))
+    return True
 
 
 def install_routes(app,domain,user_for,get_entity,entity_visible,enriched,save_work,TaskInput):
@@ -134,6 +159,8 @@ def install_routes(app,domain,user_for,get_entity,entity_visible,enriched,save_w
         result['comments']=[{**dict(r),'mentions':json.loads(r['mentions'])} for r in conn.execute('SELECT c.*,u.name AS author_name FROM task_comments c LEFT JOIN users u ON u.id=c.author_id WHERE task_id=? ORDER BY c.id',(tid,))]
         result['files']=[dict(r) for r in conn.execute('SELECT f.id,f.filename,f.size,f.author_id,f.created_at,f.deleted_at,u.name AS author_name FROM task_files f LEFT JOIN users u ON u.id=f.author_id WHERE task_id=? ORDER BY f.id DESC',(tid,))]
         result['history']=[{**dict(r),'details':json.loads(r['details'])} for r in conn.execute("SELECT a.*,u.name AS actor_name FROM team_audit a LEFT JOIN users u ON u.id=a.actor_id WHERE entity='tasks' AND entity_id=? ORDER BY a.id DESC LIMIT 100",(tid,))]
+        result['time_entries']=[dict(r) for r in conn.execute('SELECT e.*,u.name AS author_name FROM task_time_entries e JOIN users u ON u.id=e.author_id WHERE e.task_id=? ORDER BY e.id DESC',(tid,))]
+        result['can_log_time']=can_log_time(conn,user,row,result.get('can_edit',False))
         result['can_comment']=has_permission(conn,user,'tasks') and row['status']!='cancelled'
         result['mention_candidates']=[{'id':p['id'],'name':p['name']} for p in conn.execute("SELECT * FROM users WHERE active=1 AND role IN ('employee','admin') ORDER BY name") if entity_visible(conn,p,'tasks',row)]
         watch=conn.execute('SELECT muted FROM task_watches WHERE task_id=? AND user_id=?',(tid,user['id'])).fetchone()
@@ -169,6 +196,32 @@ def install_routes(app,domain,user_for,get_entity,entity_visible,enriched,save_w
             payload.update(data.model_dump(exclude_unset=True))
             saved=save_work(conn,user,'tasks',TaskInput(**payload),tid)
             return detail(conn,user,saved['id'])
+
+    @router.post('/{tid}/time-entries',status_code=201)
+    def log_time(tid:int,data:TaskTimeInput,desk_session:str|None=Cookie(default=None)):
+        user=user_for(desk_session)
+        with domain.db() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            task=get_entity(conn,user,'tasks',tid,True)
+            if data.request_id:
+                existing=conn.execute('SELECT * FROM task_time_entries WHERE task_id=? AND author_id=? AND request_id=?',(tid,user['id'],data.request_id)).fetchone()
+                if existing:return dict(existing)
+            if task['status']=='cancelled':raise HTTPException(409,'Сначала верните задачу в работу')
+            note=data.summary.strip()
+            if len(note)<3:raise HTTPException(422,'Опишите выполненную работу')
+            work_date=data.entry_date or domain.payroll.work_today()
+            if work_date>domain.payroll.work_today():raise HTTPException(422,'Дата фактической работы не может быть в будущем')
+            ticket_entry=None
+            if task['ticket_id']:
+                # Reuse the ticket's permissions and agreed limits in the same transaction.
+                entry=domain.add_time_entry_service(conn,user,task['ticket_id'],domain.TimeEntryCreate(minutes=data.minutes,note=note,work_date=work_date,
+                    request_id=hashlib.sha256(f'task-{tid}-{data.request_id}'.encode()).hexdigest() if data.request_id else None))
+                ticket_entry=entry['id']
+            cursor=conn.execute('INSERT INTO task_time_entries(task_id,author_id,minutes,note,work_date,created_at,request_id,ticket_time_entry_id) VALUES(?,?,?,?,?,?,?,?)',
+                (tid,user['id'],data.minutes,note,work_date.isoformat(),domain.now(),data.request_id,ticket_entry))
+            conn.execute('UPDATE team_tasks SET updated_at=? WHERE id=?',(domain.now(),tid))
+            audit(conn,domain,user,'tasks',tid,'time_entry',{'entry_id':cursor.lastrowid,'minutes':data.minutes,'ticket_time_entry_id':ticket_entry})
+            return dict(conn.execute('SELECT * FROM task_time_entries WHERE id=?',(cursor.lastrowid,)).fetchone())
 
     @router.post('/{tid}/checklist',status_code=201)
     def add_checklist(tid:int,data:ChecklistCreate,desk_session:str|None=Cookie(default=None)):

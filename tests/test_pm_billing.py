@@ -115,8 +115,14 @@ class PmBillingTests(unittest.TestCase):
         # 10. Verify ticket status is now 'working', approved limit for performer is set
         detail = self.client.get(f"/api/tickets/{ticket_id}").json()
         self.assertEqual(detail["ticket"]["status"], "working")
-        self.assertEqual(detail["ticket"]["cost_rub"], 5000)  # approved base 100 min * 3000/60
+        self.assertEqual(detail["ticket"]["cost_rub"], 8000)  # agreed custom amount is authoritative
         self.assertEqual(detail["ticket"]["estimate_amount_rub"], 8000)
+        listed = next(t for t in self.client.get('/api/tickets').json() if t['id']==ticket_id)
+        self.assertEqual(listed['cost_rub'],8000)
+        # Service charges remain separate and add to the agreed price.
+        self.assertEqual(self.worker.post('/api/service-entries',json={'customer_id':self.client_id,'ticket_id':ticket_id,'kind':'chat','minutes':20,'note':'Обсуждение результатов'}).status_code,201)
+        detail=self.client.get(f'/api/tickets/{ticket_id}').json()['ticket']
+        self.assertEqual((detail['cost_rub'],detail['service_cost_rub'],detail['total_cost_rub']),(8000,1000,9000))
 
     def test_additional_hours_pm_decision_internal_vs_billed(self):
         # 1. Setup ticket and approved estimate
@@ -184,6 +190,10 @@ class PmBillingTests(unittest.TestCase):
         # Worker can now log the final 45 minutes
         entry3 = self.worker.post(f"/api/tickets/{ticket_id}/time-entries", json={"minutes": 45, "note": "Часть 3"})
         self.assertEqual(entry3.status_code, 201)
+        detail=self.client.get(f'/api/tickets/{ticket_id}').json()['ticket']
+        self.assertEqual(detail['cost_rub'],5500) # 3000 base + 2500 approved extra, excludes internal extra
+        listed=next(t for t in self.client.get('/api/tickets').json() if t['id']==ticket_id)
+        self.assertEqual(listed['cost_rub'],5500)
 
 
 if __name__ == "__main__":

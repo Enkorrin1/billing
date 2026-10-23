@@ -3,9 +3,9 @@ const state = { user: null, profile: null, tickets: [], chats: [], queue: [], st
 
 async function claimTicket(id) {
   try {
-    await api(`/tickets/${id}`, { method: 'PATCH', body: JSON.stringify({ assignee_id: state.user.id, status: 'working' }) });
-    toast(`Заявка №${id} взята вами в работу`);
-    await reload();
+    await api(`/tickets/${id}/assignee`, { method: 'PATCH', body: JSON.stringify({ assignee_id: state.user.id }) });
+    toast(`Заявка №${id} назначена вам`);
+    await refresh();
     if (state.view === 'detail' && state.current?.ticket?.id === id) openTicket(id);
     else if (state.view === 'tickets') renderTickets();
   } catch (err) {
@@ -147,7 +147,7 @@ function openPalette() {
     { group: 'Разделы', svg: icon('bell'), label: 'Уведомления', run: () => setView('notifications') },
     { group: 'Разделы', svg: icon('user'), label: 'Мой профиль', run: () => setView('profile') },
     { group: 'Действия', svg: icon('plus'), label: staff?'Создать задачу':'Создать заявку', run: () => staff?TasksUI.quickCreate():setView('new') },
-    ...(staff ? [] : [{ group: 'Действия', svg: icon('help'), label: 'Пройти обучение по кабинету', run: () => startTour() }]),
+    ...(staff ? [] : [{ group: 'Действия', svg: icon('help'), label: 'Открыть гайд по кабинету', run: () => { state.guideQuery='';state.guideTopic='start';setView('guide'); } }]),
     { group: 'Действия', svg: icon(effectiveTheme() === 'dark' ? 'sun' : 'moon'), label: effectiveTheme() === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему', run: () => toggleTheme() },
   ].map(item => ({ ...item, hay: item.label.toLocaleLowerCase('ru-RU') }));
   const tickets = state.tickets.slice().sort((a, b) => b.updated_at.localeCompare(a.updated_at)).map(t => ({ group: 'Заявки', svg: icon('ticket'), label: `№${t.id} · ${t.title}`, hint: statusNames[t.status], run: () => openTicket(t.id), hay: [t.id, t.title, t.customer_name, t.customer_company].join(' ').toLocaleLowerCase('ru-RU') }));
@@ -193,9 +193,9 @@ const tourKey = () => `linia-tour-done-${state.user?.id}`;
 function tourDone() { try { return localStorage.getItem(tourKey()) === '1'; } catch { return true; } }
 function markTourDone() { try { localStorage.setItem(tourKey(), '1'); } catch {} }
 function maybeStartTour() {
-  if (state.user?.role !== 'customer' || tourDone() || document.querySelector('#tour-invitation')) return;
-  document.querySelector('#main')?.insertAdjacentHTML('afterbegin', '<section class="notice" id="tour-invitation"><p>Впервые в кабинете? Покажем, как создать заявку и согласовать работу.</p><div class="row"><button class="button" id="tour-start">Пройти обучение</button><button class="button" id="tour-later">Позже</button></div></section>');
-  document.querySelector('#tour-start')?.addEventListener('click', () => { document.querySelector('#tour-invitation').remove(); startTour(); });
+  if (state.user?.role !== 'customer' || state.view === 'guide' || tourDone() || document.querySelector('#tour-invitation')) return;
+  document.querySelector('#main')?.insertAdjacentHTML('afterbegin', '<section class="notice" id="tour-invitation"><p>Впервые в кабинете? В гайде есть инструкции по заявкам, переписке и согласованию работ.</p><div class="row"><button class="button" id="tour-start">Открыть гайд</button><button class="button" id="tour-later">Позже</button></div></section>');
+  document.querySelector('#tour-start')?.addEventListener('click', () => { markTourDone();state.guideTopic='start';state.guideQuery='';setView('guide'); });
   document.querySelector('#tour-later')?.addEventListener('click', () => { markTourDone(); document.querySelector('#tour-invitation').remove(); });
 }
 function visibleTarget(selectors) {
@@ -220,14 +220,14 @@ function customerTourSteps() {
     { target: '.overview-card', title: 'Сводка по заявкам', text: 'Сколько задач на каждом этапе, сколько часов уже согласовано и сколько оценок ждут вашего решения.', before: toTickets },
     { target: ['#ticket-list .trow', '#ticket-list'], title: 'Список заявок', text: 'Фильтруйте по статусу и ищите по номеру или теме. Нажмите на заявку, чтобы открыть её. Сейчас откроем одну для примера.', before: toTickets },
     { target: '.ticket-progress', title: 'Этапы заявки', text: 'Каждая заявка проходит пять шагов: создание, оценка, согласование, работа и приёмка. Когда работа готова, вы проверяете результат и принимаете его или возвращаете на доработку.', before: toDetail, skip: noTickets },
-    { target: '.estimate-panel', title: 'Согласуйте оценку', text: 'Команда оценивает задачу в часах. Вы можете одобрить оценку, отклонить её или предложить свой вариант — без вашего решения работа не начнётся.', before: toDetail, skip: noTickets },
+    { target: '.estimate-panel', title: 'Согласуйте стоимость', text: 'Проверьте сумму и состав работ. Нажмите «Согласовать стоимость», запросите корректировку или отклоните предложение.', before: toDetail, skip: noTickets },
     { target: '.conversation', title: 'Переписка по заявке', text: 'Задавайте вопросы и уточняйте детали прямо в заявке. Чтобы ответить на конкретное сообщение, нажмите «Ответить» под ним. Отметка «Прочитано командой» показывает, что сообщение увидели.', before: toDetail, skip: noTickets },
     { target: '.detail-grid > div:last-child > .operations-panel', title: 'Сроки работы', text: 'Сроки ответа, оценки и сдачи. Если срок подходит, полоска становится жёлтой, если прошёл — красной.', before: toDetail, skip: noTickets },
     { target: ['aside [data-nav="chats"]', '.tabbar [data-nav="chats"]'], title: 'Общий чат', text: 'Для вопросов без привязки к заявке. Если из разговора вырастет задача, команда оформит её как заявку.', before: toTickets },
     { skip: () => !billingOn(), target: '.billing-kpi-grid', title: 'Часы и счета', text: 'Баланс депозита, ставка и часы в работе. Здесь же можно купить пакет часов и открыть счета и акты.', before: async () => { if (state.view !== 'billing') await openBilling(); } },
     { target: ['aside [data-nav="messengers"]'], title: 'Telegram и MAX', text: 'Подключите бота в разделе «Мессенджеры», чтобы создавать заявки и отвечать прямо из мессенджера.' },
     { target: '#open-palette', title: 'Быстрый поиск', text: 'Нажмите Ctrl + K, чтобы найти заявку или раздел за секунду.' },
-    { target: '#help-tour', title: 'Всё готово!', text: 'Если что-то забудется, нажмите «?» — обучение запустится снова.', next: 'Завершить' },
+    { target: '#help-tour', title: 'Всё готово!', text: 'Нажмите «?», чтобы открыть гайд с инструкциями по всем основным функциям. В нём можно повторно запустить подсказки.', next: 'Завершить' },
   ];
 }
 function startTour() {
@@ -321,7 +321,7 @@ function endTour(completed) {
   setTimeout(() => layer.remove(), 220);
   markTourDone();
   if (state.view !== 'tickets') { history.replaceState(null, '', location.pathname); setView('tickets'); }
-  toast(completed ? 'Обучение пройдено. Запустить снова — кнопка «?» вверху' : 'Обучение можно пройти позже — кнопка «?» вверху', 'info');
+  toast(completed ? 'Обучение пройдено. Инструкции и подсказки доступны в гайде — кнопка «?» вверху' : 'Инструкции и подсказки доступны в гайде — кнопка «?» вверху', 'info');
 }
 const SCROLL_AREAS = '.messages, .inbox-items, .internal-notes-list';
 function captureUi() {
@@ -398,14 +398,16 @@ function skeleton(kind) {
 }
 function delayedLoading(title, kind) {
   clearTimeout(loadingTimer);
-  loadingTimer = setTimeout(() => { if (state.user) shell(title, '', skeleton(kind)); }, 180);
+  const navigation = navigationSnapshot();
+  loadingTimer = setTimeout(() => { if (isNavigationCurrent(navigation)) shell(title, '', skeleton(kind)); }, 180);
 }
 
 /* ---------- Перетаскивание файлов ---------- */
 const ALLOWED_FILES = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.pdf', '.txt', '.doc', '.docx', '.xls', '.xlsx', '.csv', '.zip'];
 function attachmentLink(file) {
   const image = /\.(png|jpe?g|webp|gif)$/i.test(file.filename);
-  return `<a class="attachment-link${image ? ' attachment-preview' : ''}" href="/api/attachments/${file.id}">${image ? `<img src="/api/attachments/${file.id}" alt="${esc(file.filename)}" loading="lazy">` : icon('paperclip', 14)}<span>${esc(file.filename)}</span></a>`;
+  if (image) return `<a class="attachment-link attachment-preview" href="/api/attachments/${file.id}" target="_blank" rel="noopener" aria-label="Открыть изображение ${esc(file.filename)}" title="Открыть в полном размере"><img src="/api/attachments/${file.id}" alt="${esc(file.filename)}" loading="lazy"></a>`;
+  return `<a class="attachment-link" href="/api/attachments/${file.id}">${icon('paperclip', 14)}<span>${esc(file.filename)}</span></a>`;
 }
 function checkFiles(files) {
   const ok = [], rejected = [];
@@ -652,9 +654,38 @@ function slaCard(t) {
 function paintConnection(){
   const el=document.querySelector('#connection-state');if(el)el.textContent=state.connection==='reconnecting'?'Связь потеряна · восстанавливаем':state.connection==='connecting'?'Подключаем обновления…':'Обновления включены';
 }
-function composerHasDraft(selector) {
-  const form = document.querySelector(selector);
-  return Boolean(form && (form.querySelector('textarea')?.value || form.elements.files?.files.length || form.getAttribute('aria-busy') === 'true'));
+// Updating messages must not replace the form that owns the draft and files.
+const conversationLoads = new Map();
+async function refreshConversation(kind, id) {
+  const view = state.view;
+  const navigation = navigationSnapshot();
+  const key = `${kind}:${id}`;
+  const load = (conversationLoads.get(key) || 0) + 1;
+  conversationLoads.set(key, load);
+  const fresh = await api(`/${kind === 'chat' ? 'chats' : 'tickets'}/${id}`);
+  const currentId = kind === 'chat' ? state.currentChat?.chat.id : state.current?.ticket.id;
+  if (!isNavigationCurrent(navigation) || conversationLoads.get(key) !== load || currentId !== id) return;
+  const previous = kind === 'chat' ? state.currentChat : state.current;
+  if (['messages', 'attachments', 'meeting_summaries', 'read_state'].every(field => JSON.stringify(previous[field]) === JSON.stringify(fresh[field]))) return;
+  const box = document.querySelector(kind === 'chat' ? '#chat-messages' : view === 'ticket-chat' ? '#ticket-chat-messages' : '.conversation [data-pane="messages"] .messages');
+  if (!box) return;
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 50;
+  const scrollTop = box.scrollTop;
+  if (kind === 'chat') {
+    state.currentChat = fresh;
+    box.innerHTML = chatTimelineHtml(fresh);
+    const counter = document.querySelector('.inbox-thread-head > div > small');
+    if (counter) counter.textContent = `${fresh.chat.organization_id ? `Чат всей компании · ${(fresh.participants || []).length} участников · ` : ''}${fresh.messages.length} ${plural(fresh.messages.length, ['сообщение', 'сообщения', 'сообщений'])}`;
+    bindChatMessageActions(fresh);
+  } else {
+    state.current = { ...state.current, ...fresh };
+    const canReply = fresh.ticket.can_write !== false && fresh.ticket.status !== 'closed';
+    box.innerHTML = timeline(fresh.messages, fresh.meeting_summaries, m => messageHtml(m, { header: `${esc(m.author_name)} · ${date(m.created_at)}`, canReply }), fresh.attachments || []).map(entry => entry.html).join('') || '<div class="empty">Сообщений пока нет.</div>';
+    const count = document.querySelector('[data-detail-tab="messages"] i');
+    if (count) count.textContent = fresh.messages.length;
+  }
+  box.scrollTop = atBottom ? box.scrollHeight : scrollTop;
+  bindConversation(kind, id, fresh.messages, fresh.read_state);
 }
 let eventSource = null;
 function initRealtime() {
@@ -678,8 +709,8 @@ function initRealtime() {
           return;
         }
         if (data.type === 'meeting_summary') {
-          if (data.ticket_id && ['detail', 'ticket-chat'].includes(state.view) && state.current?.ticket.id === data.ticket_id && !composerHasDraft('#message-form')) await (state.view === 'ticket-chat' ? openTicketChat(data.ticket_id) : openTicket(data.ticket_id));
-          if (data.chat_id && state.view === 'chat' && state.currentChat?.chat.id === data.chat_id && !composerHasDraft('#chat-message-form')) await openChat(data.chat_id);
+          if (data.ticket_id && ['detail', 'ticket-chat'].includes(state.view) && state.current?.ticket.id === data.ticket_id) await refreshConversation('ticket', data.ticket_id);
+          if (data.chat_id && state.view === 'chat' && state.currentChat?.chat.id === data.chat_id) await refreshConversation('chat', data.chat_id);
           return;
         }
         playNotificationSound();
@@ -689,19 +720,12 @@ function initRealtime() {
           await loadNotifications();
         } else if (data.type === 'ticket_message') {
           if (['detail', 'ticket-chat'].includes(state.view) && state.current && state.current.ticket.id === data.ticket_id) {
-            if (!composerHasDraft('#message-form')) {
-              await (state.view === 'ticket-chat' ? openTicketChat(data.ticket_id) : openTicket(data.ticket_id));
-            }
+            await refreshConversation('ticket', data.ticket_id);
           }
           await loadNotifications();
         } else if (data.type === 'chat_message') {
           if (state.view === 'chat' && state.currentChat && state.currentChat.chat.id === data.chat_id) {
-            if (!composerHasDraft('#chat-message-form')) {
-              const fresh = await api(`/chats/${data.chat_id}`);
-              if (state.view !== 'chat' || state.currentChat?.chat.id !== data.chat_id || composerHasDraft('#chat-message-form')) return;
-              state.currentChat = fresh;
-              renderChatDetail();
-            }
+            await refreshConversation('chat', data.chat_id);
           }
           await loadNotifications();
         } else if (data.type === 'internal_note') {
@@ -747,7 +771,7 @@ function showError(error) {
 }
 function syncRoute(){
   if(!state.user||state.user.must_change_credentials||state.restoringRoute)return;
-  const route=state.view==='ticket-chat'?`ticket-chat/${state.current?.ticket.id}`:state.view==='detail'?`ticket/${state.current?.ticket.id}`:state.view==='chat'?`chat/${state.currentChat?.chat.id}`:state.view==='task'?`task/${state.currentTaskId}`:state.view;
+  const route=state.view==='guide'?`guide/${state.guideTopic||'start'}`:state.view==='ticket-chat'?`ticket-chat/${state.current?.ticket.id}`:state.view==='detail'?`ticket/${state.current?.ticket.id}`:state.view==='chat'?`chat/${state.currentChat?.chat.id}`:state.view==='task'?`task/${state.currentTaskId}`:state.view;
   if(route&&!route.includes('undefined')&&location.hash!==`#${route}`)history.pushState(null,'',`#${route}`);
 }
 document.addEventListener('submit', event => {
@@ -762,7 +786,11 @@ document.addEventListener('submit', event => {
   if (button) { button.dataset.idleLabel = button.textContent; button.textContent = form.classList.contains('composer') ? 'Отправляем…' : 'Сохраняем…'; button.disabled = true; button.setAttribute('aria-busy', 'true'); }
 }, true);
 document.addEventListener('click',event=>{const button=event.target.closest('button');if(button&&!button.disabled)button.dataset.submitBusy='true';},true);
-function setView(view) { state.view=view; state.error=''; syncRoute(); render(); }
+let navigationSerial = 0;
+function navigationSnapshot() { return { serial: navigationSerial, userId: state.user?.id, view: state.view, hash: location.hash }; }
+function beginNavigation() { ++navigationSerial; clearTimeout(loadingTimer); return navigationSnapshot(); }
+function isNavigationCurrent(token) { return Boolean(state.user) && token.serial === navigationSerial && token.userId === state.user.id && token.view === state.view && token.hash === location.hash; }
+function setView(view) { beginNavigation(); state.view=view; state.error=''; syncRoute(); render(); }
 async function fetchNotifications() {
   const [tickets, chats] = await Promise.all([api('/notifications'), api('/chat-notifications')]);
   return [...tickets.map(n=>({...n,target:'ticket'})), ...chats.map(n=>({...n,target:'chat'}))].sort((a,b)=>b.created_at.localeCompare(a.created_at));
@@ -787,6 +815,7 @@ function resetAccountState() {
   for (const key of ['profile','current','currentChat','analytics','billing','bots','settings','kbReadingArticle','kbEditingArticle','replyTo']) state[key]=null;
   state.pairings={};state.pendingOps={};state.loadFailures=[];state.readSent={};
   state.inboxSection='general';state.chatSearch='';state.ticketChatSearch='';
+  state.guideTopic='start';state.guideQuery='';state.guideFocus=false;
   state.notificationFilter='all';state.notificationExpanded=new Set();
 }
 async function refresh() {
@@ -899,6 +928,7 @@ function shell(title, action, body, opts = {}) {
     ['Настройки', [
       item('profile', 'Мой профиль', 'user', v === 'profile'),
       item('messengers', 'Мессенджеры', 'send', v === 'messengers'),
+      admin && item('admin', 'Администрирование', 'users', v === 'admin'),
       admin && item('webhooks', 'Вебхуки', 'link', v === 'webhooks'),
     ]],
   ].map(([label, items]) => { const list = items.filter(Boolean); return list.length ? `<div class="nav-group-label">${label}</div>${list.join('')}` : ''; }).join('')
@@ -909,6 +939,7 @@ function shell(title, action, body, opts = {}) {
       item('chats', 'Чат с поддержкой', 'chat', chatsActive, chatUnread, 'accent'),
       state.organizations.length && item('organizations', 'Моя компания', 'building', v === 'organizations'),
       item('kb', 'База знаний', 'book', v === 'kb'),
+      item('guide', 'Гайд по кабинету', 'help', v === 'guide'),
       billingOn() && item('billing', 'Счета и Биллинг', 'wallet', v === 'billing'),
       item('profile', 'Мой профиль', 'user', v === 'profile'),
       item('messengers', 'Мессенджеры', 'send', v === 'messengers'),
@@ -927,7 +958,7 @@ function shell(title, action, body, opts = {}) {
   const role = admin ? 'Администратор' : state.user.is_manager ? 'Менеджер' : 'Сотрудник';
   const subtitle = staff ? (state.profile?.job_title || role) : (state.organizations[0]?.name || state.profile?.company_name || 'Заказчик');
   const kicker = opts.kicker ?? (staff ? 'Рабочее место' : 'Личный кабинет');
-  const viewKey = `${v}:${['detail', 'ticket-chat'].includes(v) ? state.current?.ticket?.id : v === 'chat' ? state.currentChat?.chat?.id : v==='task'?state.currentTaskId:''}`;
+  const viewKey = `${v}:${['detail', 'ticket-chat'].includes(v) ? state.current?.ticket?.id : v === 'chat' ? state.currentChat?.chat?.id : v==='task'?state.currentTaskId:v==='guide'?state.guideTopic:''}`;
   clearTimeout(loadingTimer);
   const preserved = viewKey === lastViewKey ? captureUi() : null;
   const entering = viewKey !== lastViewKey && !reduceMotion();
@@ -954,7 +985,7 @@ function shell(title, action, body, opts = {}) {
 
   const createButton = staff ? `
     <div class="bitrix-create-wrap">
-      <button class="button primary bitrix-top-create" id="bitrix-create-btn" aria-haspopup="menu" aria-expanded="false" title="Быстрое создание">
+      <button class="button primary bitrix-top-create" id="bitrix-create-btn" aria-label="Быстрое создание" aria-haspopup="menu" aria-expanded="false" title="Быстрое создание">
         ${icon('plus', 16)}<span>Создать</span>${icon('chevron', 12)}
       </button>
       <div class="bitrix-quick-menu" id="bitrix-create-menu" hidden>
@@ -992,7 +1023,7 @@ function shell(title, action, body, opts = {}) {
         ${workdayWidget}
         <span id="connection-state" class="muted connection-state" role="status"></span>
         ${createButton}
-        ${staff ? '' : `<button class="icon-btn" id="help-tour" aria-label="Пройти обучение по кабинету" title="Обучение по кабинету">${icon('help')}</button>`}
+        ${staff ? '' : `<button class="icon-btn" id="help-tour" aria-label="Открыть гайд по кабинету" title="Гайд по кабинету">${icon('help')}</button>`}
         <button class="icon-btn ${v === 'notifications' ? 'active' : ''}" data-nav="notifications" aria-label="Уведомления${unread ? `: ${unread} новых` : ''}">${icon('bell')}<span class="dot-count" id="notification-count">${unread || ''}</span></button>
         <button class="top-profile ${v === 'profile' ? 'active' : ''}" data-nav="profile" aria-label="Мой профиль">${avatar(state.profile, 'small')}${icon('chevron', 14)}</button>
       </header>
@@ -1032,7 +1063,9 @@ function shell(title, action, body, opts = {}) {
     organizations: () => setView('organizations'),
     team: () => setView('team'),
     kb: () => openKb(),
+    guide: () => { state.guideQuery='';state.guideTopic='start';setView('guide'); },
     billing: () => billingOn() ? openBilling() : setView('tickets'),
+    admin: () => setView('admin'),
     payroll: () => setView('payroll'),
     analytics: () => openAnalytics(),
     webhooks: () => openWebhooks(),
@@ -1042,6 +1075,7 @@ function shell(title, action, body, opts = {}) {
   };
 
   document.querySelectorAll('[data-nav]').forEach(button => button.onclick = () => {
+    beginNavigation();
     if (document.body.classList.contains('nav-open')) document.querySelector('[data-nav-close]')?.click();
     navActions[button.dataset.nav]?.();
   });
@@ -1119,7 +1153,7 @@ function shell(title, action, body, opts = {}) {
   });
 
   document.querySelector('#open-palette').onclick = () => openPalette();
-  document.querySelector('#help-tour')?.addEventListener('click', () => startTour());
+  document.querySelector('#help-tour')?.addEventListener('click', navActions.guide);
   document.querySelector('#theme-toggle').onclick = toggleTheme;
   syncThemeUi();paintConnection();
   if (entering) queueMicrotask(animateEntrance);
@@ -1215,12 +1249,12 @@ function renderTickets() {
     const estimateCol = staff
       ? (t.effort_minutes ? hours(t.effort_minutes) : '—')
       : (t.estimate_amount_rub ? `${t.estimate_amount_rub.toLocaleString('ru-RU')} ₽` : (t.cost_rub ? `${t.cost_rub.toLocaleString('ru-RU')} ₽` : '—'));
-    const canClaim = staff && t.assignee_id !== state.user.id && !['done', 'closed'].includes(t.status);
+    const canClaim = isDispatcher() && t.assignee_id !== state.user.id && !['done', 'closed'].includes(t.status);
     const claimBtn = canClaim ? `<button type="button" class="button small btn-claim-ticket" data-claim-ticket="${t.id}" title="Взять заявку себе">${icon('user', 12)} Взять себе</button>` : '';
     const selectBox = staff ? `<span class="t-select-cell" onclick="event.stopPropagation()"><input type="checkbox" class="ticket-select-cb" data-ticket-select="${t.id}" ${state.selectedTickets.has(t.id) ? 'checked' : ''} aria-label="Выбрать заявку №${t.id}"></span>` : '';
-    return `<button class="trow" data-ticket="${t.id}">${selectBox}<span class="tnum">${t.id}</span><span class="ttitle"><strong>${esc(t.title)}</strong><small>${esc([t.customer_name, staff ? t.customer_company : '', serviceLabel(t.service_type)].filter(Boolean).join(' · '))}</small></span><span class="badge ${esc(t.status)}">${statusNames[t.status]}</span><span>${deadline}</span><span class="tnum-strong">${estimateCol}</span><span class="twho">${avatarOf(t.assignee_id, t.assignee_name)}<span>${esc(t.assignee_name || 'Не назначен')}</span></span><span>${prioBadge}</span><span class="tdate">${date(t.updated_at)}</span>${staff ? `<span class="t-actions-cell" onclick="event.stopPropagation()">${claimBtn}</span>` : ''}</button>`;
+    return `<div class="trow" role="button" tabindex="0" data-ticket="${t.id}">${selectBox}<span class="tnum">${t.id}</span><span class="ttitle"><strong>${esc(t.title)}</strong><small>${esc([t.customer_name, staff ? t.customer_company : '', serviceLabel(t.service_type)].filter(Boolean).join(' · '))}</small></span><span class="badge ${esc(t.status)}">${statusNames[t.status]}</span><span>${deadline}</span><span class="tnum-strong">${estimateCol}</span><span class="twho">${avatarOf(t.assignee_id, t.assignee_name)}<span>${esc(t.assignee_name || 'Не назначен')}</span></span><span>${prioBadge}</span><span class="tdate">${date(t.updated_at)}</span>${staff ? `<span class="t-actions-cell" onclick="event.stopPropagation()">${claimBtn}</span>` : ''}</div>`;
   };
-  const head = `<div class="table-head" aria-hidden="true">${staff ? `<span class="t-select-cell"><input type="checkbox" id="tickets-select-all" aria-label="Выбрать все" ${visible.length && visible.every(t => state.selectedTickets.has(t.id)) ? 'checked' : ''}></span>` : ''}<span>№</span><span>Заявка</span><span>Статус</span><span>Ближайший срок</span><span>${staff ? 'Оценка' : 'Стоимость'}</span><span>Ответственный</span><span>Приоритет</span><span>Обновлена</span>${staff ? '<span>Действия</span>' : ''}</div>`;
+  const head = `<div class="table-head">${staff ? `<span class="t-select-cell"><input type="checkbox" id="tickets-select-all" aria-label="Выбрать все" ${visible.length && visible.every(t => state.selectedTickets.has(t.id)) ? 'checked' : ''}></span>` : ''}<span>№</span><span>Заявка</span><span>Статус</span><span>Ближайший срок</span><span>${staff ? 'Оценка' : 'Стоимость'}</span><span>Ответственный</span><span>Приоритет</span><span>Обновлена</span>${staff ? '<span class="t-actions-cell" style="text-align:right">Действия</span>' : ''}</div>`;
   const ticketTabs = staff ? `<div class="task-scope-tabs bitrix-role-tabs ticket-nav-tabs" role="group" aria-label="Разделы заявок">
     <button class="${state.owner !== 'mine' ? 'active' : ''}" id="tab-t-all">${icon('ticket', 14)}Все заявки <span>${owned.length}</span></button>
     <button class="" id="tab-t-queue">${icon('queue', 14)}Очередь обработки (SLA) <span class="accent">${state.queue.length}</span></button>
@@ -1249,15 +1283,46 @@ function renderTickets() {
       </div>
     </div>
   ` : '';
-  shell(staff ? 'Заявки клиентов' : 'Мои заявки', staff ? `<button class="button primary bitrix-btn-top" id="tickets-new-btn">${icon('plus', 15)}<span>Новая заявка</span></button>` : '', `${ticketTabs}${staff ? '' : waitingPanel()}${portfolioOverview(owned)}<section class="panel ${staff ? '' : 'customer-ticket-list'}"><div class="toolbar"><div class="chips" role="group" aria-label="Фильтр по статусу">${chips}</div><div class="ticket-tools"><input class="field ticket-search" id="ticket-search" type="search" maxlength="100" aria-label="Поиск по заявкам" placeholder="Номер, тема, клиент" value="${esc(state.search)}">${prioritySelect}${ownerSelect}</div></div>${head}<div id="ticket-list"></div><div class="toolbar" style="border-top:1px solid var(--line-light);border-bottom:0;min-height:52px"><span class="muted" id="ticket-count"></span><span class="kbd-hint"><kbd>J</kbd><kbd>K</kbd> по строкам · <kbd>Enter</kbd> открыть</span></div></section>${bulkBarHtml}`, { kicker: staff ? (dispatcher ? 'Все клиенты' : 'Назначенные мне и команде') : 'Личный кабинет' });
+  shell(staff ? 'Заявки клиентов' : 'Мои заявки', staff ? `<button class="button primary bitrix-btn-top" id="tickets-new-btn">${icon('plus', 15)}<span>Новая заявка</span></button>` : '', `${ticketTabs}${staff ? '' : waitingPanel()}${portfolioOverview(owned)}<section class="panel ${staff ? 'staff-ticket-list' : 'customer-ticket-list'}"><div class="toolbar"><div class="chips" role="group" aria-label="Фильтр по статусу">${chips}</div><div class="ticket-tools"><input class="field ticket-search" id="ticket-search" type="search" maxlength="100" aria-label="Поиск по заявкам" placeholder="Номер, тема, клиент" value="${esc(state.search)}">${prioritySelect}${ownerSelect}</div></div><div class="ticket-table-container">${head}<div id="ticket-list"></div></div><div class="toolbar" style="border-top:1px solid var(--line-light);border-bottom:0;min-height:52px"><span class="muted" id="ticket-count"></span><span class="kbd-hint"><kbd>J</kbd><kbd>K</kbd> по строкам · <kbd>Enter</kbd> открыть</span></div></section>${bulkBarHtml}`, { kicker: staff ? (dispatcher ? 'Все клиенты' : 'Назначенные мне и команде') : 'Личный кабинет' });
+  let matchingTickets = visible;
   const updateList = () => {
     const query = state.search.trim().toLocaleLowerCase('ru-RU');
     const prio = state.priorityFilter || 'all';
     const prioFiltered = visible.filter(t => prio === 'all' || (t.priority || 'normal') === prio);
     const matches = query ? prioFiltered.filter(t => [t.id, t.title, t.description, t.customer_name, t.customer_company, t.assignee_name, statusNames[t.status], priorityNames[t.priority || 'normal']].some(value => String(value || '').toLocaleLowerCase('ru-RU').includes(query))) : prioFiltered;
+    matchingTickets = matches;
+    const selectAll = document.querySelector('#tickets-select-all');
+    if (selectAll) { selectAll.checked = matches.length > 0 && matches.every(t=>state.selectedTickets.has(t.id)); selectAll.indeterminate = !selectAll.checked && matches.some(t=>state.selectedTickets.has(t.id)); }
     document.querySelector('#ticket-count').textContent = `Показано ${matches.length} из ${owned.length}`;
     document.querySelector('#ticket-list').innerHTML = matches.map(ticketRow).join('') || (query ? '<div class="empty"><strong>Ничего не найдено</strong>Попробуйте другой запрос или фильтр.</div>' : '<div class="empty"><strong>Заявок пока нет</strong>Создайте новую заявку или выберите другой фильтр.</div>');
-    document.querySelectorAll('#ticket-list [data-ticket]').forEach(el => el.onclick = () => openTicket(Number(el.dataset.ticket)));
+    document.querySelectorAll('#ticket-list [data-ticket]').forEach(el => {
+      el.onclick = e => {
+        if (e.target.closest('button, input, select, label, .t-actions-cell, .t-select-cell')) return;
+        openTicket(Number(el.dataset.ticket));
+      };
+      el.onkeydown = e => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          if (e.target.closest('button, input, select, label')) return;
+          e.preventDefault();
+          openTicket(Number(el.dataset.ticket));
+        }
+      };
+    });
+    document.querySelectorAll('#ticket-list [data-ticket-select]').forEach(cb => {
+      cb.onchange = e => {
+        e.stopPropagation();
+        const tid = Number(cb.dataset.ticketSelect);
+        if (cb.checked) state.selectedTickets.add(tid);
+        else state.selectedTickets.delete(tid);
+        renderTickets();
+      };
+    });
+    document.querySelectorAll('#ticket-list [data-claim-ticket]').forEach(btn => {
+      btn.onclick = e => {
+        e.stopPropagation();
+        claimTicket(Number(btn.dataset.claimTicket));
+      };
+    });
   };
   const ownerFilter = document.querySelector('#owner-filter');
   if (ownerFilter) { ownerFilter.value = state.owner; ownerFilter.onchange = e => { state.owner = e.target.value; renderTickets(); }; }
@@ -1284,7 +1349,7 @@ function renderTickets() {
   document.querySelector('#tickets-select-all')?.addEventListener('change', e => {
     e.stopPropagation();
     const checked = e.target.checked;
-    visible.forEach(t => {
+    matchingTickets.forEach(t => {
       if (checked) state.selectedTickets.add(t.id);
       else state.selectedTickets.delete(t.id);
     });
@@ -1308,7 +1373,7 @@ function renderTickets() {
       });
       toast(`Назначен исполнитель для ${res.updated.length} заявок`);
       state.selectedTickets.clear();
-      await reload();
+      await refresh();
     } catch (err) {
       toast(err.message, 'error');
     }
@@ -1327,7 +1392,7 @@ function renderTickets() {
         });
         toast(`Статус обновлён для ${res.updated.length} заявок`);
         state.selectedTickets.clear();
-        await reload();
+        await refresh();
       } catch (err) {
         toast(err.message, 'error');
       }
@@ -1573,7 +1638,24 @@ function bindTicketTemplates(form) {
   };
   load('');
 }
-async function openTicket(id) {if(state.view!=='detail'||state.current?.ticket?.id!==id)delayedLoading(`Заявка №${id}`,'detail');try{const sameTicket=state.current?.ticket?.id===id;state.current=await api(`/tickets/${id}`);if(!sameTicket)state.detailTab='messages';state.current.assignee_profile=state.user.role!=='customer'&&state.current.ticket.assignee_id?await api(`/staff/${state.current.ticket.assignee_id}/profile`).catch(()=>null):null;state.gitLinks=await api(`/tickets/${id}/git-links`).catch(()=>[]);state.view='detail';state.error='';render();}catch(error){showError(error);}}
+async function openTicket(id) {
+  const navigation = beginNavigation();
+  if(state.view!=='detail'||state.current?.ticket?.id!==id)delayedLoading(`Заявка №${id}`,'detail');
+  try {
+    const sameTicket = state.current?.ticket?.id === id;
+    const detail = await api(`/tickets/${id}`);
+    if (!isNavigationCurrent(navigation)) return;
+    const [profile, gitLinks] = await Promise.all([
+      state.user.role !== 'customer' && detail.ticket.assignee_id ? api(`/staff/${detail.ticket.assignee_id}/profile`).catch(()=>null) : null,
+      api(`/tickets/${id}/git-links`).catch(()=>[])
+    ]);
+    if (!isNavigationCurrent(navigation)) return;
+    state.current = { ...detail, assignee_profile: profile };
+    if (!sameTicket) state.detailTab = 'messages';
+    state.gitLinks = gitLinks;
+    state.view = 'detail'; state.error = ''; render();
+  } catch(error) { if (isNavigationCurrent(navigation)) showError(error); }
+}
 /* ---------- Переписка: ответы, прочтение, итоги встреч ---------- */
 const viewerSide = () => state.user.role === 'customer' ? 'customer' : 'team';
 const messageSide = m => m.author_role === 'customer' ? 'customer' : 'team';
@@ -1589,10 +1671,18 @@ function messageHtml(m, { header, extra = '', canReply = false }) {
 function summaryCard(s) {
   return `<article class="meeting-card" aria-label="Итоги ${meetingKindNames[s.kind] || 'встречи'}"><div class="meeting-head"><span class="meeting-ico">${icon('users', 16)}</span><div><strong>Итоги ${meetingKindNames[s.kind] || 'встречи'} · ${new Date(s.occurred_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}</strong><small>${esc(s.author_name)}</small></div></div><span class="eyebrow">О чём договорились</span><p>${esc(s.client_summary)}</p>${s.client_next_steps ? `<span class="eyebrow">Что дальше</span><p>${esc(s.client_next_steps)}</p>` : ''}</article>`;
 }
-function timeline(messages, summaries, renderMessage) {
-  return [...messages.map(m => ({ at: m.created_at, kind: 'message', item: m })), ...(summaries || []).map(s => ({ at: s.shared_at, kind: 'summary', item: s }))]
+function timeline(messages, summaries, renderMessage, attachments = []) {
+  return [...messages.map(m => ({ at: m.created_at, kind: 'message', item: m })), ...(summaries || []).map(s => ({ at: s.shared_at, kind: 'summary', item: s })), ...attachments.map(file => ({ at: file.created_at, kind: 'attachment', item: file }))]
     .sort((a, b) => a.at.localeCompare(b.at))
-    .map(entry => entry.kind === 'summary' ? { at: entry.at, html: summaryCard(entry.item) } : { at: entry.at, html: renderMessage(entry.item) });
+    .map(entry => {
+      if (entry.kind === 'summary') return { at: entry.at, html: summaryCard(entry.item) };
+      if (entry.kind === 'attachment') {
+        const file = entry.item;
+        const name = file.author_name || (file.author_id === state.user.id ? state.user.name : 'Вложение');
+        return { at: entry.at, html: `<div class="message ${file.author_id === state.user.id ? 'mine' : ''}"><div class="msg-head"><small>${esc(name)} · ${date(file.created_at)}</small></div>${attachmentLink(file)}</div>` };
+      }
+      return { at: entry.at, html: renderMessage(entry.item) };
+    });
 }
 function paintReadTicks(readState) {
   if (!readState) return;
@@ -1655,7 +1745,7 @@ async function markRead(kind, record, messages) {
   try {
     const reads = await api(`/${kind === 'ticket' ? 'tickets' : 'chats'}/${record}/read`, { method: 'POST', body: JSON.stringify({}) });
     const current = kind === 'ticket' ? state.current : state.currentChat;
-    if (current) current.read_state = reads;
+    if ((kind === 'ticket' ? current?.ticket.id : current?.chat.id) === record) current.read_state = reads;
     loadNotifications().catch(() => {});
   } catch {}
 }
@@ -1669,6 +1759,7 @@ function ticketProgress(ticket, estimates) {
 function renderCsat(t, staff) {
   if (!['done', 'closed'].includes(t.status) || t.declined) return '';
   if (!staff && !t.rating && t.status !== 'closed') return '';
+  if (!staff && !t.rating && !(t.can_rate ?? (t.customer_id === state.user.id))) return '';
   if (!staff) {
     if (t.rating) {
       return `<div class="csat-box"><div class="csat-title">Ваша оценка работы</div><div class="csat-stars">${[1,2,3,4,5].map(s=>`<span class="csat-star active">${s<=t.rating?'★':'☆'}</span>`).join('')}</div>${t.rating_comment?`<p style="margin:6px 0;font-size:13px">«${esc(t.rating_comment)}»</p>`:''}<div class="csat-result">✓ Спасибо за вашу оценку!</div></div>`;
@@ -1868,11 +1959,11 @@ function renderDetail() {
   const prioBadge = `<span class="badge priority-${esc(t.priority || 'normal')}">${esc(priorityNames[t.priority] || 'Обычный')}</span>`;
   const badges = `<span class="badge ${esc(t.status)}">${statusNames[t.status]}</span>${prioBadge}${late.map(s => `<span class="sla late">${icon('clock', 13)}${s.label} ${s.label === 'Ответ' ? 'просрочен' : 'просрочена'} на ${formatDuration(-s.diff)}</span>`).join('')}<span class="badge">${esc(serviceLabel(t.service_type))}</span>`;
   const lead = [`№${t.id}`, staff ? (t.customer_company || t.customer_name) : '', `создана ${date(t.created_at)}`, t.organization_id ? (t.visibility === 'organization' ? 'видна всей компании' : 'личная заявка') : ''].filter(Boolean).map(esc).join(' · ');
-  const canClaim = staff && t.assignee_id !== state.user.id && !['done', 'closed'].includes(t.status);
+  const canClaim = isDispatcher() && t.assignee_id !== state.user.id && !['done', 'closed'].includes(t.status);
   const claimBtn = canClaim ? `<button type="button" class="button small btn-claim-ticket" data-claim-ticket="${t.id}" title="Взять заявку себе">${icon('user', 13)} Взять себе</button>` : '';
   const assignee = dispatcher ? `<div class="assignee-wrap"><select id="assignee" aria-label="Ответственный"><option value="">Без ответственного</option>${state.staff.map(x => `<option value="${x.id}">${esc(staffLabel(x))}</option>`).join('')}</select>${claimBtn}</div>` : `<div class="assignee-wrap"><span class="meta-person">${t.assignee_id ? avatarOf(t.assignee_id, t.assignee_name) : ''}${esc(t.assignee_name || 'Не назначен')}</span>${claimBtn}</div>`;
   const canReply = !viewer && t.status !== 'closed';
-  const chat = timeline(messages, state.current.meeting_summaries, m => messageHtml(m, { header: `${esc(m.author_name)} · ${date(m.created_at)}`, canReply })).map(x => x.html).join('') || `<div class="empty">${canReply ? 'Сообщений пока нет. Напишите первое сообщение.' : 'Сообщений пока нет. Здесь появится история переписки.'}</div>`;
+  const chat = timeline(messages, state.current.meeting_summaries, m => messageHtml(m, { header: `${esc(m.author_name)} · ${date(m.created_at)}`, canReply }), state.current.attachments || []).map(x => x.html).join('') || `<div class="empty">${canReply ? 'Сообщений пока нет. Напишите первое сообщение.' : 'Сообщений пока нет. Здесь появится история переписки.'}</div>`;
   const eventText = e => e.kind==='priority'?'приоритет изменён на «'+(priorityNames[e.new_value]||e.new_value)+'»':e.kind==='service_budget'?'лимит сопровождения изменён: '+(e.new_value==='unlimited'?'без ограничения':hours(Number(e.new_value))):e.kind==='owner_help'?'отправлен запрос менеджеру на восстановление владельца':e.kind === 'reopen' ? 'заявка возвращена в работу: ' + esc(e.new_value) : e.kind === 'status' ? 'статус изменён на «' + esc(statusNames[e.new_value] || e.new_value) + '»' : e.kind === 'acceptance' ? (e.new_value === 'accepted' ? 'работа принята' : 'работа возвращена на доработку') : e.kind === 'decline' ? 'заказчик отказался от заявки' : 'ответственный изменён';
   const history = events.map(e => `<li><div>${esc(e.actor_name)}: ${eventText(e)}<small>${date(e.created_at)}</small></div></li>`).join('');
   const person = state.current.assignee_profile;
@@ -2610,24 +2701,26 @@ function renderChats() {
   bindChatList();
 }
 async function openChat(id) {
+  const navigation = beginNavigation();
   if(state.view!=='chat'||state.currentChat?.chat?.id!==id)delayedLoading('Общий чат','list');
-  try{state.currentChat=await api(`/chats/${id}`);state.inboxSection='general';state.view='chat';state.error='';render();}
-  catch(error){showError(error);}
+  try{const detail=await api(`/chats/${id}`);if(!isNavigationCurrent(navigation))return;state.currentChat=detail;state.inboxSection='general';state.view='chat';state.error='';render();}
+  catch(error){if(isNavigationCurrent(navigation))showError(error);}
 }
 let ticketChatLoad = 0;
 async function openTicketChat(id) {
+  const navigation = beginNavigation();
   const load = ++ticketChatLoad;
   const accountId = state.user.id;
   const origin = `${state.view}:${state.inboxSection}`;
   try {
     const detail = await api(`/tickets/${id}`);
-    if (load !== ticketChatLoad || state.user?.id !== accountId || `${state.view}:${state.inboxSection}` !== origin) return;
+    if (!isNavigationCurrent(navigation) || load !== ticketChatLoad || state.user?.id !== accountId || `${state.view}:${state.inboxSection}` !== origin) return;
     state.current = detail;
     state.inboxSection = 'tickets';
     state.view = 'ticket-chat';
     state.error = '';
     render();
-  } catch (error) { if (load === ticketChatLoad) showError(error); }
+  } catch (error) { if (isNavigationCurrent(navigation) && load === ticketChatLoad) showError(error); }
 }
 function renderTicketChat() {
   const { ticket: t, messages, attachments = [], meeting_summaries = [] } = state.current;
@@ -2636,7 +2729,7 @@ function renderTicketChat() {
   const canReply = !viewer && t.status !== 'closed';
   const items = timeline(messages, meeting_summaries, m => messageHtml(m, {
     header: `${esc(m.author_name)} · ${date(m.created_at)}`, canReply
-  })).map(entry => entry.html).join('') || '<div class="empty">Сообщений пока нет. Здесь появится переписка по заявке.</div>';
+  }), attachments).map(entry => entry.html).join('') || '<div class="empty">Сообщений пока нет. Здесь появится переписка по заявке.</div>';
   const files = attachments.length ? `<div class="ticket-chat-files"><details><summary>Файлы заявки · ${attachments.length}</summary>${attachments.map(attachmentLink).join('')}</details></div>` : '';
   const thread = `<section class="inbox-thread conversation"><div class="inbox-thread-head"><button type="button" class="icon-btn thread-back" id="back-chats" aria-label="К списку диалогов">←</button><span class="chat-logo" aria-hidden="true">${icon('ticket', 20)}</span><div><strong>№${t.id} · ${esc(t.title)}</strong><small>${esc(t.customer_company || t.customer_name)} · ${esc(statusNames[t.status])}</small></div><button type="button" class="button small" id="open-ticket-card">Открыть заявку ${icon('arrow', 14)}</button></div>${files}<div class="messages" id="ticket-chat-messages">${items}</div>${ticketChatComposer(t, viewer, staff)}</section>`;
   shell('Общий чат', '', `<section class="panel inbox has-thread ticket-inbox">${chatListPanel(t.id)}${thread}</section>`, { kicker: 'Общие диалоги и чаты заявок' });
@@ -2677,19 +2770,42 @@ function openChatContext() {
   dialog.showModal();
 }
 
-function renderChatDetail() {
-  const { chat, messages, participants = [], linked_tickets = [], attachments = [], service_entries = [], meeting_summaries = [] } = state.currentChat;
-  const staff = state.user.role !== 'customer';
-  const dispatcher = isDispatcher();
+function chatTimelineHtml({ messages, attachments = [], meeting_summaries = [] }) {
   let lastDay = '';
-  const items = timeline(messages, meeting_summaries, m => messageHtml(m, { canReply: true,
-    header: `${esc(m.author_name)} · ${new Date(m.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`,
-    extra: attachments.filter(a => a.chat_message_id === m.id).map(attachmentLink).join('') })).map(entry => {
+  return timeline(messages, meeting_summaries, m => {
+    const files = attachments.filter(a => a.chat_message_id === m.id);
+    const fileNotice = `Прикреплены файлы: ${files.slice().sort((a, b) => a.id - b.id).map(file => file.filename).join(', ')}`.slice(0, 10000);
+    const imageOnly = files.length && files.every(file => /\.(png|jpe?g|webp|gif)$/i.test(file.filename));
+    return messageHtml(imageOnly && m.body === fileNotice ? { ...m, body: '' } : m, { canReply: true,
+      header: `${esc(m.author_name)} · ${new Date(m.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`,
+      extra: files.map(attachmentLink).join('') });
+  }, attachments.filter(file => !file.chat_message_id)).map(entry => {
     const day = new Date(entry.at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
     const separator = day !== lastDay ? `<div class="day-separator">${day}</div>` : '';
     lastDay = day;
     return separator + entry.html;
   }).join('') || '<div class="empty">Начните разговор. Сообщение увидит наша команда.</div>';
+}
+function bindChatMessageActions({ messages, linked_tickets = [] }) {
+  if (state.user.role === 'customer') return;
+  document.querySelectorAll('#chat-messages .message').forEach(el => {
+    const msg = messages.find(m => m.id === Number(el.dataset.msg));
+    if (msg && msg.author_role === 'customer' && !linked_tickets.some(t => t.source_message_id === msg.id) && !el.querySelector('[data-message]')) {
+      el.querySelector('.msg-foot').insertAdjacentHTML('beforeend', `<button class="chat-to-ticket" data-message="${msg.id}">${icon('plus', 13)}Создать заявку из сообщения</button>`);
+    }
+  });
+  document.querySelectorAll('[data-message]').forEach(el => el.onclick = () => {
+    const msg = messages.find(m => m.id === Number(el.dataset.message));
+    const form = document.querySelector('#chat-ticket-form');
+    if (!msg || !form) return;
+    form.hidden = false; form.elements.message_id.value = msg.id; form.elements.title.value = msg.body.slice(0, 100); form.elements.title.focus();
+  });
+}
+function renderChatDetail() {
+  const { chat, messages, participants = [], linked_tickets = [], service_entries = [] } = state.currentChat;
+  const staff = state.user.role !== 'customer';
+  const dispatcher = isDispatcher();
+  const items = chatTimelineHtml(state.currentChat);
   const otherTickets = state.tickets.filter(t => (chat.organization_id ? t.organization_id === chat.organization_id && t.visibility === 'organization' : t.customer_id === chat.customer_id) && !['done', 'closed'].includes(t.status) && !linked_tickets.some(l => l.id === t.id));
   const ticketButton = t => `<button class="linked-ticket" data-linked-ticket="${t.id}"><span>№${t.id} · ${esc(t.title)}</span>${t.status ? `<span class="badge ${esc(t.status)}">${statusNames[t.status]}</span>` : ''}</button>`;
   const assigneeSelect = dispatcher ? `<label class="select-inline"><span>Ведёт</span><select id="chat-assignee" aria-label="Ответственный за чат"><option value="">Без ответственного</option>${state.staff.map(x => `<option value="${x.id}">${esc(staffLabel(x))}</option>`).join('')}</select></label>` : '';
@@ -2700,14 +2816,8 @@ function renderChatDetail() {
   document.querySelector('#chat-info-toggle').onclick = openChatContext;
   document.querySelectorAll('[data-linked-ticket]').forEach(el => el.onclick = () => openTicket(Number(el.dataset.linkedTicket)));
   if (staff) {
-    document.querySelectorAll('#chat-messages .message').forEach(el => {
-      const msg = messages.find(m => m.id === Number(el.dataset.msg));
-      if (msg && msg.author_role === 'customer' && !linked_tickets.some(t => t.source_message_id === msg.id)) {
-        el.querySelector('.msg-foot').insertAdjacentHTML('beforeend', `<button class="chat-to-ticket" data-message="${msg.id}">${icon('plus', 13)}Создать заявку из сообщения</button>`);
-      }
-    });
     document.querySelector('#chat-message-form').insertAdjacentHTML('afterend', '<form class="form chat-ticket-form" id="chat-ticket-form" hidden><strong>Новая заявка из чата</strong><label>Тема<input class="field" name="title" required minlength="3" maxlength="140"></label><input type="hidden" name="message_id"><div class="row"><button class="button primary">Создать заявку</button><button class="button" type="button" id="cancel-chat-ticket">Отмена</button></div></form>' + serviceForm(chatServiceTarget(chat), service_entries));
-    document.querySelectorAll('[data-message]').forEach(el => el.onclick = () => { const msg = messages.find(m => m.id === Number(el.dataset.message)); const form = document.querySelector('#chat-ticket-form'); form.hidden = false; form.elements.message_id.value = msg.id; form.elements.title.value = msg.body.slice(0, 100); form.elements.title.focus(); });
+    bindChatMessageActions(state.currentChat);
     document.querySelector('#cancel-chat-ticket').onclick = () => document.querySelector('#chat-ticket-form').hidden = true;
     document.querySelector('#chat-ticket-form').onsubmit = async e => { e.preventDefault(); const button = e.target.querySelector('button.primary'); button.disabled = true; try { const data = Object.fromEntries(new FormData(e.target)); const ticket = await api(`/chats/${chat.id}/tickets`, { method: 'POST', body: JSON.stringify({ title: data.title, message_id: Number(data.message_id) }) }); await refresh(); await openTicket(ticket.id); } catch (error) { showError(error); } };
   }
@@ -3508,19 +3618,19 @@ function renderBilling() {
     const totalClients = clients.length || b.total_clients || 0;
     const withDebt = clients.filter(c => (c.balance_minutes || 0) < 0).length || b.clients_with_debt || 0;
     const withDeposit = clients.filter(c => (c.balance_minutes || 0) > 0).length || b.clients_with_positive_balance || 0;
-    const debtMinutes = clients.filter(c => (c.balance_minutes || 0) < 0).reduce((acc, c) => acc + c.balance_minutes, 0);
-    kpis = `<div class="billing-kpi-grid">${kpi('Поступило за месяц', rub(totalPaid), 'Оплаченные счета клиентов', 'positive')}${kpi('Готово к актированию', hours(totalUnbilled), 'Задачи и сопровождение без акта')}${kpi('Ожидают оплаты', rub(issuedDocs.reduce((acc, d) => acc + (d.total_rub || 0), 0)), `${issuedDocs.length} ${plural(issuedDocs.length, ['счёт', 'счёта', 'счетов'])} · ${totalClients} ${plural(totalClients, ['клиент', 'клиента', 'клиентов'])}, ${withDeposit} с депозитом`)}${kpi('Баланс в минусе', `${withDebt} ${plural(withDebt, ['клиент', 'клиента', 'клиентов'])}`, withDebt ? `Суммарно −${hours(Math.abs(debtMinutes))}` : 'Все балансы в норме', withDebt ? 'danger' : '')}</div>`;
+    const debtRub = clients.reduce((acc,c)=>acc+Math.min(0,c.deposit_balance_rub||0),0);
+    kpis = `<div class="billing-kpi-grid">${kpi('Оплаченные счета', rub(totalPaid), 'Оплаченные счета клиентов', 'positive')}${kpi('Готово к актированию', hours(totalUnbilled), 'Задачи и сопровождение без акта')}${kpi('Ожидают оплаты', rub(issuedDocs.reduce((acc, d) => acc + (d.total_rub || 0), 0)), `${issuedDocs.length} ${plural(issuedDocs.length, ['счёт', 'счёта', 'счетов'])} · ${totalClients} ${plural(totalClients, ['клиент', 'клиента', 'клиентов'])}, ${withDeposit} с депозитом`)}${kpi('Баланс в минусе', `${withDebt} ${plural(withDebt, ['клиент', 'клиента', 'клиентов'])}`, withDebt ? `Суммарно −${rub(Math.abs(debtRub))}` : 'Все балансы в норме', withDebt ? 'danger' : '')}</div>`;
   } else {
     const balMins = b.balance_minutes || 0;
     const balHours = b.balance_hours ?? (balMins / 60.0);
     const balRub = b.balance_rub ?? b.balance_rub_equiv ?? Math.round(balHours * (b.hourly_rate_rub || 3000));
     const activeMins = b.in_progress_minutes ?? b.active_billable_minutes ?? 0;
     const unbilledMins = b.unbilled_minutes ?? b.unbilled_done_minutes ?? 0;
-    kpis = `<div class="billing-kpi-grid">${kpi('Баланс депозита', `${balHours.toLocaleString('ru-RU', { maximumFractionDigits: 1 })} ч`, `Эквивалент: ${rub(balRub)}`, balMins > 0 ? 'positive' : balMins < 0 ? 'danger' : '')}${kpi('Тарифная ставка', `${(b.hourly_rate_rub || 3000).toLocaleString('ru-RU')} ₽/ч`, 'Фиксированная ставка по договору')}${kpi('Часы в работе', hours(activeMins), 'Согласованные активные заявки')}${kpi('Готово к актированию', hours(unbilledMins), 'Задачи и сопровождение без акта')}</div>`;
+    kpis = `<div class="billing-kpi-grid">${kpi('Баланс депозита', rub(balRub), `Доступно: ${rub(b.available_rub)} · резерв: ${rub(b.held_rub)}`, balMins > 0 ? 'positive' : balMins < 0 ? 'danger' : '')}${kpi('Тарифная ставка', `${(b.hourly_rate_rub || 3000).toLocaleString('ru-RU')} ₽/ч`, 'Фиксированная ставка по договору')}${kpi('Часы в работе', hours(activeMins), 'Согласованные активные заявки')}${kpi('Готово к актированию', hours(unbilledMins), 'Задачи и сопровождение без акта')}</div>`;
   }
 
-  const actions = employee ? '' : staff
-    ? `<button class="button" id="btn-create-deposit">Пополнить баланс</button><button class="button" id="btn-create-invoice">Выставить счёт</button><button class="button primary" id="btn-create-act">${icon('plus', 16)}Сформировать акт</button>`
+  const actions = !canManage && staff ? '' : staff
+    ? `<button class="button" id="btn-company-profile">Реквизиты исполнителя</button><button class="button" id="btn-create-deposit">Пополнить баланс</button><button class="button" id="btn-create-invoice">Выставить счёт</button><button class="button primary" id="btn-create-act">${icon('plus', 16)}Сформировать акт</button>`
     : `<button class="button primary" id="btn-customer-deposit">${icon('plus', 16)}Купить пакет часов</button>`;
 
   const availableTabs = staff ? ['docs', 'clients', 'service', 'tx'] : ['docs', 'tx'];
@@ -3557,7 +3667,7 @@ function renderBilling() {
   } else if (activeTab === 'clients' && staff) {
     const clientRows = clients.map(c => {
       const balance = c.balance_minutes || 0;
-      return `<tr><td><strong>${esc(c.name)}</strong><div class="billing-client-meta">${c.client_type === 'org' || c.client_type === 'organization' ? 'Организация' : 'Физлицо / прямой клиент'}</div></td><td><div>${c.inn ? `ИНН: ${esc(c.inn)}` : '<span class="muted">ИНН не указан</span>'}</div>${c.legal_address ? `<div class="billing-client-meta">${esc(c.legal_address)}</div>` : ''}</td><td class="num"><strong>${(c.hourly_rate_rub || 3000).toLocaleString('ru-RU')} ₽/ч</strong></td><td class="num"><strong style="color:${balance < 0 ? 'var(--late)' : 'var(--ink)'}">${(c.balance_hours ?? (balance / 60)).toLocaleString('ru-RU', { maximumFractionDigits: 1 })} ч</strong><div class="billing-client-meta">${rub(c.balance_rub ?? c.balance_rub_equiv ?? Math.round((balance / 60) * (c.hourly_rate_rub || 3000)))}</div></td><td class="num"><strong>${hours(c.unbilled_minutes ?? c.unbilled_done_minutes ?? 0)}</strong></td><td><div class="billing-actions">${canManage?`<button class="button small" data-edit-client="${c.client_type}:${c.client_id}">Реквизиты</button><button class="button small" data-deposit-client="${c.client_type}:${c.client_id}">+ Часы</button><button class="button small primary" data-act-client="${c.client_type}:${c.client_id}">+ Акт</button>`:'Только просмотр'}</div></td></tr>`;
+      return `<tr><td><strong>${esc(c.name)}</strong><div class="billing-client-meta">${c.client_type === 'org' || ['org','organization'].includes(c.client_type) ? 'Организация' : 'Физлицо / прямой клиент'}</div></td><td><div>${c.inn ? `ИНН: ${esc(c.inn)}` : '<span class="muted">ИНН не указан</span>'}</div>${c.legal_address ? `<div class="billing-client-meta">${esc(c.legal_address)}</div>` : ''}</td><td class="num"><strong>${(c.hourly_rate_rub || 3000).toLocaleString('ru-RU')} ₽/ч</strong></td><td class="num"><strong style="color:${balance < 0 ? 'var(--late)' : 'var(--ink)'}">${rub(c.deposit_balance_rub ?? c.balance_rub)}</strong><div class="billing-client-meta">Резерв: ${rub(c.held_rub)} · доступно: ${rub(c.available_rub)}</div></td><td class="num"><strong>${hours(c.unbilled_minutes ?? c.unbilled_done_minutes ?? 0)}</strong></td><td><div class="billing-actions">${canManage?`<button class="button small" data-edit-client="${c.client_type}:${c.client_id}">Реквизиты</button><button class="button small" data-deposit-client="${c.client_type}:${c.client_id}">Пополнить</button><button class="button small primary" data-act-client="${c.client_type}:${c.client_id}">+ Акт</button>`:'Только просмотр'}</div></td></tr>`;
     }).join('');
     content = `<div class="table-scroll"><table class="billing-table"><thead><tr><th>Клиент</th><th>Реквизиты</th><th class="num">Ставка</th><th class="num">Депозит</th><th class="num">К актированию</th><th><span class="visually-hidden">Управление</span></th></tr></thead><tbody>${clientRows || '<tr><td colspan="6"><div class="empty"><strong>Клиентов пока нет</strong></div></td></tr>'}</tbody></table></div>`;
   } else if (activeTab === 'service' && staff) {
@@ -3571,18 +3681,18 @@ function renderBilling() {
       const clientName = t.organization_name || t.customer_name || t.client_name || 'Клиент';
       return `<tr><td>${date(t.created_at)}</td>${staff ? `<td><strong>${esc(clientName)}</strong></td>` : ''}<td><span class="billing-tx-badge ${kind[0]}">${kind[1]}</span></td><td class="num"><strong style="color:${t.minutes > 0 ? 'var(--accent-ink)' : t.minutes < 0 ? 'var(--late)' : 'inherit'}">${t.minutes > 0 ? '+' : ''}${hours(t.minutes)}</strong></td><td class="num"><strong>${rub(t.amount_rub)}</strong></td><td>${esc(t.description || '—')}</td><td><small class="muted">${esc(t.created_by_name || 'Система')}</small></td></tr>`;
     }).join('');
-    content = txs.length ? `<div class="table-scroll"><table class="billing-table"><thead><tr><th>Дата</th>${staff ? '<th>Клиент</th>' : ''}<th>Операция</th><th class="num">Объём</th><th class="num">Сумма</th><th>Основание</th><th>Автор</th></tr></thead><tbody>${txRows}</tbody></table></div>` : '<div class="empty"><strong>Операций пока нет</strong>Пополнения и списания часов появятся здесь.</div>';
+    content = txs.length ? `<div class="table-scroll"><table class="billing-table"><thead><tr><th>Дата</th>${staff ? '<th>Клиент</th>' : ''}<th>Операция</th><th class="num">Объём</th><th class="num">Сумма</th><th>Основание</th><th>Автор</th></tr></thead><tbody>${txRows}</tbody></table></div>` : '<div class="empty"><strong>Операций пока нет</strong>Пополнения и списания денег появятся здесь.</div>';
   }
 
   let side = '';
   if (staff) {
-    const maxBalance = Math.max(1, ...clients.map(c => Math.abs(c.balance_minutes || 0)));
-    const balanceRows = clients.slice().sort((x, y) => (y.balance_minutes || 0) - (x.balance_minutes || 0)).map(c => {
-      const m = c.balance_minutes || 0;
+    const maxBalance = Math.max(1, ...clients.map(c => Math.abs(c.deposit_balance_rub || 0)));
+    const balanceRows = clients.slice().sort((x, y) => (y.deposit_balance_rub || 0) - (x.deposit_balance_rub || 0)).map(c => {
+      const m = c.deposit_balance_rub || 0;
       const width = Math.abs(m) / maxBalance * 100;
-      return `<div class="balance-row"><span title="${esc(c.name)}">${esc(c.name)}</span><strong class="${m < 0 ? 'neg' : m > 0 ? 'pos' : ''}">${m > 0 ? '+' : m < 0 ? '−' : ''}${hours(Math.abs(m))}</strong><div class="balance-track" aria-hidden="true"><div>${m < 0 ? `<i class="neg" style="width:${width}%"></i>` : ''}</div><div>${m > 0 ? `<i class="pos" style="width:${width}%"></i>` : ''}</div></div></div>`;
+      return `<div class="balance-row"><span title="${esc(c.name)}">${esc(c.name)}</span><strong class="${m < 0 ? 'neg' : m > 0 ? 'pos' : ''}">${m > 0 ? '+' : m < 0 ? '−' : ''}${rub(Math.abs(m))}</strong><div class="balance-track" aria-hidden="true"><div>${m < 0 ? `<i class="neg" style="width:${width}%"></i>` : ''}</div><div>${m > 0 ? `<i class="pos" style="width:${width}%"></i>` : ''}</div></div></div>`;
     }).join('');
-    side = `<div class="context-stack"><section class="panel content"><div class="card-head"><h2>Балансы клиентов</h2><span class="muted">часы депозита</span></div>${balanceRows || '<p class="muted">Клиентов пока нет.</p>'}</section>${canManage&&totalUnbilled > 0 ? `<section class="focus-panel"><span class="focus-overline">Пора закрыть период</span><h2>${hours(totalUnbilled)} выполнено без акта</h2><p>Сформируйте акт, чтобы списать часы с депозита клиента.</p><div class="focus-actions"><button class="button on-dark" id="btn-close-period">Сформировать акт</button></div></section>` : ''}</div>`;
+    side = `<div class="context-stack"><section class="panel content"><div class="card-head"><h2>Балансы клиентов</h2><span class="muted">рубли депозита</span></div>${balanceRows || '<p class="muted">Клиентов пока нет.</p>'}</section>${canManage&&totalUnbilled > 0 ? `<section class="focus-panel"><span class="focus-overline">Пора закрыть период</span><h2>${hours(totalUnbilled)} выполнено без акта</h2><p>Сформируйте акт, чтобы списать согласованную стоимость с депозита клиента.</p><div class="focus-actions"><button class="button on-dark" id="btn-close-period">Сформировать акт</button></div></section>` : ''}</div>`;
   }
 
   const month = new Date().toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' });
@@ -3651,6 +3761,7 @@ function prepareBillingTables() {
 }
 
 function attachBillingHandlers() {
+  document.querySelector('#btn-company-profile')?.addEventListener('click', openCompanyProfile);
   prepareBillingTables();
   document.querySelectorAll('.billing-tab').forEach(btn => {
     btn.onclick = () => {
@@ -3669,7 +3780,7 @@ function attachBillingHandlers() {
   document.querySelectorAll('[data-mark-signed]').forEach(button=>button.onclick=async()=>{if(!confirm('Отметить, что акт подписан сторонами?'))return;try{await api(`/billing/invoices/${button.dataset.markSigned}/status`,{method:'PATCH',body:JSON.stringify({status:'signed'})});await openBilling();}catch(error){showError(error);}});
   document.querySelectorAll('[data-mark-paid]').forEach(btn => {
     btn.onclick = async () => {
-      if(!confirm('Подтвердить фактическое поступление денег по этому счёту? Часы будут зачислены клиенту.'))return;
+      if(!confirm('Подтвердить фактическое поступление денег по этому счёту? Сумма будет зачислена клиенту.'))return;
       const id = Number(btn.dataset.markPaid);
       try {
         await api(`/billing/invoices/${id}/status`, {
@@ -3685,7 +3796,7 @@ function attachBillingHandlers() {
 
   document.querySelectorAll('[data-mark-cancel]').forEach(btn => {
     btn.onclick = async () => {
-      if (!confirm('Аннулировать этот документ? Если это акт, списанные часы будут возвращены на баланс клиента.')) return;
+      if (!confirm('Аннулировать этот документ? Если это акт, списанная сумма будет возвращена на баланс клиента.')) return;
       const id = Number(btn.dataset.markCancel);
       try {
         await api(`/billing/invoices/${id}/status`, {
@@ -3743,7 +3854,7 @@ async function openActModal(preselectedKey = '') {
               <option value="">-- Выберите организацию или клиента --</option>
               ${clients.map(c => `
                 <option value="${c.client_type}:${c.client_id}" ${preselectedKey === `${c.client_type}:${c.client_id}` ? 'selected' : ''}>
-                  ${esc(c.name)} (${c.client_type === 'organization' ? 'Организация' : 'Физлицо'}, ставка ${c.hourly_rate_rub} ₽/ч)
+                  ${esc(c.name)} (${['org','organization'].includes(c.client_type) ? 'Организация' : 'Физлицо'}, ставка ${c.hourly_rate_rub} ₽/ч)
                 </option>
               `).join('')}
             </select>
@@ -3766,7 +3877,7 @@ async function openActModal(preselectedKey = '') {
           <div id="act-totals-bar" style="padding:10px 14px; background:var(--accent-soft); border-radius:var(--radius-sm); font-size:13.5px; margin: 10px 0">
             Выбрано заявок: <strong>0</strong> | Трудозатраты: <strong>0 ч</strong> | Сумма к списанию: <strong>0 ₽</strong>
           </div>
-          <button class="button primary" id="act-submit-btn" disabled>Сформировать акт и списать часы</button>
+          <button class="button primary" id="act-submit-btn" disabled>Сформировать акт и списать сумму</button>
         </form>
       </div>
     </div>
@@ -3818,7 +3929,7 @@ async function openActModal(preselectedKey = '') {
           const mins = t.actual_minutes || t.approved_minutes || 0;
           return `
             <div class="billing-ticket-item">
-              <input type="checkbox" class="act-ticket-cb" value="${t.id}" data-mins="${mins}" checked id="act-cb-${t.id}">
+              <input type="checkbox" class="act-ticket-cb" value="${t.id}" data-mins="${mins}" data-rub="${t.cost_rub}" checked id="act-cb-${t.id}">
               <label for="act-cb-${t.id}">
                 <span><strong>№${t.id}</strong>: ${esc(t.title)}</span>
                 <strong>${hours(mins)}</strong>
@@ -3850,7 +3961,9 @@ async function openActModal(preselectedKey = '') {
     const checkedTickets = slot.querySelectorAll('.act-ticket-cb:checked').length;
     let totalMins = 0;
     checked.forEach(cb => { totalMins += Number(cb.dataset.mins || 0); });
-    const rub = Math.round(totalMins / 60 * rate);
+    const ticketRub = checked.filter(cb=>cb.classList.contains('act-ticket-cb')).reduce((sum,cb)=>sum+Number(cb.dataset.rub||0),0);
+    const serviceMins = checked.filter(cb=>cb.classList.contains('act-service-cb')).reduce((sum,cb)=>sum+Number(cb.dataset.mins||0),0);
+    const rub = ticketRub + Math.round(serviceMins / 60 * rate);
     totalsBar.innerHTML = `Выбрано заявок: <strong>${checkedTickets}</strong>, сопровождение: <strong>${checked.length - checkedTickets}</strong> | Трудозатраты: <strong>${hours(totalMins)}</strong> | Сумма к списанию: <strong>${rub.toLocaleString('ru-RU')} ₽</strong>`;
     submitBtn.disabled = checked.length === 0;
   }
@@ -3898,7 +4011,7 @@ async function openInvoiceModal(preselectedKey = '') {
     <div class="billing-modal-backdrop" id="billing-modal">
       <div class="billing-modal-card">
         <div class="billing-modal-head">
-          <h2>Выставить счёт на оплату часов</h2>
+          <h2>Выставить счёт на оплату</h2>
           <button class="billing-modal-close" id="modal-close">&times;</button>
         </div>
         <form id="invoice-form" class="form">
@@ -3912,14 +4025,14 @@ async function openInvoiceModal(preselectedKey = '') {
               `).join('')}
             </select>
           </label>
-          <label>Количество часов в пакете
-            <input class="field" type="number" name="deposit_hours" id="inv-hours" min="1" max="1000" step="1" value="10" required>
+          <label>Сумма счёта, ₽
+            <input class="field" type="number" name="amount_rub" id="inv-hours" min="1" max="100000000" step="1" value="30000" required>
           </label>
           <div id="inv-preview-bar" style="padding:10px 14px; background:var(--accent-soft); border-radius:var(--radius-sm); font-size:14px; margin: 8px 0">
             Итого к оплате: <strong>30 000 ₽</strong>
           </div>
           <label>Назначение платежа / Примечание
-            <textarea class="field" name="notes" placeholder="Предоплата пакета 10 часов технической поддержки и доработок"></textarea>
+            <textarea class="field" name="notes" placeholder="Пополнение депозита по договору"></textarea>
           </label>
           <button class="button primary" id="inv-submit-btn">Выставить счёт</button>
         </form>
@@ -3942,7 +4055,7 @@ async function openInvoiceModal(preselectedKey = '') {
       const c = clients.find(x => x.client_type === cType && x.client_id === Number(cId));
       if (c) rate = c.hourly_rate_rub;
     }
-    const sum = Math.round(hoursVal * rate);
+    const sum = Math.round(hoursVal);
     previewBar.innerHTML = `Ставка: <strong>${rate.toLocaleString('ru-RU')} ₽/ч</strong> | Итого к оплате: <strong>${sum.toLocaleString('ru-RU')} ₽</strong>`;
   }
 
@@ -3954,7 +4067,7 @@ async function openInvoiceModal(preselectedKey = '') {
     e.preventDefault();
     const form = new FormData(e.target);
     const [client_type, client_id_str] = form.get('client_key').split(':');
-    const deposit_hours = Number(form.get('deposit_hours'));
+    const amount_rub = Number(form.get('amount_rub'));
     try {
       const doc = await api('/billing/invoices', {
         method: 'POST',
@@ -3962,7 +4075,7 @@ async function openInvoiceModal(preselectedKey = '') {
           doc_type: 'invoice',
           client_type,
           client_id: Number(client_id_str),
-          deposit_hours,
+          amount_rub,
           notes: form.get('notes') || ''
         })
       });
@@ -3984,7 +4097,7 @@ async function openDepositModal(preselectedKey = '') {
     <div class="billing-modal-backdrop" id="billing-modal">
       <div class="billing-modal-card">
         <div class="billing-modal-head">
-          <h2>Прямое пополнение депозита часов</h2>
+          <h2>Пополнение денежного депозита</h2>
           <button class="billing-modal-close" id="modal-close">&times;</button>
         </div>
         <form id="deposit-form" class="form">
@@ -4003,7 +4116,7 @@ async function openDepositModal(preselectedKey = '') {
               <input class="field" type="number" name="hours" id="dep-hours" min="0.25" max="1000" step="0.25" value="10" required>
             </label>
             <label style="flex:1">Сумма (₽)
-              <input class="field" type="number" name="amount_rub" id="dep-amount" min="0" max="10000000" step="100" value="30000" required>
+              <input class="field" type="number" name="amount_rub" id="dep-amount" min="1" max="10000000" step="1" value="30000" required>
             </label>
           </div>
           <label>Основание пополнения
@@ -4049,7 +4162,7 @@ async function openDepositModal(preselectedKey = '') {
         body: JSON.stringify({
           client_type,
           client_id: Number(client_id_str),
-          minutes: Math.round(hoursVal * 60),
+          minutes: 0,
           amount_rub,
           description
         })
@@ -4088,6 +4201,7 @@ function openClientRateModal(c) {
           <label>Юридический адрес
             <textarea class="field" name="legal_address" placeholder="125009, г. Москва, ул. Тверская, д. 1...">${esc(c.legal_address || '')}</textarea>
           </label>
+          ${[['ogrn','ОГРН'],['bank_name','Банк'],['bik','БИК'],['bank_account','Расчётный счёт'],['corr_account','Корреспондентский счёт']].map(([key,label])=>`<label>${label}<input class="field" name="${key}" maxlength="150" value="${esc(c[key]||'')}"></label>`).join('')}
           <button class="button primary">Сохранить изменения</button>
         </form>
       </div>
@@ -4103,6 +4217,7 @@ function openClientRateModal(c) {
       await api(`/billing/clients/${c.client_type}/${c.client_id}`, {
         method: 'PATCH',
         body: JSON.stringify({
+          ...Object.fromEntries(form),
           hourly_rate_rub: Number(form.get('hourly_rate_rub')),
           inn: form.get('inn') || '',
           kpp: form.get('kpp') || '',
@@ -4171,7 +4286,7 @@ function openCustomerInvoiceModal() {
           doc_type: 'invoice',
           client_type: b.client_type,
           client_id: b.client_id,
-          deposit_hours: h,
+          hours: h,
           notes: `Предоплата пакета ${h} часов технической поддержки`
         })
       });
@@ -4186,11 +4301,16 @@ function openCustomerInvoiceModal() {
 
 async function openHash(){
   if(!state.user||state.user.must_change_credentials)return;
+  beginNavigation();
   state.restoringRoute=true;
   try{
-    const route=location.hash.slice(1).replace(/^\//, '');const taskMatch=route.match(/^task\/(\d+)$/);if(taskMatch){if(state.user.role==='customer')return setView('tickets');return await TasksUI.open(Number(taskMatch[1]));}const match=route.match(/^(ticket|chat|ticket-chat)\/(\d+)$/);
+    const route=location.hash.slice(1).replace(/^\//, '');
+    const guideMatch=route.match(/^guide(?:\/([a-z-]+))?$/);
+    if(guideMatch){if(state.user.role!=='customer')return setView('tickets');state.guideTopic=guideMatch[1]||'start';state.view='guide';state.error='';render();return;}
+    const taskMatch=route.match(/^task\/(\d+)$/);if(taskMatch){if(state.user.role==='customer')return setView('tickets');return await TasksUI.open(Number(taskMatch[1]));}const match=route.match(/^(ticket|chat|ticket-chat)\/(\d+)$/);
     if(match?.[1]==='ticket-chat')return await openTicketChat(Number(match[2]));
     if(match)return await (match[1]==='ticket'?openTicket(Number(match[2])):openChat(Number(match[2])));
+    if(route==='admin')return setView(state.user.role==='admin'?'admin':'tickets');
     if(route==='payroll')return setView(state.user.role==='customer'?'tickets':'payroll');
     const loaders={messengers:openMessengers,analytics:openAnalytics,kb:openKb,webhooks:openWebhooks,billing:openBilling,specialists:openSpecialists};
     if(route==='webhooks'&&state.user.role!=='admin')return setView('tickets');
@@ -4205,7 +4325,13 @@ async function openHash(){
 async function renderPayroll(){
   try{const module=await import('/payroll.js');if(state.view==='payroll')module.render({state,api,shell,esc,hours,toast,showError});}catch(error){showError(error);}
 }
-function render() {syncRoute();if(!state.user)return renderAuth();if(state.user.must_change_credentials)return renderCredentials();if(state.view==='organizations')return renderOrganizations();if(state.view==='profile')return renderProfile();if(state.view==='messengers')return renderMessengers();if(state.view==='queue')return renderQueue();if(state.view==='new')return renderNew();if(state.view==='detail'&&state.current)return renderDetail();if(state.view==='ticket-chat'&&state.current)return renderTicketChat();if(state.view==='tasks')return TasksUI.render();if(state.view==='task')return TasksUI.renderDetail();if(state.view==='team')return renderTeam();if(state.view==='deals')return TeamUI.renderDeals();if(state.view==='meetings')return TeamUI.renderMeetings();if(state.view==='notifications')return renderNotifications();if(state.view==='chats')return renderChats();if(state.view==='chat'&&state.currentChat)return renderChatDetail();if(state.view==='analytics')return renderAnalytics();if(state.view==='kb')return renderKb();if(state.view==='webhooks')return renderWebhooks();if(state.view==='payroll')return renderPayroll();if(state.view==='billing')return renderBilling();if(state.view==='specialists')return renderSpecialists();renderTickets();}
+async function renderGuide(){
+  if(state.user.role!=='customer')return setView('tickets');
+  const accountId=state.user.id;
+  try{const module=await import('/guide.js');if(state.view==='guide'&&state.user?.id===accountId)module.render({state,shell,esc,icon,startTour,billingOn,openSupport:async()=>{try{const chat=await api('/chats',{method:'POST'});await refresh();await openChat(chat.id);}catch(error){showError(error);}}});}catch(error){showError(error);}
+}
+async function renderAdmin(){if(state.user.role!=='admin')return;try{const module=await import('/admin-ui.js');if(state.view==='admin')await module.render({state,api,shell,esc,toast,showError,openTicket,refresh});}catch(error){showError(error);}}
+function render() {syncRoute();if(!state.user)return renderAuth();if(state.user.must_change_credentials)return renderCredentials();if(state.view==='guide')return renderGuide();if(state.view==='organizations')return renderOrganizations();if(state.view==='profile')return renderProfile();if(state.view==='messengers')return renderMessengers();if(state.view==='queue')return renderQueue();if(state.view==='new')return renderNew();if(state.view==='detail'&&state.current)return renderDetail();if(state.view==='ticket-chat'&&state.current)return renderTicketChat();if(state.view==='tasks')return TasksUI.render();if(state.view==='task')return TasksUI.renderDetail();if(state.view==='team')return renderTeam();if(state.view==='deals')return TeamUI.renderDeals();if(state.view==='meetings')return TeamUI.renderMeetings();if(state.view==='notifications')return renderNotifications();if(state.view==='chats')return renderChats();if(state.view==='chat'&&state.currentChat)return renderChatDetail();if(state.view==='analytics')return renderAnalytics();if(state.view==='kb')return renderKb();if(state.view==='webhooks')return renderWebhooks();if(state.view==='admin')return renderAdmin();if(state.view==='payroll')return renderPayroll();if(state.view==='billing')return renderBilling();if(state.view==='specialists')return renderSpecialists();renderTickets();}
 async function start(){
   const params=new URLSearchParams(location.search);
   if(params.has('invite')||params.has('reset')){renderAuth();return;}
@@ -4262,21 +4388,23 @@ document.addEventListener('keydown',e=>{
 start();
 setInterval(()=>loadNotifications().catch(()=>{}),15000);
 setInterval(async()=>{
-  if(state.view!=='ticket-chat'||!state.current||composerHasDraft('#message-form'))return;
-  const id=state.current.ticket.id;
-  try{
-    const fresh=await api(`/tickets/${id}`);
-    if(state.view!=='ticket-chat'||state.current?.ticket.id!==id||composerHasDraft('#message-form'))return;
-    if(JSON.stringify(fresh)!==JSON.stringify(state.current)){state.current=fresh;renderTicketChat();}
-  }catch{}
-},15000);
-setInterval(async()=>{
-  if(state.view!=='chat'||!state.currentChat||composerHasDraft('#chat-message-form')) return;
-  const id=state.currentChat.chat.id;
-  try{
-    const fresh=await api(`/chats/${id}`);
-    if(state.view!=='chat'||state.currentChat?.chat.id!==id||composerHasDraft('#chat-message-form'))return;
-    if(fresh.messages.length!==state.currentChat.messages.length||fresh.chat.assignee_id!==state.currentChat.chat.assignee_id){state.currentChat=fresh;renderChatDetail();}
-  }catch{}
+  try {
+    if (['detail','ticket-chat'].includes(state.view) && state.current) await refreshConversation('ticket', state.current.ticket.id);
+    else if (state.view === 'chat' && state.currentChat) await refreshConversation('chat', state.currentChat.chat.id);
+  } catch {}
 },15000);
 
+
+async function openCompanyProfile() {
+  try {
+    const profile = await api('/billing/company-profile');
+    const slot = document.querySelector('#billing-modal-slot');
+    const labels = {name:'Название исполнителя',inn:'ИНН',kpp:'КПП',ogrn:'ОГРН',legal_address:'Юридический адрес',bank_name:'Банк',bik:'БИК',bank_account:'Расчётный счёт',corr_account:'Корреспондентский счёт',ceo_name:'Руководитель',ceo_title:'Должность руководителя',accountant_name:'Бухгалтер',vat_rate:'НДС'};
+    slot.innerHTML = `<div class="billing-modal-backdrop" id="billing-modal"><div class="billing-modal-card"><div class="billing-modal-head"><h2>Реквизиты исполнителя</h2><button id="modal-close" class="billing-modal-close">×</button></div><form class="form" id="company-profile-form">${Object.entries(labels).map(([key,label])=>`<label>${label}<input class="field" name="${key}" value="${esc(profile[key]||'')}" ${['name','inn','legal_address','bank_name','bik','bank_account','ceo_name'].includes(key)?'required':''}></label>`).join('')}<p class="muted">Изменения применяются к новым документам. Выставленные счета сохраняют свои реквизиты.</p><button class="button primary">Сохранить</button></form></div></div>`;
+    bindBillingDialog(slot);
+    slot.querySelector('form').onsubmit = async event => {
+      event.preventDefault(); const button=event.target.querySelector('button');button.disabled=true;
+      try {await api('/billing/company-profile',{method:'PATCH',body:JSON.stringify(Object.fromEntries(new FormData(event.target)))});slot.innerHTML='';toast('Реквизиты сохранены');}catch(error){showError(error);button.disabled=false;}
+    };
+  }catch(error){showError(error);}
+}

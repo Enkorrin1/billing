@@ -1,6 +1,6 @@
 /* Shared team workspace. Functions and access are deliberately separate. */
 const TeamUI = (() => {
-  let tab = 'people', search = '', onlyMine = false, peopleFilter = 'active', auditRows = null;
+  let tab = 'people', search = '', onlyMine = false, peopleFilter = 'active', auditRows = null, meetingFilter = 'all';
   const availability = {available:'На работе',vacation:'В отпуске',sick:'Больничный',away:'Отсутствует'};
   const tabs = {people:'Сотрудники',clients:'Доступ к клиентам',functions:'Функции',audit:'История'};
   const data = () => state.teamWorkspace;
@@ -19,7 +19,7 @@ const TeamUI = (() => {
   const functionsField = selected => `<fieldset class="team-fieldset"><legend>Функции в команде</legend><div class="team-check-grid">${data().functions.filter(f=>f.active).map(f=>`<label class="team-check"><input type="checkbox" name="functions" value="${esc(f.code)}" ${selected.includes(f.code)?'checked':''}><span>${esc(f.name)}<small>${esc(f.category)}</small></span></label>`).join('')}</div><p class="muted">Можно совмещать несколько функций. Права доступа задаются отдельно.</p></fieldset>`;
   const participantsField = selected => `<fieldset class="team-fieldset"><legend>Участники команды</legend><div class="team-check-grid">${data().people.filter(p=>p.active||selected.includes(p.id)).map(p=>`<label class="team-check"><input type="checkbox" name="participants" value="${p.id}" ${selected.includes(p.id)?'checked':''}><span>${esc(p.name)}</span></label>`).join('')}</div></fieldset>`;
 
-  function reset() {tab='people';search='';onlyMine=false;peopleFilter='active';auditRows=null;document.querySelector('#team-dialog')?.remove();}
+  function reset() {tab='people';search='';onlyMine=false;peopleFilter='active';auditRows=null;meetingFilter='all';document.querySelector('#team-dialog')?.remove();}
   async function reload() {
     const uid=state.user?.id;
     const fresh=await api('/team');
@@ -29,7 +29,7 @@ const TeamUI = (() => {
     // Keep current-user access badges in sync after an administrative edit.
     const me=fresh.people.find(p=>p.id===uid);
     if(me){state.user.is_manager=me.is_manager;if(state.profile)Object.assign(state.profile,{functions:me.functions,job_title:me.job_title});}
-    if(['team','tasks','notifications'].includes(state.view))window.render();if(state.view==='task')await TasksUI.softRefresh();
+    if(['team','tasks','notifications','meetings','deals'].includes(state.view))window.render();if(state.view==='task')await TasksUI.softRefresh();
   }
   function render() {
     const d=data();
@@ -105,7 +105,7 @@ const TeamUI = (() => {
     document.querySelector('#team-only-mine')?.addEventListener('change',e=>{onlyMine=e.target.checked;render();});
     document.querySelectorAll('[data-edit-person]').forEach(b=>b.onclick=()=>staffDialog(person(Number(b.dataset.editPerson))));
     document.querySelectorAll('[data-edit-client]').forEach(b=>b.onclick=()=>clientDialog(data().clients.find(c=>c.id===Number(b.dataset.editClient))));
-    document.querySelectorAll('[data-edit-work]').forEach(b=>b.onclick=async()=>{const[k,id]=b.dataset.editWork.split(':');const events=(data().events||[]).filter(e=>e.entity===k&&e.entity_id===Number(id)&&!e.read_at);await Promise.allSettled(events.map(e=>api(`/team/notifications/${e.id}/read`,{method:'POST'})));events.forEach(e=>e.read_at=new Date().toISOString());const record=data()[k].find(r=>r.id===Number(id));render();workDialog(k,record);});
+    document.querySelectorAll('[data-edit-work]').forEach(b=>b.onclick=async()=>{const originView=state.view,uid=state.user.id;const[k,id]=b.dataset.editWork.split(':');const events=(data().events||[]).filter(e=>e.entity===k&&e.entity_id===Number(id)&&!e.read_at);await Promise.allSettled(events.map(e=>api(`/team/notifications/${e.id}/read`,{method:'POST'})));if(state.view!==originView||state.user?.id!==uid)return;events.forEach(e=>e.read_at=new Date().toISOString());const record=data()[k].find(r=>r.id===Number(id));window.render();workDialog(k,record);});
     document.querySelectorAll('[data-handoff]').forEach(b=>b.onclick=()=>handoffDialog(data().deals.find(r=>r.id===Number(b.dataset.handoff))));
     document.querySelectorAll('[data-publish-meeting]').forEach(b=>b.onclick=()=>publishDialog(data().meetings.find(r=>r.id===Number(b.dataset.publishMeeting))));
     document.querySelectorAll('[data-meeting-task]').forEach(b => {
@@ -135,23 +135,30 @@ const TeamUI = (() => {
         });
       };
     });
+    document.querySelectorAll('[data-copy-meeting-link]').forEach(b => b.onclick = async () => {
+      const m = data().meetings.find(r => r.id === Number(b.dataset.copyMeetingLink));
+      try { await navigator.clipboard.writeText(m.url); toast('Ссылка скопирована'); }
+      catch (error) { toast('Не удалось скопировать ссылку. Откройте встречу и скопируйте адрес.', 'error'); }
+    });
+    document.querySelectorAll('[data-reschedule-meeting]').forEach(b => b.onclick = () => {
+      const m = data().meetings.find(r => r.id === Number(b.dataset.rescheduleMeeting));
+      const node = workDialog('meetings', m);
+      if (node) { node.querySelector('[name="status"]').value = 'planned'; node.querySelector('[name="starts_at"]').focus(); }
+    });
     document.querySelectorAll('[data-share-meeting-link]').forEach(b => {
       b.onclick = async () => {
         const m = data().meetings.find(r => r.id === Number(b.dataset.shareMeetingLink));
-        if (!m || !m.url) return;
+        if (!m?.url) return;
+        b.disabled = true;
+        const key = `meeting-share-${state.user.id}-${m.id}-${m.version}`;
+        let requestId = sessionStorage.getItem(key);
+        if (!requestId) { requestId = crypto.randomUUID(); sessionStorage.setItem(key, requestId); }
         try {
-          await navigator.clipboard.writeText(m.url);
-          const text = `Ссылка на встречу «${m.title}»: ${m.url}\nВремя: ${dateTime(m.starts_at)}`;
-          if (m.ticket_id) {
-            await api(`/tickets/${m.ticket_id}/messages`, {
-              method: 'POST',
-              body: JSON.stringify({ body: text, reply_to_id: null })
-            }).catch(() => null);
-          }
-          toast('Ссылка скопирована и отправлена клиенту');
-        } catch (e) {
-          toast('Ссылка на встречу: ' + m.url);
-        }
+          await api(`/team/meetings/${m.id}/share-link`, { method: 'POST', body: JSON.stringify({request_id: requestId}) });
+          sessionStorage.removeItem(key);
+          toast('Ссылка отправлена в переписку клиента');
+        } catch (error) { toast(error.message, 'error'); }
+        finally { b.disabled = false; }
       };
     });
   }
@@ -210,6 +217,7 @@ const TeamUI = (() => {
     node.querySelector('[name="agenda"]')?.setAttribute('required','');node.querySelector('[name="agenda"]')?.setAttribute('minlength','3');
     node.querySelector('[name="next_action"]')?.setAttribute('required','');node.querySelector('[name="next_action"]')?.setAttribute('minlength','3');
     node.querySelector('[name="customer_id"]').addEventListener('change',e=>{node.querySelectorAll('[name="ticket_id"] option[data-customer]').forEach(o=>o.hidden=o.dataset.customer!==e.target.value);const sel=node.querySelector('[name="ticket_id"]');if(sel)sel.value='';});
+    return node;
   }
   function handoffDialog(r){dialog('Передать сделку в работу',`<div class="form"><p><strong>${esc(r.title)}</strong> · ${esc(r.customer_name)}</p><p class="team-preserve-text">${esc(r.proposal)}</p>${field('Тема задачи','title',r.title,'text','required minlength="3" maxlength="200"')}<label>Ответственный за выполнение<select class="field" name="owner_id" required>${personOptions(null)}</select></label>${field('Срок','due_at','','datetime-local')}${field('План, часов','planned_hours',0,'number','min="0" max="1000" step="0.25"')}${area('Что передаём команде','description',r.proposal)}<p class="muted">Будет создана одна задача со ссылкой на сделку. Повторная передача не создаёт дубликат.</p></div>`,async fd=>api(`/team/deals/${r.id}/handoff`,{method:'POST',body:JSON.stringify({owner_id:Number(fd.get('owner_id')),title:fd.get('title'),description:fd.get('description'),due_at:fd.get('due_at')?new Date(fd.get('due_at')).toISOString():null,planned_minutes:Math.round(Number(fd.get('planned_hours'))*60)})}),'Передать в работу');}
   function publishDialog(r){dialog('Опубликовать итоги встречи',`<p>Клиент: <strong>${esc(r.customer_name)}</strong></p><h3>Итоги</h3><p class="team-preserve-text">${esc(r.summary||'Итоги не заполнены')}</p><h3>Следующие действия</h3><p class="team-preserve-text">${esc(r.next_steps||'Не указаны')}</p><p class="muted">Этот текст появится в переписке клиента. Внутренние заметки и длительность встречи останутся скрыты. После публикации текст сохраняется в истории.</p>`,()=>api(`/team/meetings/${r.id}/publish`,{method:'POST'}),'Опубликовать клиенту');}
@@ -342,8 +350,11 @@ const TeamUI = (() => {
 
     items = [...items].sort((a,b) => (a.status !== 'planned' ? 1 : 0) - (b.status !== 'planned' ? 1 : 0) || (new Date(a.starts_at || '9999-01-01').getTime() - new Date(b.starts_at || '9999-01-01').getTime()));
 
+    if (meetingFilter !== 'all') items = items.filter(m => m.status === meetingFilter);
     const planned = items.filter(m => m.status === 'planned');
     const held = items.filter(m => m.status === 'held');
+    const cancelled = items.filter(m => m.status === 'cancelled');
+    const missed = items.filter(m => m.status === 'missed');
 
     const cardHtml = r => {
       const isPast = new Date(r.starts_at) < new Date();
@@ -353,10 +364,11 @@ const TeamUI = (() => {
             <div class="meeting-datetime">
               <span class="meeting-date-badge ${r.status === 'planned' && isPast ? 'late' : ''}">${dateTime(r.starts_at)}</span>
               <span class="meeting-duration">${r.duration_minutes} мин</span>
-              <span class="badge ${r.status === 'held' ? 'closed' : r.status === 'planned' ? 'working' : ''}">${r.status === 'held' ? 'Проведена' : r.status === 'planned' ? 'Запланирована' : 'Отменена'}</span>
+              <span class="badge ${r.status === 'held' ? 'closed' : r.status === 'planned' ? 'working' : ''}">${r.status === 'held' ? 'Проведена' : r.status === 'planned' ? 'Запланирована' : r.status === 'missed' ? 'Не состоялась' : 'Отменена'}</span>
             </div>
             <div class="meeting-actions-top">
               <button class="button small" data-edit-work="meetings:${r.id}">${r.can_edit ? 'Изменить' : 'Подробнее'}</button>
+              ${r.can_edit && !r.shared_at && ['cancelled','missed'].includes(r.status) ? `<button class="button small" data-reschedule-meeting="${r.id}">Запланировать снова</button>` : ''}
             </div>
           </div>
           <h3 class="meeting-title">${esc(r.title)}</h3>
@@ -369,9 +381,10 @@ const TeamUI = (() => {
               <a href="${esc(r.url)}" target="_blank" rel="noopener" class="button small primary meeting-join-btn">
                 ${icon('send', 13)} Присоединиться к встрече
               </a>
-              <button type="button" class="button small" data-share-meeting-link="${r.id}" title="Скопировать ссылку и отправить клиенту">
-                ${icon('reply', 13)} Отправить клиенту
+              <button type="button" class="button small" data-copy-meeting-link="${r.id}" title="Скопировать ссылку">
+                ${icon('reply', 13)} Скопировать ссылку
               </button>
+              ${r.can_edit && !['cancelled','missed'].includes(r.status) ? `<button type="button" class="button small" data-share-meeting-link="${r.id}">${icon('send', 13)} Отправить клиенту</button>` : ''}
             </div>
           ` : ''}
           <div class="meeting-people">
@@ -429,15 +442,16 @@ const TeamUI = (() => {
           <span class="visually-hidden">Поиск встреч</span>
           <input id="meetings-search" type="search" placeholder="Поиск по теме, клиенту, повестке..." value="${esc(search)}">
         </label>
+        <label>Статус встречи<select class="field" id="meetings-status-filter">${selectOptions({all:'Все встречи',planned:'Запланированные',held:'Проведённые',cancelled:'Отменённые',missed:'Не состоявшиеся'},meetingFilter)}</select></label>
         <label class="team-check"><input type="checkbox" id="meetings-only-mine" ${onlyMine ? 'checked' : ''}>Только мои встречи</label>
       </div>
       <div class="meetings-layout">
-        <section class="meetings-section">
+        ${meetingFilter === 'all' || meetingFilter === 'planned' ? `<section class="meetings-section">
           <h2 class="meetings-section-title">Предстоящие встречи (${planned.length})</h2>
           <div class="meetings-grid">
             ${planned.map(cardHtml).join('') || '<div class="empty">Нет запланированных встреч. Запланируйте встречу с клиентом.</div>'}
           </div>
-        </section>
+        </section>` : ''}
         ${held.length ? `
           <section class="meetings-section" style="margin-top:32px">
             <h2 class="meetings-section-title">Проведённые встречи (${held.length})</h2>
@@ -446,6 +460,8 @@ const TeamUI = (() => {
             </div>
           </section>
         ` : ''}
+        ${[[cancelled,'Отменённые встречи'],[missed,'Не состоявшиеся встречи']].map(([rows,label]) => rows.length ? `<section class="meetings-section"><h2 class="meetings-section-title">${label} (${rows.length})</h2><div class="meetings-grid">${rows.map(cardHtml).join('')}</div></section>` : '').join('')}
+        ${!items.length && meetingFilter !== 'all' ? '<div class="empty">Встреч с этим статусом нет.</div>' : ''}
       </div>
     `;
 
@@ -454,6 +470,7 @@ const TeamUI = (() => {
       lead: 'Планирование созвонов, повестка, протоколы встреч и формирование задач по итогам обсуждений.'
     });
 
+    document.querySelector('#meetings-status-filter')?.addEventListener('change', e => { meetingFilter = e.target.value; renderMeetings(); });
     document.querySelector('#meetings-add-btn')?.addEventListener('click', () => workDialog('meetings'));
     document.querySelector('#meetings-search')?.addEventListener('input', e => { search = e.target.value; renderMeetings(); });
     document.querySelector('#meetings-only-mine')?.addEventListener('change', e => { onlyMine = e.target.checked; renderMeetings(); });

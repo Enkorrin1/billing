@@ -3,7 +3,7 @@ const TasksUI = (() => {
   const statuses = { new: 'Новая', working: 'В работе', review: 'На проверке', done: 'Выполнена', cancelled: 'В архиве' };
   const priorities = { low: 'Низкий', normal: 'Обычный', high: 'Высокий', urgent: 'Срочный' };
   const scopes = { all: 'Все', doing: 'Делаю', delegated: 'Поручил', assisting: 'Помогаю', review: 'Наблюдаю', overdue: 'Просроченные' };
-  let prefs = null, account = null, current = null, descriptionEditing = false, descriptionDraft = null, fetchSerial = 0, busy = false, commentDraft = '', commentRequest = null;
+  let prefs = null, account = null, current = null, descriptionEditing = false, descriptionDraft = null, settingsDraft = null, fetchSerial = 0, busy = false, commentDraft = '', commentRequest = null;
   const data = () => state.teamWorkspace;
   const people = () => data()?.people || [];
   const name = id => people().find(p => p.id === id)?.name || 'Без исполнителя';
@@ -18,7 +18,7 @@ const TasksUI = (() => {
   const mine = t => t.owner_id === state.user.id || (t.participants && t.participants.includes(state.user.id)) || (t.reviewer_id === state.user.id && t.status === 'review');
   const empty = (title, text) => `<div class="empty tasks-empty"><strong>${esc(title)}</strong><p>${esc(text)}</p>${canCreate() ? '<button class="button primary" data-quick-task>Создать задачу</button>' : ''}</div>`;
 
-  function reset() { prefs = null; account = null; current = null; descriptionEditing = false; descriptionDraft = null; fetchSerial++; busy = false; commentDraft = ''; commentRequest = null; document.querySelector('#task-quick-dialog')?.remove(); }
+  function reset() { prefs = null; account = null; current = null; descriptionEditing = false; descriptionDraft = null; settingsDraft = null; fetchSerial++; busy = false; commentDraft = ''; commentRequest = null; document.querySelector('#task-quick-dialog')?.remove(); }
   function preferences() {
     if (account !== state.user.id) {
       account = state.user.id;
@@ -51,7 +51,7 @@ const TasksUI = (() => {
   function stateSelect(t) { return `<select class="task-inline-select task-status-${t.status}" aria-label="Статус задачи №${t.id}" data-task-status="${t.id}" ${t.can_edit ? '' : 'disabled'}>${options(t.status === 'cancelled' ? statuses : Object.fromEntries(Object.entries(statuses).filter(([key]) => key !== 'cancelled')), t.status)}</select>`; }
 
   function list(items) {
-    return `<section class="panel tasks-list"><div class="task-list-heading"><span>Задача</span><span>Статус</span><span>Исполнитель</span><span>Срок</span></div>${items.map(t => `<article class="task-list-row"><button class="task-title-button" data-task-open="${t.id}">${titleBlock(t)}<small><span class="task-client-badge" data-filter-client="${esc(t.customer_name)}" role="button" title="Фильтровать по клиенту ${esc(t.customer_name)}">${icon('building', 11)} ${esc(t.customer_name)}</span>${t.blocked_reason ? ' · ' + esc(t.blocked_reason) : ''}</small><span class="task-row-metrics">${metrics(t)}</span></button><div>${stateSelect(t)}</div><select class="task-inline-select task-owner-select" aria-label="Исполнитель задачи №${t.id}" data-task-owner="${t.id}" ${t.can_edit ? '' : 'disabled'}>${personOptions(t.owner_id)}</select><div class="task-date-cell">${deadline(t)}${t.can_edit && !['done', 'cancelled'].includes(t.status) ? `<button type="button" class="button small task-quick-time-btn" data-quick-time-task="${t.id}" title="Списать время">${icon('clock', 11)} +Время</button>` : ''}${t.can_edit ? `<input type="date" aria-label="Срок задачи №${t.id}" value="${isoLocal(t.due_at).slice(0, 10)}" data-task-date="${t.id}" title="Изменить срок">` : ''}</div></article>`).join('')}</section>`;
+    return `<section class="panel tasks-list"><div class="task-list-heading"><span>Задача</span><span>Статус</span><span>Исполнитель</span><span>Срок</span></div>${items.map(t => `<article class="task-list-row"><button class="task-title-button" data-task-open="${t.id}">${titleBlock(t)}<small><span class="task-client-badge" data-filter-client="${esc(t.customer_name)}" role="button" title="Фильтровать по клиенту ${esc(t.customer_name)}">${icon('building', 11)} ${esc(t.customer_name)}</span>${t.blocked_reason ? ' · ' + esc(t.blocked_reason) : ''}</small><span class="task-row-metrics">${metrics(t)}</span></button><div>${stateSelect(t)}</div><select class="task-inline-select task-owner-select" aria-label="Исполнитель задачи №${t.id}" data-task-owner="${t.id}" ${t.can_edit ? '' : 'disabled'}>${personOptions(t.owner_id)}</select><div class="task-date-cell">${deadline(t)}${t.can_log_time ? `<button type="button" class="button small task-quick-time-btn" data-quick-time-task="${t.id}" title="Списать время">${icon('clock', 11)} +Время</button>` : ''}${t.can_edit ? `<input type="date" aria-label="Срок задачи №${t.id}" value="${isoLocal(t.due_at).slice(0, 10)}" data-task-date="${t.id}" title="Изменить срок">` : ''}</div></article>`).join('')}</section>`;
   }
 
   function card(t, extra = {}) {
@@ -91,7 +91,7 @@ const TasksUI = (() => {
           ${t.file_count ? `<span title="Файлов: ${t.file_count}">${icon('paperclip', 12)} ${t.file_count}</span>` : ''}
         </div>
         <div class="task-card-actions-right">
-          ${t.can_edit && !['done', 'cancelled'].includes(t.status) ? `<button type="button" class="button small task-quick-time-btn" data-quick-time-task="${t.id}" title="Списать время по задаче">${icon('clock', 11)} <span>+Время</span></button>` : ''}
+          ${t.can_log_time ? `<button type="button" class="button small task-quick-time-btn" data-quick-time-task="${t.id}" title="Списать время по задаче">${icon('clock', 11)} <span>+Время</span></button>` : ''}
           ${extra.customSelect || `<select id="board-status-${t.id}" class="task-board-move" aria-label="Статус задачи №${t.id}" data-task-status="${t.id}" ${t.can_edit ? '' : 'disabled'}>${options(Object.fromEntries(Object.entries(statuses).filter(([k]) => k !== 'cancelled' || t.status === 'cancelled')), t.status)}</select>`}
         </div>
       </div>
@@ -429,8 +429,10 @@ const TasksUI = (() => {
   }
 
   function quickLogTime(task) {
+    const requestId = crypto.randomUUID();
     const dialogNode = modal(`Списание времени · Задача №${task.id}`, `<div class="form">
       <p class="muted" style="margin-top:0">Задача: <strong>${esc(task.title)}</strong>${task.customer_name ? ` · <span>${esc(task.customer_name)}</span>` : ''}</p>
+      <p class="muted">${task.ticket_id?'Время будет учтено в связанной заявке и начислениях сотрудника.':'Время будет учтено в начислениях сотрудника. Клиенту оно отдельно не выставляется.'}</p>
       <label>Затраченное время (минуты)
         <input class="field" type="number" id="quick-time-minutes" name="minutes" min="5" max="1440" step="5" value="60" required autofocus>
       </label>
@@ -447,40 +449,16 @@ const TasksUI = (() => {
     </div>`, async fd => {
       const minutes = Number(fd.get('minutes'));
       const note = String(fd.get('note')).trim();
-      const requestId = crypto.randomUUID();
-      if (task.ticket_id) {
-        await api(`/tickets/${task.ticket_id}/time-entries`, {
-          method: 'POST',
-          body: JSON.stringify({
-            minutes,
-            note,
-            work_date: new Date().toISOString().slice(0, 10),
-            request_id: requestId
-          })
-        });
-      } else if (task.customer_id) {
-        await api('/service-entries', {
-          method: 'POST',
-          body: JSON.stringify({
-            customer_id: task.customer_id,
-            kind: 'other',
-            minutes,
-            note,
-            request_id: requestId
-          })
-        });
-      } else {
-        await api(`/tasks/${task.id}/comments`, {
-          method: 'POST',
-          body: JSON.stringify({
-            body: `⏱ Списано ${minutes} мин: ${note}`,
-            request_id: requestId
-          })
-        });
-      }
-      toast(`Списано ${minutes} мин по задаче №${task.id}`);
+      const now = new Date();
+      const entryDate = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+      await api(`/tasks/${task.id}/time-entries`, {
+        method: 'POST',
+        body: JSON.stringify({ minutes, summary: note, entry_date: entryDate, request_id: requestId })
+      });
+      toast(`Учтено ${minutes} мин по задаче №${task.id}`);
       await TeamUI.reload();
-      render();
+      if(state.view==='task'&&current?.id===task.id)await softRefresh();
+      else if(state.view==='tasks')render();
     }, 'Списать время');
 
     dialogNode.querySelectorAll('.time-preset-btn').forEach(b => {
@@ -584,12 +562,12 @@ const TasksUI = (() => {
 
   function saveView(){const p=preferences();modal('Сохранить вид',`<div class="form"><label>Название<input class="field" name="name" required minlength="2" maxlength="60" placeholder="Например, мои срочные"></label><p class="muted">Сохранятся поиск, фильтры и представление. Вид будет доступен в этом браузере для вашего аккаунта.</p></div>`,async fd=>{const label=String(fd.get('name')).trim();if(label.length<2)throw new Error('Укажите название вида');const filters={scope:p.scope,status:p.status,owner:p.owner,search:p.search,layout:p.layout};const found=p.saved.find(v=>v.name===label);if(found)found.filters=filters;else{if(p.saved.length>=20)throw new Error('Можно сохранить до 20 видов');p.saved.push({name:label,filters});}persist();render();toast('Вид сохранён');});}
   async function open(id){
-    const uid=state.user.id,serial=++fetchSerial;
-    try{const task=await api(`/tasks/${id}`);if(uid!==state.user?.id||serial!==fetchSerial)return;current=task;state.currentTaskId=id;descriptionEditing=false;descriptionDraft=null;commentDraft='';commentRequest=null;apply(task);state.view='task';state.error='';renderDetail();const notifications=(data()?.events||[]).filter(e=>e.entity==='tasks'&&e.entity_id===id&&!e.read_at);const results=await Promise.allSettled(notifications.map(e=>api(`/team/notifications/${e.id}/read`,{method:'POST'})));results.forEach((r,i)=>{if(r.status==='fulfilled')notifications[i].read_at=new Date().toISOString();});}
-    catch(e){toast(e.message,'error');if(e.status===404||e.status===403){current=null;state.currentTaskId=null;setView('tasks');}}
+    const uid=state.user.id,serial=++fetchSerial,navigation=beginNavigation();
+    try{const task=await api(`/tasks/${id}`);if(uid!==state.user?.id||serial!==fetchSerial||!isNavigationCurrent(navigation))return;current=task;state.currentTaskId=id;descriptionEditing=false;descriptionDraft=null;settingsDraft=null;commentDraft='';commentRequest=null;apply(task);state.view='task';state.error='';renderDetail();const notifications=(data()?.events||[]).filter(e=>e.entity==='tasks'&&e.entity_id===id&&!e.read_at);const results=await Promise.allSettled(notifications.map(e=>api(`/team/notifications/${e.id}/read`,{method:'POST'})));results.forEach((r,i)=>{if(r.status==='fulfilled')notifications[i].read_at=new Date().toISOString();});}
+    catch(e){if(!isNavigationCurrent(navigation))return;toast(e.message,'error');if(e.status===404||e.status===403){current=null;state.currentTaskId=null;setView('tasks');}}
   }
   async function softRefresh(){
-    if(state.view!=='task'||!current||busy||descriptionEditing||document.querySelector('#task-settings-form')?.dataset.dirty==='true')return;
+    if(state.view!=='task'||!current||busy)return;
     const id=current.id,uid=state.user.id;try{const fresh=await api(`/tasks/${id}`);if(state.user?.id!==uid||state.view!=='task'||current?.id!==id)return;commentDraft=document.querySelector('#task-comment-body')?.value||commentDraft;current=fresh;apply(fresh);renderDetail();}catch(e){if(e.status===404){current=null;setView('tasks');toast('Доступ к задаче изменился','error');}}
   }
   function description(task){const draft=descriptionDraft||task;return descriptionEditing?`<form id="task-description-form" class="form"><label>Название<input class="field" name="title" value="${esc(draft.title)}" required minlength="3" maxlength="200"></label><label>Описание<textarea name="description" maxlength="5000">${esc(draft.description)}</textarea></label><div class="row"><button class="button primary">Сохранить</button><button class="button" id="task-edit-cancel" type="button">Отмена</button></div><p role="alert" class="task-inline-error" hidden></p></form>`:`<div class="task-description"><p>${esc(task.description||'Добавьте описание и ожидаемый результат.')}</p>${task.can_edit?'<button class="button small" id="task-edit-description">Изменить описание</button>':''}</div>`;}
@@ -599,18 +577,43 @@ const TasksUI = (() => {
   function history(task){const action={create:'создал задачу',update:'изменил задачу',checklist_add:'добавил пункт чек-листа',checklist_update:'обновил чек-лист',comment:'добавил комментарий',file_add:'прикрепил файл',file_hide:'убрал файл',file_restore:'восстановил файл',handover:'передал ответственность'};return `<details class="panel task-history"><summary>История изменений · ${task.history.length}</summary>${task.history.map(h=>{const d=h.details,extra=d.filename||d.body||'';return `<div><strong>${esc(h.actor_name||'Сотрудник')}</strong><span>${action[h.action]||'обновил задачу'}${extra?' · '+esc(extra):''}</span><small>${dateTime(h.created_at)}</small>${h.action==='update'?changeSummary(d):''}</div>`;}).join('')}</details>`;}
   function changeSummary(d){if(!d.before||!d.after)return '';const labels={status:'Статус',owner_id:'Исполнитель',reviewer_id:'Проверяющий',due_at:'Срок',priority:'Приоритет',blocked_reason:'Блокировка',title:'Название',description:'Описание'};return Object.keys(labels).filter(k=>k in d.after&&d.before[k]!==d.after[k]).map(k=>{const format=v=>['owner_id','reviewer_id'].includes(k)?(v?name(v):'не назначен'):k==='status'?statuses[v]:k==='priority'?priorities[v]:k==='due_at'?shortDate(v):String(v||'не указано').slice(0,200);return `<p>${labels[k]}: ${esc(format(d.before[k]))} → ${esc(format(d.after[k]))}</p>`;}).join('');}
   function settings(task){return `<aside class="panel task-settings"><details class="task-settings-disclosure" ${matchMedia('(max-width:800px)').matches?'':'open'}><summary>Детали задачи · ${esc(name(task.owner_id))}</summary><form id="task-settings-form" class="form"><label>Статус<select class="field" name="status" ${task.can_edit?'':'disabled'}>${options(task.status==='cancelled'?statuses:Object.fromEntries(Object.entries(statuses).filter(([k])=>k!=='cancelled')),task.status)}</select></label><label>Исполнитель<select class="field" name="owner_id" ${task.can_edit?'':'disabled'}>${personOptions(task.owner_id)}</select></label><label>Проверяющий<select class="field" name="reviewer_id" ${task.can_edit&&canReviewAssign(task)?'':'disabled'}>${personOptions(task.reviewer_id)}</select></label>${task.can_edit&&!canReviewAssign(task)?'<small class="muted">Проверяющего назначает руководитель или координатор.</small>':''}<label>Срок<input class="field" type="datetime-local" name="due_at" value="${isoLocal(task.due_at)}" ${task.can_edit?'':'disabled'}></label><label>Приоритет<select class="field" name="priority" ${task.can_edit?'':'disabled'}>${options(priorities,task.priority||'normal')}</select></label><details class="task-participants"><summary>Участники · ${task.participants.length}</summary><div>${people().filter(p=>p.active||task.participants.includes(p.id)).map(p=>`<label class="task-participant-check"><input type="checkbox" name="participants" value="${p.id}" ${task.participants.includes(p.id)?'checked':''} ${task.can_edit?'':'disabled'}>${esc(p.name)}</label>`).join('')}</div></details>${task.can_edit?'<button class="button primary">Сохранить детали</button>':''}<p role="alert" class="task-inline-error" hidden></p></form><div class="task-settings-meta"><span>${esc(task.customer_name)}</span><small>Создал ${esc(name(task.created_by))}<br>${dateTime(task.created_at)}</small>${task.ticket_id?`<button class="button small" id="task-linked-ticket">Заявка №${task.ticket_id}</button>`:''}</div><div class="task-settings-actions"><button class="button small" id="task-watch">${task.muted?'Включить уведомления':'Не уведомлять об этой задаче'}</button>${task.can_edit?`${! ['done','cancelled'].includes(task.status)?`<button class="button small" id="task-block">${task.blocked_reason?'Снять блокировку':'Заблокировать'}</button>`:''}<button class="button small" id="task-archive">${task.status==='cancelled'?'Вернуть из архива':'В архив'}</button>`:''}</div></details></aside>`;}
-  function nextStep(task){if(task.blocked_reason)return 'Устранить блокировку: '+task.blocked_reason;if(task.status==='review')return task.reviewer_id===state.user.id?'Проверьте результат и примите работу':'Ожидаем проверки · '+name(task.reviewer_id);if(task.status==='done')return 'Работа выполнена';if(task.status==='cancelled')return 'Задача находится в архиве';return task.status==='new'?'Начните работу, когда будете готовы':'Выполните оставшиеся шаги и передайте результат на проверку';}
+  function nextStep(task){if(task.blocked_reason)return 'Устранить блокировку: '+task.blocked_reason;if(task.status==='review')return task.reviewer_id===state.user.id?'Проверьте результат и примите работу':'Ожидаем проверки · '+name(task.reviewer_id);if(task.status==='done')return 'Работа выполнена';if(task.status==='cancelled')return 'Задача находится в архиве';return task.status==='new'?'Начните работу, когда будете готовы':task.reviewer_id?'Выполните оставшиеся шаги и передайте результат на проверку':'Выполните оставшиеся шаги и завершите задачу';}
+  function timeEntries(task){
+    const entries=task.time_entries||[];
+    return `<section class="panel task-section"><div class="task-section-head"><h2>Учёт времени · ${entries.reduce((sum,entry)=>sum+entry.minutes,0)} мин</h2>${task.can_log_time?'<button type="button" class="button small" id="task-log-time">+ Время</button>':''}</div>${entries.length?entries.map(entry=>`<article class="task-comment"><div><strong>${esc(entry.author_name||'Сотрудник')} · ${entry.minutes} мин</strong><small>${esc(entry.work_date)}</small></div><p>${esc(entry.note)}</p></article>`).join(''):'<p class="task-section-note">Записей времени пока нет.</p>'}</section>`;
+  }
+  function restoreSettingsDraft(form,taskId){
+    if(settingsDraft?.taskId!==taskId)return;
+    for(const [field,value] of Object.entries(settingsDraft.values)){
+      if(field==='participants')form.querySelectorAll('[name="participants"]').forEach(input=>input.checked=value.includes(input.value));
+      else {const input=form.elements.namedItem(field);if(input)input.value=value;}
+    }
+    form.dataset.dirty='true';
+  }
+  function rememberSettings(form,target,taskId){
+    if(!target.name)return;
+    if(settingsDraft?.taskId!==taskId)settingsDraft={taskId,values:{}};
+    settingsDraft.values[target.name]=target.name==='participants'?[...form.querySelectorAll('[name="participants"]:checked')].map(input=>input.value):target.value;
+    form.dataset.dirty='true';
+  }
+  function checklistCompletionStatus(task){
+    if(!task.can_edit||task.blocked_reason||task.status!=='working'||!task.checklist.length||!task.checklist.every(item=>item.checked))return null;
+    return task.reviewer_id?'review':'done';
+  }
   function renderDetail(){
     const task=current;if(!task)return setView('tasks');syncRoute();
-    shell(task.title,`<button class="button" id="task-refresh">Обновить</button>`+(task.can_edit?`<button class="button" id="task-primary-action">${task.status==='new'?'Начать работу':task.status==='review'?'Принять результат':task.status==='done'||task.status==='cancelled'?'Вернуть в работу':'На проверку'}</button>`:''),`<div class="task-next-step ${task.blocked_reason?'blocked':''}"><span class="task-status-pill task-status-${task.status}">${statuses[task.status]}</span><p>${esc(nextStep(task))}</p>${deadline(task)}</div><div class="task-detail-grid"><div class="task-detail-main"><section class="panel task-section"><div class="task-section-head"><h2>Описание</h2></div>${description(task)}</section>${checklist(task)}${comments(task)}${files(task)}${history(task)}</div>${settings(task)}</div>`,{crumbs:`<button class="crumb-link" id="tasks-back">Задачи</button><span>/</span><span>№${task.id}</span>`,kicker:'Задача №'+task.id});
-    document.querySelector('#task-refresh').onclick=async()=>{const dirty=descriptionEditing||document.querySelector('#task-settings-form')?.dataset.dirty==='true'||Boolean(document.querySelector('#task-comment-body')?.value);if(dirty&&!confirm('Обновить задачу? Несохранённые изменения и комментарий будут отменены.'))return;await open(task.id);};
+    shell(task.title,`<button class="button" id="task-refresh">Обновить</button>`+(task.can_edit?`<button class="button" id="task-primary-action">${task.status==='new'?'Начать работу':task.status==='review'?'Принять результат':task.status==='done'||task.status==='cancelled'?'Вернуть в работу':'На проверку'}</button>`:''),`<div class="task-next-step ${task.blocked_reason?'blocked':''}"><span class="task-status-pill task-status-${task.status}">${statuses[task.status]}</span><p>${esc(nextStep(task))}</p>${deadline(task)}</div><div class="task-detail-grid"><div class="task-detail-main"><section class="panel task-section"><div class="task-section-head"><h2>Описание</h2></div>${description(task)}</section>${checklist(task)}${timeEntries(task)}${comments(task)}${files(task)}${history(task)}</div>${settings(task)}</div>`,{crumbs:`<button class="crumb-link" id="tasks-back">Задачи</button><span>/</span><span>№${task.id}</span>`,kicker:'Задача №'+task.id});
+    document.querySelector('#task-refresh').onclick=async()=>{const dirty=descriptionEditing||document.querySelector('#task-settings-form')?.dataset.dirty==='true'||Boolean(document.querySelector('#task-comment-body')?.value);if(dirty&&!confirm('Обновить задачу? Несохранённые изменения и комментарий будут отменены.'))return;settingsDraft=null;await open(task.id);};
     document.querySelector('#tasks-back').onclick=()=>{current=null;state.currentTaskId=null;setView('tasks');};
     document.querySelector('#task-edit-description')?.addEventListener('click',()=>{descriptionEditing=true;descriptionDraft={title:task.title,description:task.description};renderDetail();document.querySelector('#task-description-form input').focus();});
     document.querySelector('#task-edit-cancel')?.addEventListener('click',()=>{descriptionEditing=false;descriptionDraft=null;renderDetail();});
     document.querySelector('#task-description-form')?.addEventListener('input',e=>{const fd=new FormData(e.currentTarget);descriptionDraft={title:fd.get('title'),description:fd.get('description')};});
     document.querySelector('#task-description-form')?.addEventListener('submit',e=>saveForm(e,async fd=>{await patch(task.id,{title:fd.get('title'),description:fd.get('description')},task.version);descriptionEditing=false;descriptionDraft=null;renderDetail();}));
-    const form=document.querySelector('#task-settings-form');form.addEventListener('input',()=>form.dataset.dirty='true');form.addEventListener('change',()=>form.dataset.dirty='true');
-    form.onsubmit=e=>saveForm(e,async fd=>{const changes={};const candidates={owner_id:Number(fd.get('owner_id'))||null,due_at:fd.get('due_at')?new Date(fd.get('due_at')).toISOString():null,status:fd.get('status'),priority:fd.get('priority')};if(task.can_edit&&canReviewAssign(task))candidates.reviewer_id=Number(fd.get('reviewer_id'))||null;for(const[k,v]of Object.entries(candidates)){if(k==='due_at'?(v?new Date(v).getTime():null)!==(task[k]?new Date(task[k]).getTime():null):v!==task[k])changes[k]=v;}const participants=fd.getAll('participants').map(Number).sort((a,b)=>a-b);if(JSON.stringify(participants)!==JSON.stringify([...task.participants].sort((a,b)=>a-b)))changes.participants=participants;if(!Object.keys(changes).length)return toast('Изменений нет');await patch(task.id,changes,task.version);renderDetail();toast('Детали сохранены');});
+    const form=document.querySelector('#task-settings-form');
+    restoreSettingsDraft(form,task.id);
+    const remember=e=>rememberSettings(form,e.target,task.id);
+    form.addEventListener('input',remember);form.addEventListener('change',remember);
+    form.onsubmit=e=>saveForm(e,async fd=>{const changes={};const candidates={owner_id:Number(fd.get('owner_id'))||null,due_at:fd.get('due_at')?new Date(fd.get('due_at')).toISOString():null,status:fd.get('status'),priority:fd.get('priority')};if(task.can_edit&&canReviewAssign(task))candidates.reviewer_id=Number(fd.get('reviewer_id'))||null;for(const[k,v]of Object.entries(candidates)){if(k==='due_at'?(v?new Date(v).getTime():null)!==(task[k]?new Date(task[k]).getTime():null):v!==task[k])changes[k]=v;}const participants=fd.getAll('participants').map(Number).sort((a,b)=>a-b);if(JSON.stringify(participants)!==JSON.stringify([...task.participants].sort((a,b)=>a-b)))changes.participants=participants;if(!Object.keys(changes).length)return toast('Изменений нет');await patch(task.id,changes,task.version);settingsDraft=null;renderDetail();toast('Детали сохранены');});
     document.querySelector('#task-primary-action')?.addEventListener('click',async()=>{if(task.blocked_reason)return toast('Сначала снимите блокировку','error');const status={new:'working',working:task.reviewer_id?'review':'done',review:'done',done:'working',cancelled:'working'}[task.status];await action(()=>patch(task.id,{status},task.version));});
     const primary=document.querySelector('#task-primary-action');if(primary&&task.status==='working'&&!task.reviewer_id)primary.textContent='Завершить';if(primary&&task.status==='review'&&task.reviewer_id!==state.user.id&&!data()?.can_dispatch){primary.textContent='Ожидаем проверки';primary.disabled=true;}
     document.querySelectorAll('[data-checklist-id]').forEach(el=>el.onchange=async()=>{
@@ -620,10 +623,10 @@ const TasksUI = (() => {
         current=await api(`/tasks/${task.id}/checklist/${item.id}`,{method:'PATCH',body:JSON.stringify({version:item.version,checked:el.checked})});
         apply(current);
         renderDetail();
-        if (el.checked && current.checklist.length > 0 && current.checklist.every(c => c.checked) && current.status === 'working' && current.can_edit) {
-          if (confirm('Все пункты чек-листа выполнены! Передать задачу на проверку?')) {
-            await action(() => patch(current.id, { status: 'review' }, current.version));
-            toast('Задача переведена в статус «На проверке»');
+        const status=el.checked?checklistCompletionStatus(current):null;
+        if (status) {
+          if (confirm(current.reviewer_id?'Все пункты чек-листа выполнены! Передать задачу на проверку?':'Все пункты чек-листа выполнены! Завершить задачу?')) {
+            if(await action(() => patch(current.id, { status }, current.version)))toast(status==='review'?'Задача переведена в статус «На проверке»':'Задача завершена');
           }
         }
       }catch(e){
@@ -634,6 +637,7 @@ const TasksUI = (() => {
     });
     document.querySelectorAll('[data-checklist-edit]').forEach(b=>b.onclick=()=>{const item=task.checklist.find(c=>c.id===Number(b.dataset.checklistEdit));modal('Пункт чек-листа',`<div class="form"><label>Что нужно сделать?<input class="field" name="body" required maxlength="500" value="${esc(item.body)}"></label></div>`,async fd=>{current=await api(`/tasks/${task.id}/checklist/${item.id}`,{method:'PATCH',body:JSON.stringify({version:item.version,body:fd.get('body')})});apply(current);renderDetail();});});
     document.querySelector('#task-check-add')?.addEventListener('submit',e=>saveForm(e,async fd=>{await api(`/tasks/${task.id}/checklist`,{method:'POST',body:JSON.stringify({body:fd.get('body')})});current=await api(`/tasks/${task.id}`);apply(current);renderDetail();}));
+    document.querySelector('#task-log-time')?.addEventListener('click',()=>quickLogTime(task));
     bindComments(task);
     document.querySelector('#task-files-input')?.addEventListener('change',e=>uploadFiles([...e.target.files]));
     document.querySelectorAll('[data-file-hide],[data-file-restore]').forEach(b=>b.onclick=()=>action(async()=>{current=await api(`/tasks/${task.id}/files/${b.dataset.fileHide||b.dataset.fileRestore}/${b.dataset.fileHide?'hide':'restore'}`,{method:'POST'});apply(current);}));
@@ -644,7 +648,7 @@ const TasksUI = (() => {
     document.querySelector('#task-linked-ticket')?.addEventListener('click',()=>openTicket(task.ticket_id));
   }
   async function saveForm(e,callback){e.preventDefault();const form=e.target,button=form.querySelector('[type="submit"],button:not([type="button"])'),error=form.querySelector('[role="alert"]');if(button)button.disabled=true;if(error)error.hidden=true;busy=true;commentDraft=document.querySelector('#task-comment-body')?.value||commentDraft;try{await callback(new FormData(form));}catch(err){if(error){error.textContent=err.message;error.hidden=false;}else toast(err.message,'error');if(err.status===409)toast('Данные изменились. Обновите задачу перед повторным сохранением.','error');}finally{busy=false;if(button?.isConnected)button.disabled=false;}}
-  async function action(callback){if(busy)return;busy=true;const buttons=[...document.querySelectorAll('#task-primary-action,#task-block,#task-archive,#task-watch')].map(b=>[b,b.disabled]);buttons.forEach(([b])=>{b.disabled=true;b.setAttribute('aria-busy','true');});commentDraft=document.querySelector('#task-comment-body')?.value||commentDraft;try{await callback();renderDetail();}catch(e){toast(e.message,'error');}finally{busy=false;buttons.forEach(([b,disabled])=>{if(b.isConnected){b.disabled=disabled;b.removeAttribute('aria-busy');}});}}
+  async function action(callback){if(busy)return false;busy=true;const buttons=[...document.querySelectorAll('#task-primary-action,#task-block,#task-archive,#task-watch')].map(b=>[b,b.disabled]);buttons.forEach(([b])=>{b.disabled=true;b.setAttribute('aria-busy','true');});commentDraft=document.querySelector('#task-comment-body')?.value||commentDraft;try{await callback();renderDetail();return true;}catch(e){toast(e.message,'error');return false;}finally{busy=false;buttons.forEach(([b,disabled])=>{if(b.isConnected){b.disabled=disabled;b.removeAttribute('aria-busy');}});}}
   function bindComments(task){const form=document.querySelector('#task-comment-form');if(!form)return;const body=form.querySelector('textarea'),menu=form.querySelector('#task-mention-menu');
     const insert=p=>{const before=body.value.slice(0,body.selectionStart),after=body.value.slice(body.selectionEnd);body.value=before.replace(/@[^@\n]*$/,'')+'@'+p.name+' '+after;commentDraft=body.value;menu.hidden=true;body.focus();body.setSelectionRange(body.value.length-after.length,body.value.length-after.length);};
     body.oninput=()=>{commentDraft=body.value;if(!commentRequest)commentRequest=crypto.randomUUID();const match=body.value.slice(0,body.selectionStart).match(/@([^@\n]{0,60})$/);const candidates=match?task.mention_candidates.filter(p=>p.id!==state.user.id&&p.name.toLocaleLowerCase('ru-RU').includes(match[1].toLocaleLowerCase('ru-RU'))).slice(0,6):[];menu.hidden=!candidates.length;menu.innerHTML=candidates.map(p=>`<button type="button" data-mention-id="${p.id}">${esc(p.name)}</button>`).join('');menu.querySelectorAll('button').forEach(b=>b.onclick=()=>insert(candidates.find(p=>p.id===Number(b.dataset.mentionId))));};

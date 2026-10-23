@@ -16,6 +16,7 @@ def work_today():
 
 # Stable IDs across independent source tables: work stays compatible with existing IDs.
 # Estimates use negative odd IDs, service entries negative even IDs.
+# Task time uses a separate high positive range (SQLite source IDs remain unchanged).
 SOURCE_SQL = '''
     SELECT e.id,e.id AS source_id,'work' AS source_kind,e.author_id,e.ticket_id,
         t.title AS ticket_title,COALESCE(e.work_date,date(e.created_at,'+3 hours')) AS work_date,
@@ -33,6 +34,11 @@ SOURCE_SQL = '''
             WHEN 'meeting' THEN 'Встреча' ELSE 'Сопровождение' END || ': ' || s.note
     FROM service_entries s LEFT JOIN tickets t ON t.id=s.ticket_id JOIN users u ON u.id=s.customer_id
     WHERE s.is_billable=1
+    UNION ALL
+    SELECT 1000000000000+e.id,e.id,'task',e.author_id,NULL,
+        'Задача #' || t.id || ' · ' || t.title,e.work_date,e.minutes,e.note
+    FROM task_time_entries e JOIN team_tasks t ON t.id=e.task_id
+    WHERE e.ticket_time_entry_id IS NULL
 '''
 
 
@@ -89,10 +95,29 @@ def init_schema(conn):
     );
     CREATE INDEX IF NOT EXISTS payroll_items_act ON payroll_act_items(act_id);
     CREATE TABLE IF NOT EXISTS payroll_sources (
-        id INTEGER PRIMARY KEY, source_kind TEXT NOT NULL CHECK(source_kind IN ('work','assessment','service')),
+        id INTEGER PRIMARY KEY, source_kind TEXT NOT NULL CHECK(source_kind IN ('work','assessment','service','task')),
         source_id INTEGER NOT NULL, UNIQUE(source_kind,source_id)
     );
     ''')
+    # Widen the source registry while keeping its stable IDs and existing foreign keys.
+    source_schema = conn.execute("SELECT sql FROM sqlite_master WHERE name='payroll_sources'").fetchone()[0]
+    if "'task'" not in source_schema:
+        conn.commit()
+        conn.execute('PRAGMA foreign_keys=OFF')
+        try:
+            conn.execute('BEGIN IMMEDIATE')
+            conn.execute(source_schema.replace('payroll_sources', 'payroll_sources_upgrade', 1).replace("'assessment','service'", "'assessment','service','task'"))
+            conn.execute('INSERT INTO payroll_sources_upgrade SELECT * FROM payroll_sources')
+            conn.execute('DROP TABLE payroll_sources')
+            conn.execute('ALTER TABLE payroll_sources_upgrade RENAME TO payroll_sources')
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.execute('PRAGMA foreign_keys=ON')
+        if conn.execute('PRAGMA foreign_key_check').fetchone():
+            raise RuntimeError('Payroll source migration failed foreign-key validation')
     # Upgrade the initial work-only schema without changing issued acts or decisions.
     if any(r['table'] == 'time_entries' for r in conn.execute('PRAGMA foreign_key_list(payroll_reviews)')):
         conn.execute('BEGIN IMMEDIATE')

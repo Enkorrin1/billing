@@ -27,7 +27,17 @@ from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse
 from pydantic import BaseModel, Field
 from PIL import Image, ImageOps, UnidentifiedImageError
 
+try:
+    from reportlab.graphics.barcode.qr import QrCodeWidget
+    from reportlab.graphics.shapes import Drawing
+    from reportlab.graphics import renderSVG
+    REPORTLAB_QR_AVAILABLE = True
+except Exception:
+    REPORTLAB_QR_AVAILABLE = False
+
 import mailer
+import billing_ledger
+import admin
 import team_management
 import company_chat
 import payroll
@@ -83,6 +93,8 @@ realtime_bus = RealtimeBus()
 web_push = WebPush(DB_PATH)
 
 
+_BILLING_READY = False
+
 @contextmanager
 def db():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -92,6 +104,8 @@ def db():
     conn.execute("PRAGMA foreign_keys=ON")
     try:
         yield conn
+        if _BILLING_READY and conn.total_changes:
+            billing_ledger.sync_reservations(conn)
         conn.commit()
     finally:
         conn.close()
@@ -508,9 +522,16 @@ def init_db():
         for col, decl in {
             "hourly_rate_rub": "INTEGER NOT NULL DEFAULT 3000",
             "balance_minutes": "INTEGER NOT NULL DEFAULT 0",
+            "deposit_balance_rub": "INTEGER NOT NULL DEFAULT 0",
+            "held_rub": "INTEGER NOT NULL DEFAULT 0",
             "inn": "TEXT NOT NULL DEFAULT ''",
             "kpp": "TEXT NOT NULL DEFAULT ''",
+            "ogrn": "TEXT NOT NULL DEFAULT ''",
             "legal_address": "TEXT NOT NULL DEFAULT ''",
+            "bank_name": "TEXT NOT NULL DEFAULT ''",
+            "bik": "TEXT NOT NULL DEFAULT ''",
+            "bank_account": "TEXT NOT NULL DEFAULT ''",
+            "corr_account": "TEXT NOT NULL DEFAULT ''",
         }.items():
             if col not in org_columns:
                 conn.execute(f"ALTER TABLE organizations ADD COLUMN {col} {decl}")
@@ -519,7 +540,11 @@ def init_db():
         for col, decl in {
             "hourly_rate_rub": "INTEGER NOT NULL DEFAULT 3000",
             "balance_minutes": "INTEGER NOT NULL DEFAULT 0",
+            "deposit_balance_rub": "INTEGER NOT NULL DEFAULT 0",
+            "held_rub": "INTEGER NOT NULL DEFAULT 0",
             "inn": "TEXT NOT NULL DEFAULT ''",
+            "kpp": "TEXT NOT NULL DEFAULT ''",
+            "ogrn": "TEXT NOT NULL DEFAULT ''",
             "legal_address": "TEXT NOT NULL DEFAULT ''",
             "auto_approve_minutes": "INTEGER NOT NULL DEFAULT 0",
         }.items():
@@ -527,12 +552,45 @@ def init_db():
                 conn.execute(f"ALTER TABLE customer_profiles ADD COLUMN {col} {decl}")
 
         ticket_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tickets)")}
-        if "act_invoice_id" not in ticket_columns:
-            conn.execute("ALTER TABLE tickets ADD COLUMN act_invoice_id INTEGER REFERENCES invoices(id)")
+        for col, decl in {
+            "act_invoice_id": "INTEGER REFERENCES invoices(id)",
+            "held_amount_rub": "INTEGER NOT NULL DEFAULT 0",
+            "payment_status": "TEXT NOT NULL DEFAULT 'unpaid'",
+        }.items():
+            if col not in ticket_columns:
+                conn.execute(f"ALTER TABLE tickets ADD COLUMN {col} {decl}")
 
         inv_check = {row["name"] for row in conn.execute("PRAGMA table_info(invoices)")} if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='invoices'").fetchone() else set()
         if inv_check and "customer_id" not in inv_check:
             conn.execute("DROP TABLE invoices")
+
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS company_billing_profile (
+            id INTEGER PRIMARY KEY CHECK(id = 1),
+            name TEXT NOT NULL DEFAULT 'ООО "Линия Сервис"',
+            inn TEXT NOT NULL DEFAULT '7701234567',
+            kpp TEXT NOT NULL DEFAULT '770101001',
+            ogrn TEXT NOT NULL DEFAULT '1157746123456',
+            legal_address TEXT NOT NULL DEFAULT '127000, г. Москва, ул. Тверская, д. 7',
+            bank_name TEXT NOT NULL DEFAULT 'АО "ТБанк" г. Москва',
+            bik TEXT NOT NULL DEFAULT '044525974',
+            corr_account TEXT NOT NULL DEFAULT '30101810145250000974',
+            bank_account TEXT NOT NULL DEFAULT '40702810100000012345',
+            ceo_name TEXT NOT NULL DEFAULT 'Иванов А.С.',
+            ceo_title TEXT NOT NULL DEFAULT 'Генеральный директор',
+            accountant_name TEXT NOT NULL DEFAULT 'Иванов А.С.',
+            vat_rate TEXT NOT NULL DEFAULT 'Без НДС (УСН)'
+        );
+        INSERT OR IGNORE INTO company_billing_profile (id) VALUES (1);
+        """)
+
+        inv_cols = {row["name"] for row in conn.execute("PRAGMA table_info(invoices)")} if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='invoices'").fetchone() else set()
+        for col, decl in {
+            "qr_payload": "TEXT NOT NULL DEFAULT ''",
+            "signed_at": "TEXT",
+        }.items():
+            if inv_cols and col not in inv_cols:
+                conn.execute(f"ALTER TABLE invoices ADD COLUMN {col} {decl}")
 
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS invoices (
@@ -666,9 +724,12 @@ def init_db():
         team_management.init_schema(conn)
         company_chat.init_schema(conn)
         payroll.init_schema(conn)
+        billing_ledger.migrate(conn)
+        billing_ledger.sync_reservations(conn)
 
 
 init_db()
+_BILLING_READY = True
 
 
 def password_hash(password, salt=None):
@@ -808,19 +869,8 @@ def approved_minutes(conn, ticket_id):
 
 
 def ticket_cost_rub(conn, ticket_id, rate_rub):
-    estimate = latest_estimate(conn, ticket_id)
-    if not estimate or estimate["state"] != "approved":
-        return 0
-    base_cost = estimate["amount_rub"]
-    if base_cost is None:
-        base_mins = estimate["performer_effort_minutes"] or estimate["effort_minutes"] or 0
-        base_cost = round(base_mins / 60.0 * rate_rub)
-    extra_cost = conn.execute("""SELECT COALESCE(SUM(
-        CASE WHEN amount_rub IS NOT NULL THEN amount_rub
-             ELSE ROUND(COALESCE(pm_approved_minutes, minutes) / 60.0 * ?)
-        END), 0) FROM hour_requests WHERE ticket_id=? AND state='approved' AND bill_customer=1""",
-        (rate_rub, ticket_id)).fetchone()[0]
-    return base_cost + int(extra_cost)
+    ticket = conn.execute("SELECT * FROM tickets WHERE id=?", (ticket_id,)).fetchone()
+    return billing_ledger.approved_amount(conn, ticket, rate_rub) if ticket else 0
 
 
 def actual_minutes(conn, ticket_id):
@@ -1521,7 +1571,12 @@ class BillingRateUpdate(BaseModel):
     hourly_rate_rub: int = Field(ge=100, le=1_000_000)
     inn: str = Field(default="", max_length=20)
     kpp: str = Field(default="", max_length=20)
+    ogrn: str = Field(default="", max_length=30)
     legal_address: str = Field(default="", max_length=300)
+    bank_name: str = Field(default="", max_length=150)
+    bik: str = Field(default="", max_length=20)
+    bank_account: str = Field(default="", max_length=40)
+    corr_account: str = Field(default="", max_length=40)
 
 
 class BillingDepositCreate(BaseModel):
@@ -1536,6 +1591,7 @@ class BillingDocumentCreate(BaseModel):
     doc_type: Literal["invoice", "act"]
     client_type: Literal["org", "user"]
     client_id: int
+    amount_rub: int | None = Field(default=None, ge=1, le=100_000_000)
     hours: float | None = Field(default=None, ge=0.1, le=10_000)
     description: str | None = Field(default=None, max_length=300)
     period_start: str | None = None
@@ -1547,6 +1603,22 @@ class BillingDocumentCreate(BaseModel):
 
 class BillingStatusUpdate(BaseModel):
     status: Literal["issued", "paid", "cancelled", "signed"]
+
+
+class CompanyProfileUpdate(BaseModel):
+    name: str = Field(min_length=2, max_length=200)
+    inn: str = Field(min_length=9, max_length=20)
+    kpp: str = Field(default="", max_length=20)
+    ogrn: str = Field(default="", max_length=30)
+    legal_address: str = Field(min_length=5, max_length=300)
+    bank_name: str = Field(min_length=2, max_length=200)
+    bik: str = Field(min_length=8, max_length=20)
+    bank_account: str = Field(min_length=15, max_length=40)
+    corr_account: str = Field(default="", max_length=40)
+    ceo_name: str = Field(min_length=2, max_length=100)
+    ceo_title: str = Field(default="Генеральный директор", max_length=100)
+    accountant_name: str = Field(default="", max_length=100)
+    vat_rate: str = Field(default="Без НДС (УСН)", max_length=100)
 
 
 class ServiceBudgetUpdate(BaseModel):
@@ -1746,6 +1818,11 @@ def script():
 @app.get("/team.js")
 def team_script():
     return FileResponse(ROOT / "web" / "team.js", media_type="text/javascript", headers=NO_CACHE)
+
+
+@app.get("/guide.js")
+def guide_script():
+    return FileResponse(ROOT / "web" / "guide.js", media_type="text/javascript", headers=NO_CACHE)
 
 
 @app.get("/tasks.js")
@@ -2571,7 +2648,7 @@ def tickets(desk_session: str | None = Cookie(default=None)):
             item["estimate_amount_rub"] = estimate["amount_rub"] if estimate else None
             rate_rub = get_customer_rate(conn, item)
             app_mins = approved_minutes(conn, row["id"])
-            item["cost_rub"] = round(app_mins / 60.0 * rate_rub)
+            item["cost_rub"] = ticket_cost_rub(conn, row["id"], rate_rub)
             item["effort_minutes"] = estimate["effort_minutes"] if estimate else None
             item["approved_minutes"] = app_mins
             item["actual_minutes"] = actual_minutes(conn, row["id"])
@@ -2843,6 +2920,7 @@ def get_ticket(ticket_id: int, desk_session: str | None = Cookie(default=None)):
                                  or (membership == "executor" and team_management.has_permission(conn, user, "tasks")))
         active_estimates = [e for e in estimates if user["role"] != "customer" or e["state"] != "pending_pm"]
         latest_est = active_estimates[0] if active_estimates else None
+        item["can_rate"] = user["role"] == "customer" and ticket["customer_id"] == user["id"] and ticket["status"] in ("done", "closed")
         item["estimate_state"] = latest_est["state"] if latest_est else None
         item["estimate_amount_rub"] = latest_est["amount_rub"] if latest_est else None
         item["effort_minutes"] = latest_est["effort_minutes"] if latest_est else None
@@ -2850,14 +2928,14 @@ def get_ticket(ticket_id: int, desk_session: str | None = Cookie(default=None)):
         item["actual_minutes"] = actual_minutes(conn, ticket_id)
         if user["role"] != "customer":
             item.update(contractor_time_summary(conn, ticket_id, item["actual_minutes"]))
-        
+
         item["pending_hour_request"] = bool(conn.execute(
             f"SELECT 1 FROM hour_requests WHERE ticket_id=? AND state='{'pending' if user['role']=='customer' else 'pending_pm'}'",
             (ticket_id,)).fetchone())
 
         rate_rub = get_customer_rate(conn, ticket)
         item["hourly_rate_rub"] = rate_rub
-        item["cost_rub"] = round(approved_minutes(conn, ticket_id) / 60.0 * rate_rub)
+        item["cost_rub"] = ticket_cost_rub(conn, ticket_id, rate_rub)
         act_info = None
         if "act_invoice_id" in ticket.keys() and ticket["act_invoice_id"]:
             act_row = conn.execute("SELECT id, number, status, created_at FROM invoices WHERE id=?", (ticket["act_invoice_id"],)).fetchone()
@@ -2873,7 +2951,9 @@ def get_ticket(ticket_id: int, desk_session: str | None = Cookie(default=None)):
             WHERE w.ticket_id=? ORDER BY w.id DESC""", (ticket_id,)).fetchall()
         hour_rows = conn.execute("""SELECT h.*,u.name AS author_name FROM hour_requests h JOIN users u ON u.id=h.author_id
             WHERE h.ticket_id=? ORDER BY h.id DESC""", (ticket_id,)).fetchall()
-        file_rows = conn.execute("SELECT id,filename,size,content_type,author_id,created_at FROM attachments WHERE ticket_id=? ORDER BY id DESC", (ticket_id,)).fetchall()
+        file_rows = conn.execute("""SELECT a.id,a.filename,a.size,a.content_type,a.author_id,a.created_at,
+            u.name AS author_name,u.role AS author_role FROM attachments a JOIN users u ON u.id=a.author_id
+            WHERE a.ticket_id=? ORDER BY a.id DESC""", (ticket_id,)).fetchall()
         service_rows = []
         item["service_minutes"] = conn.execute("SELECT COALESCE(SUM(minutes),0) FROM service_entries WHERE is_billable=1 AND ticket_id=?", (ticket_id,)).fetchone()[0]
         item["service_cost_rub"] = round(item["service_minutes"] / 60.0 * rate_rub)
@@ -3229,7 +3309,7 @@ def change_priority(ticket_id: int, data: PriorityChange, desk_session: str | No
                 new_est_due = (created + timedelta(hours=est_h)).isoformat()
                 conn.execute("UPDATE tickets SET response_due_at=?, estimate_due_at=? WHERE id=?",
                              (new_resp_due, new_est_due, ticket_id))
-            
+
             p_names = {"low": "Низкий", "normal": "Обычный", "high": "Высокий", "urgent": "Критический"}
             recipients = set(customer_recipients(conn, ticket)) | dispatcher_ids(conn)
             if ticket["assignee_id"]:
@@ -3447,28 +3527,32 @@ def add_time_entry(ticket_id: int, data: TimeEntryCreate, desk_session: str | No
     require_staff(user)
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        ticket = ticket_for(conn, ticket_id, user)
-        if ticket["assignee_id"] != user["id"]:
-            raise HTTPException(403, "Время вносит ответственный сотрудник")
-        if data.request_id:
-            existing = conn.execute("SELECT * FROM time_entries WHERE ticket_id=? AND author_id=? AND request_id=?",
-                                    (ticket_id, user["id"], data.request_id)).fetchone()
-            if existing:
-                return dict(existing)
-        if ticket["status"] not in ("working", "waiting", "done"):
-            raise HTTPException(409, "Сначала переведите согласованную заявку в работу")
-        if not data.note.strip():
-            raise HTTPException(422, "Опишите выполненную работу")
-        if actual_minutes(conn, ticket_id) + data.minutes > approved_minutes(conn, ticket_id):
-            raise HTTPException(409, "Превышен согласованный лимит часов. Запросите дополнительные часы")
-        stamp = now()
-        work_date = data.work_date or payroll.work_today()
-        if work_date > payroll.work_today():
-            raise HTTPException(422, "Дата фактической работы не может быть в будущем")
-        cursor = conn.execute("INSERT INTO time_entries(ticket_id,author_id,minutes,note,created_at,request_id,work_date) VALUES(?,?,?,?,?,?,?)",
-                              (ticket_id, user["id"], data.minutes, data.note.strip(), stamp, data.request_id, work_date.isoformat()))
-        conn.execute("UPDATE tickets SET updated_at=? WHERE id=?", (stamp, ticket_id))
-        return dict(conn.execute("SELECT * FROM time_entries WHERE id=?", (cursor.lastrowid,)).fetchone())
+        return add_time_entry_service(conn, user, ticket_id, data)
+
+
+def add_time_entry_service(conn, user, ticket_id, data):
+    ticket = ticket_for(conn, ticket_id, user)
+    if ticket["assignee_id"] != user["id"]:
+        raise HTTPException(403, "Время вносит ответственный сотрудник")
+    if data.request_id:
+        existing = conn.execute("SELECT * FROM time_entries WHERE ticket_id=? AND author_id=? AND request_id=?",
+                                (ticket_id, user["id"], data.request_id)).fetchone()
+        if existing:
+            return dict(existing)
+    if ticket["status"] not in ("working", "waiting", "done"):
+        raise HTTPException(409, "Сначала переведите согласованную заявку в работу")
+    if not data.note.strip():
+        raise HTTPException(422, "Опишите выполненную работу")
+    if actual_minutes(conn, ticket_id) + data.minutes > approved_minutes(conn, ticket_id):
+        raise HTTPException(409, "Превышен согласованный лимит часов. Запросите дополнительные часы")
+    stamp = now()
+    work_date = data.work_date or payroll.work_today()
+    if work_date > payroll.work_today():
+        raise HTTPException(422, "Дата фактической работы не может быть в будущем")
+    cursor = conn.execute("INSERT INTO time_entries(ticket_id,author_id,minutes,note,created_at,request_id,work_date) VALUES(?,?,?,?,?,?,?)",
+                          (ticket_id, user["id"], data.minutes, data.note.strip(), stamp, data.request_id, work_date.isoformat()))
+    conn.execute("UPDATE tickets SET updated_at=? WHERE id=?", (stamp, ticket_id))
+    return dict(conn.execute("SELECT * FROM time_entries WHERE id=?", (cursor.lastrowid,)).fetchone())
 
 
 @app.post("/api/tickets/{ticket_id}/hour-requests", status_code=201)
@@ -3953,6 +4037,10 @@ async def add_ticket_attachment(ticket_id: int, file: UploadFile = File(...),
             recipient = ticket["assignee_id"] if user["role"] == "customer" else ticket["customer_id"]
             if recipient and recipient != user["id"]:
                 notify(conn, recipient, ticket_id, "attachment", f"Новый файл в заявке №{ticket_id}")
+            recipients = customer_recipients(conn, current_ticket) | dispatcher_ids(conn)
+            if current_ticket["assignee_id"]:
+                recipients.add(current_ticket["assignee_id"])
+            realtime_bus.broadcast(recipients, {"type": "ticket_message", "ticket_id": ticket_id})
             return {"id": cursor.lastrowid, "filename": filename, "size": size}
     except Exception:
         (ATTACHMENT_DIR / stored_name).unlink(missing_ok=True)
@@ -4006,7 +4094,11 @@ def download_attachment(attachment_id: int, desk_session: str | None = Cookie(de
         path = LEGACY_ATTACHMENT_DIR / row["stored_name"]
     if not path.is_file():
         raise HTTPException(404, "Файл не найден")
-    return FileResponse(path, filename=row["filename"], media_type="application/octet-stream",
+    image_types = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                   ".webp": "image/webp", ".gif": "image/gif"}
+    image_type = image_types.get(Path(row["filename"]).suffix.lower())
+    return FileResponse(path, filename=row["filename"], media_type=image_type or "application/octet-stream",
+                        content_disposition_type="inline" if image_type else "attachment",
                         headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
 
 
@@ -4811,13 +4903,38 @@ def rubles_to_words(n: int) -> str:
 def format_ru_date(iso_str: str) -> str:
     try:
         dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(local_tz())
         months = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
         return f"{dt.day} {months[dt.month - 1]} {dt.year} г."
     except Exception:
         return iso_str[:10]
 
 
+def get_company_billing_profile(conn) -> dict:
+    row = conn.execute("SELECT * FROM company_billing_profile WHERE id=1").fetchone()
+    if row:
+        return dict(row)
+    return {
+        "name": 'ООО "Линия Сервис"',
+        "inn": "7701234567",
+        "kpp": "770101001",
+        "ogrn": "1157746123456",
+        "legal_address": "127000, г. Москва, ул. Тверская, д. 7",
+        "bank_name": 'АО "ТБанк" г. Москва',
+        "bik": "044525974",
+        "corr_account": "30101810145250000974",
+        "bank_account": "40702810100000012345",
+        "ceo_name": "Иванов А.С.",
+        "ceo_title": "Генеральный директор",
+        "accountant_name": "Иванов А.С.",
+        "vat_rate": "Без НДС (УСН)"
+    }
+
+
 def get_client_billing_info(conn, client_type: str, client_id: int) -> dict:
+    if client_type not in ("org", "user"):
+        raise HTTPException(422, "Неверный тип клиента")
     if client_type == "org":
         row = conn.execute("SELECT * FROM organizations WHERE id=?", (client_id,)).fetchone()
         if not row:
@@ -4827,15 +4944,27 @@ def get_client_billing_info(conn, client_type: str, client_id: int) -> dict:
         if not cust_id:
             m = conn.execute("SELECT user_id FROM organization_members WHERE organization_id=? LIMIT 1", (client_id,)).fetchone()
             cust_id = m["user_id"] if m else 1
+        rate = row["hourly_rate_rub"] or 3000
+        bal_mins = row["balance_minutes"] or 0
+        dep_rub = row["deposit_balance_rub"] if "deposit_balance_rub" in row.keys() and row["deposit_balance_rub"] is not None else round(bal_mins / 60.0 * rate)
+        held_rub = row["held_rub"] if "held_rub" in row.keys() and row["held_rub"] is not None else 0
         return {
             "client_type": "org",
             "client_id": row["id"],
             "name": row["name"],
             "inn": row["inn"] or "",
             "kpp": row["kpp"] or "",
+            "ogrn": row["ogrn"] if "ogrn" in row.keys() and row["ogrn"] else "",
             "legal_address": row["legal_address"] or "",
-            "hourly_rate_rub": row["hourly_rate_rub"] or 3000,
-            "balance_minutes": row["balance_minutes"] or 0,
+            "bank_name": row["bank_name"] if "bank_name" in row.keys() and row["bank_name"] else "",
+            "bik": row["bik"] if "bik" in row.keys() and row["bik"] else "",
+            "bank_account": row["bank_account"] if "bank_account" in row.keys() and row["bank_account"] else "",
+            "corr_account": row["corr_account"] if "corr_account" in row.keys() and row["corr_account"] else "",
+            "hourly_rate_rub": rate,
+            "balance_minutes": bal_mins,
+            "deposit_balance_rub": dep_rub,
+            "held_rub": held_rub,
+            "available_rub": dep_rub - held_rub,
             "organization_id": row["id"],
             "customer_id": cust_id
         }
@@ -4845,21 +4974,152 @@ def get_client_billing_info(conn, client_type: str, client_id: int) -> dict:
             raise HTTPException(404, "Клиент не найден")
         p = conn.execute("SELECT * FROM customer_profiles WHERE user_id=?", (client_id,)).fetchone()
         company = p["company_name"] if p and p["company_name"] else user["name"]
+        rate = p["hourly_rate_rub"] if p and "hourly_rate_rub" in p.keys() and p["hourly_rate_rub"] else 3000
+        bal_mins = p["balance_minutes"] if p and "balance_minutes" in p.keys() and p["balance_minutes"] else 0
+        dep_rub = p["deposit_balance_rub"] if p and "deposit_balance_rub" in p.keys() and p["deposit_balance_rub"] is not None else round(bal_mins / 60.0 * rate)
+        held_rub = p["held_rub"] if p and "held_rub" in p.keys() and p["held_rub"] is not None else 0
         return {
             "client_type": "user",
             "client_id": user["id"],
             "name": company,
             "inn": p["inn"] if p and "inn" in p.keys() and p["inn"] else "",
-            "kpp": "",
+            "kpp": p["kpp"] if p and "kpp" in p.keys() and p["kpp"] else "",
+            "ogrn": p["ogrn"] if p and "ogrn" in p.keys() and p["ogrn"] else "",
             "legal_address": p["legal_address"] if p and "legal_address" in p.keys() and p["legal_address"] else "",
-            "hourly_rate_rub": p["hourly_rate_rub"] if p and "hourly_rate_rub" in p.keys() and p["hourly_rate_rub"] else 3000,
-            "balance_minutes": p["balance_minutes"] if p and "balance_minutes" in p.keys() and p["balance_minutes"] else 0,
+            "bank_name": p["bank_name"] if p else "",
+"bik": p["bik"] if p else "",
+"bank_account": p["bank_account"] if p else "",
+"corr_account": p["corr_account"] if p else "",
+            "hourly_rate_rub": rate,
+            "balance_minutes": bal_mins,
+            "deposit_balance_rub": dep_rub,
+            "held_rub": held_rub,
+            "available_rub": dep_rub - held_rub,
             "organization_id": None,
             "customer_id": user["id"]
         }
 
 
-def generate_document_html(doc: dict, client: dict, items: list[dict]) -> str:
+def update_client_rub_balance(conn, client_type: str, client_id: int, new_deposit_rub: int, new_held_rub: int | None = None):
+    client = get_client_billing_info(conn, client_type, client_id)
+    rate = client["hourly_rate_rub"] or 3000
+    bal_mins = round(new_deposit_rub / rate * 60)
+    if new_held_rub is None:
+        new_held_rub = client["held_rub"]
+    if client_type == "org":
+        conn.execute("""
+            UPDATE organizations
+            SET deposit_balance_rub=?, held_rub=?, balance_minutes=?
+            WHERE id=?
+        """, (new_deposit_rub, new_held_rub, bal_mins, client_id))
+    else:
+        conn.execute("""
+            INSERT INTO customer_profiles (user_id, deposit_balance_rub, held_rub, balance_minutes, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                deposit_balance_rub=excluded.deposit_balance_rub,
+                held_rub=excluded.held_rub,
+                balance_minutes=excluded.balance_minutes,
+                updated_at=excluded.updated_at
+        """, (client_id, new_deposit_rub, new_held_rub, bal_mins, now()))
+
+
+def build_gost_qr_svg(
+    company_name: str,
+    inn: str,
+    kpp: str,
+    bank_account: str,
+    bank_name: str,
+    bik: str,
+    corr_account: str,
+    sum_rub: int,
+    doc_number: str,
+    doc_date: str,
+    purpose: str | None = None
+) -> str:
+    if not REPORTLAB_QR_AVAILABLE:
+        return ""
+    try:
+        sum_kopecks = int(sum_rub * 100)
+        pay_purpose = purpose or f"Оплата по счету № {doc_number} от {doc_date}. Без НДС"
+        fields = [
+            "ST00012",
+            f"Name={company_name}",
+            f"PersonalAcc={bank_account}",
+            f"BankName={bank_name}",
+            f"BIC={bik}",
+            f"CorrespAcc={corr_account}",
+            f"PayeeINN={inn}",
+        ]
+        if kpp:
+            fields.append(f"KPP={kpp}")
+        fields.append(f"Sum={sum_kopecks}")
+        fields.append(f"Purpose={pay_purpose}")
+        qr_data = "|".join(fields)
+
+        d = Drawing(130, 130)
+        qr = QrCodeWidget(qr_data)
+        bounds = qr.getBounds()
+        w = bounds[2] - bounds[0]
+        h = bounds[3] - bounds[1]
+        d.width = 130
+        d.height = 130
+        d.transform = [130.0 / w, 0, 0, 130.0 / h, 0, 0]
+        d.add(qr)
+        svg_raw = renderSVG.drawToString(d)
+        b64 = base64.b64encode(svg_raw.encode("utf-8")).decode("ascii")
+        return f"data:image/svg+xml;base64,{b64}"
+    except Exception:
+        return ""
+
+
+def build_facsimile_seal_svg(company_name: str, inn: str, ogrn: str, city: str = "МОСКВА") -> str:
+    clean_name = html.escape(company_name.replace('"', '').upper())
+    inn, ogrn, city = map(html.escape, (inn, ogrn, city))
+    return f"""<svg width="135" height="135" viewBox="0 0 150 150" xmlns="http://www.w3.org/2000/svg" style="transform: rotate(-6deg); opacity: 0.88;">
+  <defs>
+    <path id="sealCircleOuter" d="M 75, 75 m -58, 0 a 58,58 0 1,1 116,0 a 58,58 0 1,1 -116,0" />
+    <path id="sealCircleInner" d="M 75, 75 m -44, 0 a 44,44 0 1,1 88,0 a 44,44 0 1,1 -88,0" />
+  </defs>
+  <circle cx="75" cy="75" r="70" fill="none" stroke="#1d4ed8" stroke-width="2.5" />
+  <circle cx="75" cy="75" r="66" fill="none" stroke="#1d4ed8" stroke-width="1" />
+  <circle cx="75" cy="75" r="46" fill="none" stroke="#1d4ed8" stroke-width="1.2" stroke-dasharray="3,1" />
+  <text font-family="'Arial', sans-serif" font-size="7.5" font-weight="bold" fill="#1d4ed8" letter-spacing="0.5">
+    <textPath href="#sealCircleOuter" startOffset="0%">
+      * {city} * {clean_name} * ОГРН {ogrn} *
+    </textPath>
+  </text>
+  <text x="75" y="66" font-family="'Arial', sans-serif" font-size="9" font-weight="bold" fill="#1d4ed8" text-anchor="middle">ДЛЯ</text>
+  <text x="75" y="78" font-family="'Arial', sans-serif" font-size="9" font-weight="bold" fill="#1d4ed8" text-anchor="middle">ДОКУМЕНТОВ</text>
+  <text x="75" y="93" font-family="'Arial', sans-serif" font-size="8" font-weight="bold" fill="#1d4ed8" text-anchor="middle">ИНН {inn}</text>
+  <circle cx="75" cy="75" r="32" fill="none" stroke="#1d4ed8" stroke-width="0.8" />
+</svg>"""
+
+
+def build_facsimile_signature_svg() -> str:
+    return """<svg width="145" height="50" viewBox="0 0 150 50" xmlns="http://www.w3.org/2000/svg">
+  <path d="M 12 36 Q 28 8 36 30 T 52 16 Q 68 8 72 34 T 94 22 Q 112 16 126 30 Q 138 40 146 26" fill="none" stroke="#1e3a8a" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M 22 40 Q 75 46 142 33" fill="none" stroke="#1e3a8a" stroke-width="1.8" stroke-linecap="round" />
+</svg>"""
+
+
+def generate_document_html(doc: dict, client: dict, items: list[dict], performer: dict | None = None) -> str:
+    if performer is None:
+        performer = {
+            "name": 'ООО "Линия Сервис"',
+            "inn": "7701234567",
+            "kpp": "770101001",
+            "ogrn": "1157746123456",
+            "legal_address": "127000, г. Москва, ул. Тверская, д. 7",
+            "bank_name": 'АО "ТБанк" г. Москва',
+            "bik": "044525974",
+            "corr_account": "30101810145250000974",
+            "bank_account": "40702810100000012345",
+            "ceo_name": "Иванов А.С.",
+            "ceo_title": "Генеральный директор",
+            "accountant_name": "Иванов А.С.",
+            "vat_rate": "Без НДС (УСН)"
+        }
     is_act = doc["doc_type"] == "act"
     doc_date_formatted = format_ru_date(doc["created_at"])
     title_h1 = f"АКТ № {doc['number']}" if is_act else f"СЧЁТ НА ОПЛАТУ № {doc['number']}"
@@ -4869,18 +5129,31 @@ def generate_document_html(doc: dict, client: dict, items: list[dict]) -> str:
     rows_tr = ""
     for idx, it in enumerate(items, 1):
         name = html.escape(str(it.get("title", "")))
-        hours_val = f"{it.get('hours', 0):.2f}".replace(".", ",")
-        rate_val = f"{it.get('rate', 0):,}".replace(",", " ")
-        line_sum = it.get('sum_rub') if it.get('sum_rub') is not None else (it.get('rub') if it.get('rub') is not None else round(it.get('hours', 0) * it.get('rate', 0)))
-        sum_val = f"{line_sum:,}".replace(",", " ")
+        unit = html.escape(str(it.get("unit", "ч" if "hours" in it else "усл.")))
+        qty_val = it.get("qty")
+        if qty_val is None:
+            qty_val = it.get("hours", 1)
+        if isinstance(qty_val, float):
+            qty_str = f"{qty_val:.2f}".rstrip("0").rstrip(".").replace(".", ",")
+        else:
+            qty_str = str(qty_val)
+
+        rate_val = it.get("rate")
+        if rate_val is None:
+            rate_val = it.get("sum_rub", 0)
+        rate_str = f"{rate_val:,}".replace(",", " ")
+
+        line_sum = it.get("sum_rub") if it.get("sum_rub") is not None else (it.get("rub") if it.get("rub") is not None else round(it.get("hours", 0) * it.get("rate", 0)))
+        sum_str = f"{line_sum:,}".replace(",", " ")
+
         rows_tr += f"""
         <tr>
             <td style="text-align:center;">{idx}</td>
             <td>{name}</td>
-            <td style="text-align:right;">{hours_val}</td>
-            <td style="text-align:center;">ч</td>
-            <td style="text-align:right;">{rate_val} ₽</td>
-            <td style="text-align:right;"><strong>{sum_val} ₽</strong></td>
+            <td style="text-align:right;">{qty_str}</td>
+            <td style="text-align:center;">{unit}</td>
+            <td style="text-align:right;">{rate_str} ₽</td>
+            <td style="text-align:right;"><strong>{sum_str} ₽</strong></td>
         </tr>
         """
 
@@ -4890,36 +5163,59 @@ def generate_document_html(doc: dict, client: dict, items: list[dict]) -> str:
     if doc.get("period_start") and doc.get("period_end"):
         period_str = f"<p><strong>Отчетный период:</strong> с {format_ru_date(doc['period_start'])} по {format_ru_date(doc['period_end'])}</p>"
 
+    qr_card_html = ""
     bank_header = ""
     if not is_act:
-        bank_header = """
+        qr_uri = build_gost_qr_svg(
+            company_name=performer["name"],
+            inn=performer["inn"],
+            kpp=performer["kpp"],
+            bank_account=performer["bank_account"],
+            bank_name=performer["bank_name"],
+            bik=performer["bik"],
+            corr_account=performer["corr_account"],
+            sum_rub=doc["total_rub"],
+            doc_number=doc["number"],
+            doc_date=doc_date_formatted
+        )
+        if qr_uri:
+            qr_card_html = f"""
+            <div class="qr-card">
+                <img src="{qr_uri}" width="125" height="125" alt="QR-код оплаты ГОСТ Р 56042-2014" />
+                <div class="qr-card-text">
+                    <strong>Оплата по QR-коду</strong><br>
+                    Сбер, Т-Банк, ВТБ, Точка
+                </div>
+            </div>
+            """
+
+        bank_header = f"""
         <table class="bank-table">
             <tr>
                 <td colspan="2" rowspan="2" style="width:60%;">
-                    АО "ТБанк" г. Москва<br>
+                    {html.escape(performer['bank_name'])}<br>
                     <small style="color:#666;">Банк получателя</small>
                 </td>
                 <td style="width:15%;">БИК</td>
-                <td style="width:25%;">044525974</td>
+                <td style="width:25%;">{html.escape(performer['bik'])}</td>
             </tr>
             <tr>
                 <td>Сч. №</td>
-                <td>30101810145250000974</td>
+                <td>{html.escape(performer['corr_account'])}</td>
             </tr>
             <tr>
-                <td>ИНН 7701234567</td>
-                <td>КПП 770101001</td>
+                <td>ИНН {html.escape(performer['inn'])}</td>
+                <td>КПП {html.escape(performer['kpp'])}</td>
                 <td rowspan="2">Сч. №</td>
-                <td rowspan="2">40702810100000012345</td>
+                <td rowspan="2">{html.escape(performer['bank_account'])}</td>
             </tr>
             <tr>
                 <td colspan="2">
-                    ООО "Линия Сервис"<br>
+                    {html.escape(performer['name'])}<br>
                     <small style="color:#666;">Получатель</small>
                 </td>
             </tr>
         </table>
-        <div style="margin-top:15px;"></div>
         """
 
     act_disclaimer = ""
@@ -4931,19 +5227,28 @@ def generate_document_html(doc: dict, client: dict, items: list[dict]) -> str:
         """
 
     client_display_name = html.escape(str(client['name']))
+    seal_svg = build_facsimile_seal_svg(performer["name"], performer["inn"], performer["ogrn"])
+    signature_svg = build_facsimile_signature_svg()
+
     signatures = f"""
     <div class="signatures-grid">
         <div class="sig-block">
             <strong>Исполнитель:</strong><br>
-            Директор ООО "Линия Сервис"<br><br><br>
-            ______________________ /Иванов А.С./<br>
-            <small>М.П.</small>
+            {html.escape(performer['ceo_title'])} {html.escape(performer['name'])}<br><br>
+            <div class="facsimile-wrapper">
+                <div class="facsimile-stamp">{seal_svg}</div>
+                <div class="facsimile-signature">{signature_svg}</div>
+                <div class="sig-line">______________________ /{html.escape(performer['ceo_name'])}/</div>
+            </div>
+            <br><small>М.П.</small>
         </div>
         <div class="sig-block">
             <strong>Заказчик:</strong><br>
-            {client_display_name}<br><br><br>
-            ______________________ /{client_display_name}/<br>
-            <small>М.П.</small>
+            {client_display_name}<br><br>
+            <div class="facsimile-wrapper">
+                <div class="sig-line">______________________ /{client_display_name}/</div>
+            </div>
+            <br><small>М.П.</small>
         </div>
     </div>
     """
@@ -4971,9 +5276,10 @@ def generate_document_html(doc: dict, client: dict, items: list[dict]) -> str:
         }}
         .no-print-bar {{
             display: flex;
-            gap: 12px;
+            gap: 16px;
             margin-bottom: 20px;
             justify-content: flex-end;
+            align-items: center;
         }}
         .btn {{
             padding: 8px 16px;
@@ -4989,11 +5295,53 @@ def generate_document_html(doc: dict, client: dict, items: list[dict]) -> str:
             color: #fff;
             border-color: #137b69;
         }}
+        .facsimile-toggle-label {{
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            color: #334155;
+            cursor: pointer;
+            user-select: none;
+        }}
         h1 {{
             font-size: 20px;
             margin: 0 0 4px 0;
             border-bottom: 2px solid #000;
             padding-bottom: 8px;
+        }}
+        .invoice-top-grid {{
+            display: flex;
+            gap: 16px;
+            align-items: stretch;
+            margin-bottom: 12px;
+        }}
+        .bank-table-wrapper {{
+            flex: 1;
+        }}
+        .qr-wrapper {{
+            flex: 0 0 145px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }}
+        .qr-card {{
+            text-align: center;
+            border: 1px dashed #94a3b8;
+            padding: 6px 8px;
+            border-radius: 6px;
+            background: #f8fafc;
+        }}
+        .qr-card img {{
+            display: block;
+            margin: 0 auto;
+        }}
+        .qr-card-text {{
+            font-size: 11px;
+            color: #475569;
+            margin-top: 4px;
+            line-height: 1.2;
         }}
         .bank-table, .items-table {{
             width: 100%;
@@ -5042,6 +5390,36 @@ def generate_document_html(doc: dict, client: dict, items: list[dict]) -> str:
             gap: 40px;
             margin-top: 40px;
         }}
+        .facsimile-wrapper {{
+            position: relative;
+            display: inline-block;
+            width: 100%;
+            margin-top: 15px;
+        }}
+        .facsimile-stamp {{
+            position: absolute;
+            left: -20px;
+            top: -55px;
+            pointer-events: none;
+            z-index: 2;
+        }}
+        .facsimile-signature {{
+            position: absolute;
+            left: 40px;
+            top: -30px;
+            pointer-events: none;
+            z-index: 1;
+        }}
+        .sig-line {{
+            position: relative;
+            z-index: 0;
+            font-size: 13px;
+            color: #111;
+        }}
+        body.no-facsimile .facsimile-stamp,
+        body.no-facsimile .facsimile-signature {{
+            display: none !important;
+        }}
         @media print {{
             body {{
                 background: #fff;
@@ -5055,27 +5433,35 @@ def generate_document_html(doc: dict, client: dict, items: list[dict]) -> str:
             .no-print-bar {{
                 display: none !important;
             }}
+            .qr-card {{
+                border-color: #cbd5e1;
+                background: transparent;
+            }}
             @page {{
-                size: A4;
-                margin: 15mm;
+                size: A4 portrait;
+                margin: 15mm 10mm 15mm 10mm;
             }}
         }}
     </style>
 </head>
 <body>
     <div class="no-print-bar">
+        <label class="facsimile-toggle-label">
+            <input type="checkbox" id="facsimile-toggle" checked onchange="document.body.classList.toggle('no-facsimile', !this.checked)">
+            <span>С печатью и факсимиле</span>
+        </label>
         <button class="btn primary" onclick="window.print()">Распечатать / Сохранить в PDF</button>
         <button class="btn" onclick="window.close()">Закрыть окно</button>
     </div>
 
     <div class="doc-sheet">
-        {bank_header}
+        {f'<div class="invoice-top-grid"><div class="bank-table-wrapper">{bank_header}</div><div class="qr-wrapper">{qr_card_html}</div></div>' if not is_act else ''}
 
         <h1>{title_h1} {sub_title}</h1>
 
         <div class="parties" style="margin-top:16px;">
-            <p><strong>Исполнитель:</strong> ООО "Линия Сервис", ИНН 7701234567, КПП 770101001, 123112, г. Москва, Пресненская наб., д. 12, тел. +7 (495) 120-00-00</p>
-            <p><strong>Заказчик:</strong> {client_display_name}{f", ИНН {client['inn']}" if client['inn'] else ""}{f", КПП {client['kpp']}" if client['kpp'] else ""}{f", Адрес: {html.escape(str(client['legal_address']))}" if client['legal_address'] else ""}</p>
+            <p><strong>Исполнитель:</strong> {html.escape(performer['name'])}, ИНН {html.escape(performer['inn'])}{f", КПП {html.escape(performer['kpp'])}" if performer.get('kpp') else ""}{f", ОГРН {html.escape(performer['ogrn'])}" if performer.get('ogrn') else ""}, {html.escape(performer['legal_address'])}</p>
+            <p><strong>Заказчик:</strong> {client_display_name}{f", ИНН {html.escape(client['inn'])}" if client.get('inn') else ""}{f", КПП {html.escape(client['kpp'])}" if client.get('kpp') else ""}{f", Адрес: {html.escape(str(client['legal_address']))}" if client.get('legal_address') else ""}</p>
             <p><strong>Основание:</strong> Договор оказания услуг технической поддержки и сопровождения</p>
             {period_str}
         </div>
@@ -5104,7 +5490,7 @@ def generate_document_html(doc: dict, client: dict, items: list[dict]) -> str:
                 </tr>
                 <tr>
                     <td style="text-align:right;"><strong>В том числе НДС:</strong></td>
-                    <td style="text-align:right;">Без НДС</td>
+                    <td style="text-align:right;">{html.escape(performer.get('vat_rate', 'Без НДС'))}</td>
                 </tr>
                 <tr>
                     <td style="text-align:right;"><strong>Всего к оплате:</strong></td>
@@ -5174,11 +5560,12 @@ def get_billing_overview(desk_session: str | None = Cookie(default=None)):
                 "inn": inn,
                 "hourly_rate_rub": hourly_rate_rub,
                 "balance_minutes": balance_minutes,
-                "balance_rub": round(balance_minutes / 60.0 * hourly_rate_rub),
+                **get_client_billing_info(conn, client_type, client_id),
+                "balance_rub": get_client_billing_info(conn, client_type, client_id)["deposit_balance_rub"],
                 "in_progress_minutes": in_progress_minutes,
-                "in_progress_rub": round(in_progress_minutes / 60.0 * hourly_rate_rub),
+                "in_progress_rub": sum(billing_ledger.approved_amount(conn, t, hourly_rate_rub) for t in active_tickets),
                 "unbilled_minutes": unbilled_minutes,
-                "unbilled_rub": round(unbilled_minutes / 60.0 * hourly_rate_rub),
+                "unbilled_rub": sum(billing_ledger.approved_amount(conn, t, hourly_rate_rub) for t in unbilled_tickets) + round(unbilled_service * hourly_rate_rub / 60),
                 "invoices": [dict(r) for r in invoices],
                 "transactions": [dict(r) for r in transactions]
             }
@@ -5203,9 +5590,10 @@ def get_billing_overview(desk_session: str | None = Cookie(default=None)):
                     "inn": o["inn"] or "",
                     "hourly_rate_rub": rate,
                     "balance_minutes": bal_m,
-                    "balance_rub": round(bal_m / 60.0 * rate),
+                    **get_client_billing_info(conn, "org", o["id"]),
+                    "balance_rub": o["deposit_balance_rub"],
                     "unbilled_minutes": unb_mins,
-                    "unbilled_rub": round(unb_mins / 60.0 * rate),
+                    "unbilled_rub": sum(billing_ledger.approved_amount(conn, t, rate) for t in unb) + round(service_mins * rate / 60),
                     "unbilled_service_minutes": service_mins,
                     "open_tickets": open_cnt
                 })
@@ -5234,9 +5622,10 @@ def get_billing_overview(desk_session: str | None = Cookie(default=None)):
                     "inn": s["inn"] or "",
                     "hourly_rate_rub": rate,
                     "balance_minutes": bal_m,
-                    "balance_rub": round(bal_m / 60.0 * rate),
+                    **get_client_billing_info(conn, "user", s["id"]),
+                    "balance_rub": get_client_billing_info(conn, "user", s["id"])["deposit_balance_rub"],
                     "unbilled_minutes": unb_mins,
-                    "unbilled_rub": round(unb_mins / 60.0 * rate),
+                    "unbilled_rub": sum(billing_ledger.approved_amount(conn, t, rate) for t in unb) + round(service_mins * rate / 60),
                     "unbilled_service_minutes": service_mins,
                     "open_tickets": open_cnt
                 })
@@ -5244,7 +5633,7 @@ def get_billing_overview(desk_session: str | None = Cookie(default=None)):
             service_entries = conn.execute(f"{SERVICE_ENTRY_SELECT} WHERE s.is_billable=1 ORDER BY s.occurred_at DESC, s.id DESC LIMIT 100").fetchall()
 
             invoices = conn.execute("""
-                SELECT i.*, 
+                SELECT i.*,
                        CASE WHEN i.organization_id IS NOT NULL THEN o.name ELSE u.name END AS client_name
                 FROM invoices i
                 LEFT JOIN organizations o ON o.id = i.organization_id
@@ -5307,7 +5696,7 @@ def get_billing_clients(desk_session: str | None = Cookie(default=None)):
                 "hourly_rate_rub": s["hourly_rate_rub"] or 3000,
                 "balance_minutes": s["balance_minutes"] or 0,
             })
-        return clients
+        return [get_client_billing_info(conn, c["client_type"], c["client_id"]) for c in clients]
 
 
 def update_client_balance(conn, client_type: str, client_id: int, new_balance_minutes: int):
@@ -5326,24 +5715,14 @@ def update_billing_client(client_type: str, client_id: int, data: BillingRateUpd
     user = current_user(desk_session)
     require_finance(user, write=True)
     with db() as conn:
-        if client_type == "org":
-            conn.execute("""
-                UPDATE organizations 
-                SET hourly_rate_rub=?, inn=?, kpp=?, legal_address=?
-                WHERE id=?
-            """, (data.hourly_rate_rub, data.inn.strip(), data.kpp.strip(), data.legal_address.strip(), client_id))
-        elif client_type == "user":
-            conn.execute("""
-                INSERT INTO customer_profiles (user_id, hourly_rate_rub, inn, legal_address, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET
-                    hourly_rate_rub=excluded.hourly_rate_rub,
-                    inn=excluded.inn,
-                    legal_address=excluded.legal_address,
-                    updated_at=excluded.updated_at
-            """, (client_id, data.hourly_rate_rub, data.inn.strip(), data.legal_address.strip(), now()))
-        else:
-            raise HTTPException(422, "Неверный тип клиента")
+        conn.execute("BEGIN IMMEDIATE")
+        get_client_billing_info(conn, client_type, client_id)
+        fields = data.model_dump()
+        fields = {k: v.strip() if isinstance(v, str) else v for k, v in fields.items()}
+        if client_type == 'user':
+            conn.execute("INSERT OR IGNORE INTO customer_profiles(user_id,updated_at) VALUES(?,?)", (client_id, now()))
+        table, key = ('organizations', 'id') if client_type == 'org' else ('customer_profiles', 'user_id')
+        conn.execute(f"UPDATE {table} SET {','.join(k+'=?' for k in fields)} WHERE {key}=?", (*fields.values(), client_id))
         return {"ok": True}
 
 
@@ -5352,6 +5731,7 @@ def create_billing_deposit(data: BillingDepositCreate, desk_session: str | None 
     user = current_user(desk_session)
     require_finance(user, write=True)
     with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         client = get_client_billing_info(conn, data.client_type, data.client_id)
         rate = client["hourly_rate_rub"]
         mins = data.minutes
@@ -5363,8 +5743,9 @@ def create_billing_deposit(data: BillingDepositCreate, desk_session: str | None 
         if mins <= 0 and amount <= 0:
             raise HTTPException(422, "Укажите количество минут или сумму пополнения")
 
-        new_bal = client["balance_minutes"] + mins
-        update_client_balance(conn, data.client_type, data.client_id, new_bal)
+        new_rub = client["deposit_balance_rub"] + amount
+        update_client_rub_balance(conn, data.client_type, data.client_id, new_rub)
+        new_bal = round(new_rub / rate * 60)
 
         stamp = now()
         conn.execute("""
@@ -5372,7 +5753,7 @@ def create_billing_deposit(data: BillingDepositCreate, desk_session: str | None 
             VALUES (?, ?, 'deposit', ?, ?, ?, ?, ?)
         """, (client["customer_id"], client["organization_id"], mins, amount, data.description.strip(), user["id"], stamp))
 
-        return {"ok": True, "new_balance_minutes": new_bal, "new_balance_rub": round(new_bal / 60.0 * rate)}
+        return {"ok": True, "new_balance_minutes": new_bal, "new_balance_rub": new_rub}
 
 
 @app.get("/api/billing/unbilled-tickets")
@@ -5400,7 +5781,7 @@ def get_unbilled_tickets(client_type: str, client_id: int, desk_session: str | N
         for r in rows:
             app_mins = approved_minutes(conn, r["id"])
             if app_mins > 0:
-                cost = round(app_mins / 60.0 * rate)
+                cost = billing_ledger.approved_amount(conn, r, rate)
                 result.append({
                     "id": r["id"],
                     "title": r["title"],
@@ -5449,8 +5830,15 @@ def list_invoices(doc_type: str | None = None, status: str | None = None, desk_s
 @app.post("/api/billing/invoices", status_code=201)
 def create_invoice_document(data: BillingDocumentCreate, desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
-    require_finance(user, write=True)
+    if user["role"] != "customer":
+        require_finance(user, write=True)
     with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if user['role'] == 'customer':
+            org = customer_organization(conn, user['id'])
+            own_type, own_id = ('org', org['id']) if org else ('user', user['id'])
+            if data.doc_type != 'invoice' or (data.client_type, data.client_id) != (own_type, own_id):
+                raise HTTPException(403, "Можно запросить только счёт для своего кабинета")
         client = get_client_billing_info(conn, data.client_type, data.client_id)
         rate = client["hourly_rate_rub"]
         stamp = now()
@@ -5459,7 +5847,10 @@ def create_invoice_document(data: BillingDocumentCreate, desk_session: str | Non
         if data.doc_type == "act":
             if data.ticket_ids is not None:
                 placeholders = ",".join("?" * len(data.ticket_ids))
-                tickets = conn.execute(f"SELECT * FROM tickets WHERE id IN ({placeholders}) AND act_invoice_id IS NULL", data.ticket_ids).fetchall() if data.ticket_ids else []
+                cond, params = client_condition(data.client_type, data.client_id)
+                tickets = conn.execute(f"SELECT * FROM tickets WHERE id IN ({placeholders}) AND {cond} AND status IN ('done','closed') AND act_invoice_id IS NULL", (*data.ticket_ids, *params)).fetchall() if data.ticket_ids else []
+                if len(tickets) != len(set(data.ticket_ids)):
+                    raise HTTPException(409, "Выбраны чужие, незавершённые или уже актированные заявки")
             else:
                 if data.client_type == "org":
                     tickets = conn.execute("SELECT * FROM tickets WHERE organization_id=? AND status IN ('done','closed') AND act_invoice_id IS NULL", (data.client_id,)).fetchall()
@@ -5474,6 +5865,13 @@ def create_invoice_document(data: BillingDocumentCreate, desk_session: str | Non
             services = conn.execute(f"""SELECT * FROM service_entries WHERE {service_cond} AND is_billable=1 AND act_invoice_id IS NULL
                 ORDER BY occurred_at, id""", service_params).fetchall()
 
+            if data.service_entry_ids:
+                invalid = conn.execute(f"SELECT 1 FROM service_entries WHERE {service_cond} AND is_billable=0", service_params).fetchone()
+                if invalid:
+                    raise HTTPException(422, "Неоплачиваемое сопровождение нельзя включить в акт")
+            if data.service_entry_ids is not None and len(services) != len(set(data.service_entry_ids)):
+                raise HTTPException(409, "Выбраны чужие или уже актированные записи сопровождения")
+
             if not tickets and not services:
                 raise HTTPException(422, "Не найдено завершенных задач или часов сопровождения для формирования акта")
 
@@ -5485,7 +5883,7 @@ def create_invoice_document(data: BillingDocumentCreate, desk_session: str | Non
                 mins = approved_minutes(conn, t["id"])
                 if mins <= 0:
                     continue
-                cost = round(mins / 60.0 * rate)
+                cost = billing_ledger.approved_amount(conn, t, rate)
                 total_mins += mins
                 total_rub += cost
                 ticket_ids_to_link.append(t["id"])
@@ -5493,8 +5891,8 @@ def create_invoice_document(data: BillingDocumentCreate, desk_session: str | Non
                     "ticket_id": t["id"],
                     "title": f"Заявка №{t['id']}: {t['title']}",
                     "minutes": mins,
-                    "hours": round(mins / 60.0, 2),
-                    "rate": rate,
+                    "qty": 1, "unit": "усл.",
+                    "rate": cost,
                     "sum_rub": cost
                 })
 
@@ -5522,6 +5920,7 @@ def create_invoice_document(data: BillingDocumentCreate, desk_session: str | Non
                 VALUES (?, 'act', ?, ?, 'issued', ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (number, client["customer_id"], client["organization_id"], total_rub, total_mins, rate, data.period_start, data.period_end, json.dumps(items, ensure_ascii=False), data.notes, user["id"], stamp))
             act_id = cursor.lastrowid
+            conn.execute("UPDATE invoices SET performer_json=?,client_json=? WHERE id=?", (json.dumps(get_company_billing_profile(conn), ensure_ascii=False), json.dumps(client, ensure_ascii=False), act_id))
 
             if ticket_ids_to_link:
                 conn.execute(f"UPDATE tickets SET act_invoice_id=? WHERE id IN ({','.join('?'*len(ticket_ids_to_link))})", (act_id, *ticket_ids_to_link))
@@ -5529,8 +5928,7 @@ def create_invoice_document(data: BillingDocumentCreate, desk_session: str | Non
                 conn.execute(f"UPDATE service_entries SET act_invoice_id=? WHERE id IN ({','.join('?'*len(services))})",
                              (act_id, *(s["id"] for s in services)))
 
-            new_bal = client["balance_minutes"] - total_mins
-            update_client_balance(conn, data.client_type, data.client_id, new_bal)
+            update_client_rub_balance(conn, data.client_type, data.client_id, client["deposit_balance_rub"] - total_rub)
 
             conn.execute("""
                 INSERT INTO billing_transactions (customer_id, organization_id, tx_type, minutes, amount_rub, invoice_id, description, created_by, created_at)
@@ -5542,15 +5940,18 @@ def create_invoice_document(data: BillingDocumentCreate, desk_session: str | Non
             return {"id": act_id, "number": number, "doc_type": "act", "total_rub": total_rub, "total_minutes": total_mins}
 
         else:
-            hours = data.hours or 10.0
-            total_mins = int(hours * 60)
-            total_rub = round(hours * rate)
-            desc = data.description or f"Пакет технической поддержки: {hours:g} ч"
+            if data.hours is not None and data.amount_rub is not None:
+                raise HTTPException(422, "Укажите сумму или часы, а не оба значения")
+            hours = data.hours if data.hours is not None else (data.amount_rub / rate if data.amount_rub else 10.0)
+            total_mins = round(hours * 60)
+            total_rub = data.amount_rub if data.amount_rub is not None else round(hours * rate)
+            desc = data.description or ("Пополнение депозита на услуги" if data.amount_rub is not None else f"Пакет технической поддержки: {hours:g} ч")
             items = [{
                 "title": desc,
                 "minutes": total_mins,
-                "hours": hours,
-                "rate": rate,
+                "qty": 1 if data.amount_rub is not None else hours,
+                "unit": "усл." if data.amount_rub is not None else "ч",
+                "rate": total_rub if data.amount_rub is not None else rate,
                 "sum_rub": total_rub
             }]
             count = conn.execute("SELECT COUNT(*) FROM invoices WHERE doc_type='invoice'").fetchone()[0]
@@ -5561,6 +5962,7 @@ def create_invoice_document(data: BillingDocumentCreate, desk_session: str | Non
                 VALUES (?, 'invoice', ?, ?, 'issued', ?, ?, ?, ?, ?, ?, ?)
             """, (number, client["customer_id"], client["organization_id"], total_rub, total_mins, rate, json.dumps(items, ensure_ascii=False), data.notes, user["id"], stamp))
             inv_id = cursor.lastrowid
+            conn.execute("UPDATE invoices SET performer_json=?,client_json=? WHERE id=?", (json.dumps(get_company_billing_profile(conn), ensure_ascii=False), json.dumps(client, ensure_ascii=False), inv_id))
 
             dispatch_webhooks("invoice.created", {"invoice_id": inv_id, "number": number, "total_rub": total_rub, "hours": hours, "client_name": client["name"]})
 
@@ -5609,8 +6011,47 @@ def print_invoice_document(invoice_id: int, desk_session: str | None = Cookie(de
         client_type = "org" if doc["organization_id"] else "user"
         client_id = doc["organization_id"] if doc["organization_id"] else doc["customer_id"]
         client = get_client_billing_info(conn, client_type, client_id)
-        html_content = generate_document_html(doc, client, items)
+        performer = json.loads(doc["performer_json"]) if doc.get("performer_json") else get_company_billing_profile(conn)
+        client = json.loads(doc["client_json"]) if doc.get("client_json") else client
+        html_content = generate_document_html(doc, client, items, performer)
         return HTMLResponse(content=html_content, status_code=200)
+
+
+@app.get("/api/billing/company-profile")
+def get_company_profile_endpoint(desk_session: str | None = Cookie(default=None)):
+    user = current_user(desk_session)
+    if user["role"] != "customer":
+        require_finance(user)
+    with db() as conn:
+        return get_company_billing_profile(conn)
+
+
+@app.patch("/api/billing/company-profile")
+def update_company_profile_endpoint(data: CompanyProfileUpdate, desk_session: str | None = Cookie(default=None)):
+    user = current_user(desk_session)
+    require_finance(user, write=True)
+    with db() as conn:
+        conn.execute("""
+            INSERT INTO company_billing_profile (id, name, inn, kpp, ogrn, legal_address, bank_name, bik, corr_account, bank_account, ceo_name, ceo_title, accountant_name, vat_rate)
+            VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name=excluded.name,
+                inn=excluded.inn,
+                kpp=excluded.kpp,
+                ogrn=excluded.ogrn,
+                legal_address=excluded.legal_address,
+                bank_name=excluded.bank_name,
+                bik=excluded.bik,
+                corr_account=excluded.corr_account,
+                bank_account=excluded.bank_account,
+                ceo_name=excluded.ceo_name,
+                ceo_title=excluded.ceo_title,
+                accountant_name=excluded.accountant_name,
+                vat_rate=excluded.vat_rate
+        """, (data.name.strip(), data.inn.strip(), data.kpp.strip(), data.ogrn.strip(), data.legal_address.strip(),
+              data.bank_name.strip(), data.bik.strip(), data.corr_account.strip(), data.bank_account.strip(),
+              data.ceo_name.strip(), data.ceo_title.strip(), data.accountant_name.strip(), data.vat_rate.strip()))
+        return {"ok": True, "profile": get_company_billing_profile(conn)}
 
 
 @app.patch("/api/billing/invoices/{invoice_id}/status")
@@ -5646,8 +6087,7 @@ def update_invoice_status(invoice_id: int, data: BillingStatusUpdate, desk_sessi
                 c_type = "org" if row["organization_id"] else "user"
                 c_id = row["organization_id"] if row["organization_id"] else row["customer_id"]
                 client = get_client_billing_info(conn, c_type, c_id)
-                new_bal = client["balance_minutes"] + row["total_minutes"]
-                update_client_balance(conn, c_type, c_id, new_bal)
+                update_client_rub_balance(conn, c_type, c_id, client["deposit_balance_rub"] + row["total_rub"])
 
                 conn.execute("""
                     INSERT INTO billing_transactions (customer_id, organization_id, tx_type, minutes, amount_rub, invoice_id, description, created_by, created_at)
@@ -5664,8 +6104,7 @@ def update_invoice_status(invoice_id: int, data: BillingStatusUpdate, desk_sessi
                 c_type = "org" if row["organization_id"] else "user"
                 c_id = row["organization_id"] if row["organization_id"] else row["customer_id"]
                 client = get_client_billing_info(conn, c_type, c_id)
-                new_bal = client["balance_minutes"] + row["total_minutes"]
-                update_client_balance(conn, c_type, c_id, new_bal)
+                update_client_rub_balance(conn, c_type, c_id, client["deposit_balance_rub"] + row["total_rub"])
 
                 conn.execute("""
                     INSERT INTO billing_transactions (customer_id, organization_id, tx_type, minutes, amount_rub, invoice_id, description, created_by, created_at)
@@ -6495,6 +6934,11 @@ def bootstrap_admin():
 
 team_management.install_routes(app, sys.modules[__name__])
 payroll.install_routes(app, sys.modules[__name__])
+admin.install_routes(app, sys.modules[__name__])
+
+@app.get('/admin-ui.js')
+def admin_script():
+    return FileResponse(ROOT / 'web' / 'admin-ui.js', media_type='application/javascript')
 
 from bot.service import BotEngine
 from bot.routes import install_bot_routes

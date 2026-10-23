@@ -267,6 +267,10 @@ class MeetingInput(Input):
         return value
 
 
+class MeetingLinkInput(Input):
+    request_id: str = Field(min_length=8, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+
+
 class HandoffInput(Input):
     owner_id: int
     title: str = Field(min_length=3, max_length=200)
@@ -445,6 +449,8 @@ def install_routes(app, domain):
             table,col = ('task_participants','task_id') if kind=='tasks' else ('meeting_participants','meeting_id')
             item['participants'] = [r[0] for r in conn.execute(f"SELECT user_id FROM {table} WHERE {col}=?", (row['id'],))]
         if kind=='tasks':
+            from task_tracker import can_log_time
+            item['can_log_time'] = can_log_time(conn,user,row,bool(item['can_edit']))
             item['checklist_total']=conn.execute('SELECT COUNT(*) FROM task_checklist WHERE task_id=?',(row['id'],)).fetchone()[0]
             item['checklist_done']=conn.execute('SELECT COUNT(*) FROM task_checklist WHERE task_id=? AND checked=1',(row['id'],)).fetchone()[0]
             item['comment_count']=conn.execute('SELECT COUNT(*) FROM task_comments WHERE task_id=?',(row['id'],)).fetchone()[0]
@@ -702,6 +708,54 @@ def install_routes(app, domain):
     def update_meeting(eid:int,data:MeetingInput,desk_session:str|None=Cookie(default=None)):
         user=user_for(desk_session)
         with domain.db() as conn: return save_work(conn,user,'meetings',data,eid)
+
+    @router.post('/meetings/{eid}/share-link')
+    def share_meeting_link(eid:int,data:MeetingLinkInput,desk_session:str|None=Cookie(default=None)):
+        # Meeting editors may send this generated invitation without gaining access
+        # to any other messages in the customer's conversation.
+        user=user_for(desk_session)
+        with domain.db() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            row=get_entity(conn,user,'meetings',eid,True)
+            if not row['url']:
+                raise HTTPException(422,'Сначала укажите ссылку на встречу')
+            if row['status'] in ('cancelled','missed'):
+                raise HTTPException(409,'Сначала запланируйте встречу снова')
+            request_id=f"meeting-{eid}-link-{data.request_id}"
+            text=f"Ссылка на встречу «{row['title']}»: {row['url']}\nВремя: {row['starts_at']}"
+            stamp=domain.now()
+            ticket=conn.execute('SELECT * FROM tickets WHERE id=?',(row['ticket_id'],)).fetchone() if row['ticket_id'] else None
+            if row['ticket_id'] and not ticket:
+                raise HTTPException(404,'Связанная заявка не найдена')
+            if ticket:
+                existing=conn.execute('SELECT id FROM messages WHERE ticket_id=? AND author_id=? AND request_id=?',(ticket['id'],user['id'],request_id)).fetchone()
+                if existing:return {'ok':True,'message_id':existing['id'],'target':'ticket','target_id':ticket['id']}
+                if ticket['status']=='closed':raise HTTPException(409,'Заявка закрыта. Выберите другую заявку для встречи')
+                message_id=conn.execute('INSERT INTO messages(ticket_id,author_id,body,created_at,request_id) VALUES(?,?,?,?,?)',(ticket['id'],user['id'],text,stamp,request_id)).lastrowid
+                conn.execute('UPDATE tickets SET updated_at=? WHERE id=?',(stamp,ticket['id']))
+                recipients=set(domain.customer_recipients(conn,ticket))
+                for uid in recipients:domain.notify(conn,uid,ticket['id'],'message',f"Ссылка на встречу по заявке №{ticket['id']}")
+                audience=recipients|domain.dispatcher_ids(conn)|({ticket['assignee_id']}-{None})
+                select=domain.TICKET_MESSAGE_SELECT; target='ticket';target_id=ticket['id']
+            else:
+                customer=conn.execute("SELECT * FROM users WHERE id=? AND role='customer'",(row['customer_id'],)).fetchone()
+                if not customer:raise HTTPException(404,'Клиент не найден')
+                chat=domain.create_chat_service(conn,customer)
+                target_id=chat['id'];target='chat'
+                existing=conn.execute('SELECT id FROM chat_messages WHERE chat_id=? AND author_id=? AND request_id=?',(target_id,user['id'],request_id)).fetchone()
+                if existing:return {'ok':True,'message_id':existing['id'],'target':target,'target_id':target_id}
+                message_id=conn.execute('INSERT INTO chat_messages(chat_id,author_id,body,created_at,request_id) VALUES(?,?,?,?,?)',(target_id,user['id'],text,stamp,request_id)).lastrowid
+                conn.execute('UPDATE chats SET updated_at=? WHERE id=?',(stamp,target_id))
+                recipients=domain.chat_recipients(conn,chat)
+                for uid in recipients:domain.notify_chat(conn,uid,target_id,'message','Ссылка на встречу в общем чате')
+                audience=recipients|domain.dispatcher_ids(conn)|({chat['assignee_id']}-{None})
+                select=domain.CHAT_MESSAGE_SELECT
+            message=dict(conn.execute(select+' WHERE m.id=?',(message_id,)).fetchone())
+            for uid in audience:
+                viewer=conn.execute('SELECT role FROM users WHERE id=?',(uid,)).fetchone()
+                if viewer:domain.realtime_bus.publish(uid,{'type':target+'_message',target+'_id':target_id,'message':domain.message_dict(message,viewer)})
+            audit(conn,domain,user,'meetings',eid,'share_link',{'target':target,'target_id':target_id,'message_id':message_id})
+            return {'ok':True,'message_id':message_id,'target':target,'target_id':target_id}
 
     @router.post('/meetings/{eid}/publish')
     def publish_meeting(eid:int,desk_session:str|None=Cookie(default=None)):

@@ -4,3 +4,4 @@ httpx>=0.28,<1
 Pillow>=12,<13
 python-multipart>=0.0.20,<1
 cryptography>=44,<47
+reportlab>=4.4,<5

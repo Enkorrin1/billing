@@ -403,6 +403,43 @@ class Flows(unittest.TestCase):
         self.assertEqual(self.other.get(f"/api/tickets/{shared}").status_code, 404)
         self.assertEqual(self.customer.get(f"/api/tickets/{shared}").status_code, 200)
 
+    def test_images_display_inline_with_private_access(self):
+        ticket = self.customer.post('/api/tickets', json={
+            'title': 'Скриншот ошибки', 'description': 'Проверьте изображение в переписке'
+        }).json()
+        chat = self.customer.post('/api/chats').json()
+        customer_id = self.customer.get('/api/me').json()['id']
+        updates = service.realtime_bus.subscribe(customer_id)
+        self.addCleanup(service.realtime_bus.unsubscribe, customer_id, updates)
+        for endpoint in (f"/api/tickets/{ticket['id']}/attachments", f"/api/chats/{chat['id']}/attachments"):
+            for extension, image_format, mime in (
+                ('PNG', 'PNG', 'image/png'), ('jpg', 'JPEG', 'image/jpeg'),
+                ('jpeg', 'JPEG', 'image/jpeg'), ('webp', 'WEBP', 'image/webp'), ('gif', 'GIF', 'image/gif')
+            ):
+                with self.subTest(endpoint=endpoint, extension=extension):
+                    buffer = BytesIO()
+                    Image.new('RGB', (24, 16), 'white').save(buffer, format=image_format)
+                    contents = buffer.getvalue()
+                    uploaded = self.customer.post(endpoint, files={
+                        'file': (f'Скриншот.{extension}', contents, 'application/octet-stream')
+                    })
+                    self.assertEqual(uploaded.status_code, 201, uploaded.text)
+                    path = f"/api/attachments/{uploaded.json()['id']}"
+                    response = self.customer.get(path)
+                    self.assertEqual(response.content, contents)
+                    self.assertEqual(response.headers['content-type'], mime)
+                    self.assertTrue(response.headers['content-disposition'].startswith('inline;'))
+                    self.assertEqual(response.headers['cache-control'], 'private, no-store')
+                    self.assertEqual(response.headers['x-content-type-options'], 'nosniff')
+                    self.assertEqual(self.other.get(path).status_code, 404)
+                    self.assertEqual(TestClient(service.app).get(path).status_code, 401)
+        events = []
+        while not updates.empty():
+            events.append(updates.get_nowait())
+        self.assertTrue(any(event.get('type') == 'ticket_message' and event.get('ticket_id') == ticket['id'] for event in events))
+        files = self.customer.get(f"/api/tickets/{ticket['id']}").json()['attachments']
+        self.assertTrue(all(file['author_name'] == 'Customer' for file in files))
+
     def test_attachments_access_chat_transfer_and_deadline(self):
         chat = self.customer.post("/api/chats").json()
         message = self.customer.post(f"/api/chats/{chat['id']}/messages", json={"body":"Посмотрите файл","request_id":"file-message-1"}).json()
@@ -411,6 +448,7 @@ class Flows(unittest.TestCase):
         self.assertEqual(uploaded.status_code, 201)
         self.assertEqual(self.other.get(f"/api/attachments/{uploaded.json()['id']}").status_code, 404)
         self.assertEqual(self.customer.get(f"/api/attachments/{uploaded.json()['id']}").content, b"task details")
+        self.assertTrue(self.customer.get(f"/api/attachments/{uploaded.json()['id']}").headers["content-disposition"].startswith("attachment;"))
         ticket_id = self.admin.post(f"/api/chats/{chat['id']}/tickets", json={"title":"Задача из чата","message_id":message["id"]}).json()["id"]
         detail = self.customer.get(f"/api/tickets/{ticket_id}").json()
         self.assertEqual(detail["attachments"][0]["filename"], "brief.txt")
