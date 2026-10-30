@@ -13,6 +13,7 @@ import re
 import secrets
 import sqlite3
 import sys
+import threading
 import time
 from contextlib import contextmanager
 from datetime import date as Date, datetime, timedelta, timezone
@@ -60,28 +61,40 @@ def now():
 
 
 class RealtimeBus:
+    """Sync routes run in FastAPI's threadpool, so publish hands events to the event loop thread-safely."""
+
     def __init__(self):
         self.subscribers: dict[int, list[asyncio.Queue]] = {}
+        self.loops: dict[asyncio.Queue, asyncio.AbstractEventLoop] = {}
+        self.lock = threading.Lock()
 
-    def subscribe(self, user_id: int) -> asyncio.Queue:
+    def subscribe(self, user_id: int, loop: asyncio.AbstractEventLoop | None = None) -> asyncio.Queue:
         q = asyncio.Queue()
-        self.subscribers.setdefault(user_id, []).append(q)
+        with self.lock:
+            self.subscribers.setdefault(user_id, []).append(q)
+            self.loops[q] = loop
         return q
 
     def unsubscribe(self, user_id: int, q: asyncio.Queue):
-        if user_id in self.subscribers:
-            if q in self.subscribers[user_id]:
-                self.subscribers[user_id].remove(q)
-            if not self.subscribers[user_id]:
-                del self.subscribers[user_id]
+        with self.lock:
+            self.loops.pop(q, None)
+            if user_id in self.subscribers:
+                if q in self.subscribers[user_id]:
+                    self.subscribers[user_id].remove(q)
+                if not self.subscribers[user_id]:
+                    del self.subscribers[user_id]
 
     def publish(self, user_id: int, data: dict):
-        if user_id in self.subscribers:
-            for q in list(self.subscribers[user_id]):
-                try:
+        with self.lock:
+            targets = [(q, self.loops.get(q)) for q in self.subscribers.get(user_id, ())]
+        for q, loop in targets:
+            try:
+                if loop is None:
                     q.put_nowait(data)
-                except Exception:
-                    pass
+                else:
+                    loop.call_soon_threadsafe(q.put_nowait, data)
+            except Exception:
+                pass
 
     def broadcast(self, user_ids, data: dict):
         for uid in user_ids:
@@ -102,6 +115,7 @@ def db():
     conn.create_function("lower", 1, lambda s: s.lower() if s is not None else None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA synchronous=NORMAL")
     try:
         yield conn
         if _BILLING_READY and conn.total_changes:
@@ -113,6 +127,8 @@ def db():
 
 def init_db():
     with db() as conn:
+        # WAL is persistent per database file: readers no longer wait for writers.
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE,
@@ -1936,7 +1952,7 @@ def push_test(desk_session: str | None = Cookie(default=None)):
 @app.get("/api/events")
 async def events_stream(request: Request, desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
-    q = realtime_bus.subscribe(user["id"])
+    q = realtime_bus.subscribe(user["id"], asyncio.get_running_loop())
 
     async def event_generator():
         try:

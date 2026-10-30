@@ -39,12 +39,20 @@ def sync_reservations(conn):
     conn.execute("INSERT OR IGNORE INTO customer_profiles(user_id,updated_at) SELECT id,created_at FROM users WHERE role='customer'")
     balances = {}
     for table, key in (('organizations', 'id'), ('customer_profiles', 'user_id')):
-        for row in conn.execute(f'SELECT * FROM {table}'):
+        for row in conn.execute(f'SELECT {key},hourly_rate_rub FROM {table}'):
             balances[(table, row[key])] = [row['hourly_rate_rub'] or 3000, 0]
-    for ticket in conn.execute('SELECT * FROM tickets').fetchall():
+    # Bulk-load estimates and extras: this runs after every write, so per-ticket queries don't scale.
+    latest = {}
+    for estimate in conn.execute('SELECT ticket_id,state,amount_rub,effort_minutes FROM estimates ORDER BY ticket_id,version'):
+        latest[estimate['ticket_id']] = estimate
+    extras = {}
+    for extra in conn.execute("SELECT ticket_id,amount_rub,customer_minutes,minutes FROM hour_requests WHERE state='approved' AND bill_customer"):
+        extras.setdefault(extra['ticket_id'], []).append(extra)
+    tickets = conn.execute('SELECT id,organization_id,customer_id,act_invoice_id,held_amount_rub,payment_status FROM tickets').fetchall()
+    for ticket in tickets:
         table, client_id = ('organizations', ticket['organization_id']) if ticket['organization_id'] else ('customer_profiles', ticket['customer_id'])
         rate, _ = balances.get((table, client_id), [3000, 0])
-        amount = 0 if ticket['act_invoice_id'] else approved_amount(conn, ticket, rate)
+        amount = 0 if ticket['act_invoice_id'] else _approved_from(latest.get(ticket['id']), extras.get(ticket['id'], ()), rate)
         status = 'charged' if ticket['act_invoice_id'] else ('reserved' if amount else 'unpaid')
         if ticket['held_amount_rub'] != amount or ticket['payment_status'] != status:
             conn.execute('UPDATE tickets SET held_amount_rub=?,payment_status=? WHERE id=?', (amount, status, ticket['id']))
@@ -52,4 +60,18 @@ def sync_reservations(conn):
             balances[(table, client_id)][1] += amount
     for (table, client_id), (rate, held) in balances.items():
         key = 'id' if table == 'organizations' else 'user_id'
-        conn.execute(f'UPDATE {table} SET held_rub=?,balance_minutes=ROUND(deposit_balance_rub * 60.0 / ?) WHERE {key}=?', (held, rate, client_id))
+        conn.execute(
+            f'UPDATE {table} SET held_rub=?1,balance_minutes=ROUND(deposit_balance_rub * 60.0 / ?2) '
+            f'WHERE {key}=?3 AND (held_rub IS NOT ?1 OR balance_minutes IS NOT ROUND(deposit_balance_rub * 60.0 / ?2))',
+            (held, rate, client_id))
+
+
+def _approved_from(estimate, extras, rate):
+    if not estimate or estimate['state'] != 'approved':
+        return 0
+    amount = estimate['amount_rub']
+    if amount is None:
+        amount = round((estimate['effort_minutes'] or 0) * rate / 60)
+    for extra in extras:
+        amount += extra['amount_rub'] if extra['amount_rub'] is not None else round((extra['customer_minutes'] or extra['minutes']) * rate / 60)
+    return amount
