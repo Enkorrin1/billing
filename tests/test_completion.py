@@ -61,7 +61,7 @@ class CompletionTests(unittest.TestCase):
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM billing_transactions').fetchone()[0],1)
 
     def test_client_invoice_scope_and_snapshot_qr(self):
-        own={'doc_type':'invoice','client_type':'user','client_id':self.client_id,'hours':5}
+        own={'doc_type':'invoice','client_type':'user','client_id':self.client_id,'amount_rub':15000}
         doc=self.ok(self.customer.post('/api/billing/invoices',json=own))
         self.assertEqual(doc['total_rub'],15000)
         own['client_id']=self.worker_id

@@ -3,6 +3,7 @@
 from datetime import date, datetime, timedelta, timezone
 from html import escape
 import hashlib
+import json
 from typing import Literal
 
 from fastapi import Cookie, HTTPException
@@ -66,6 +67,11 @@ def init_schema(conn):
         created_by INTEGER NOT NULL REFERENCES users(id), created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS payroll_rates_employee ON payroll_rates(employee_id,id);
+    CREATE TABLE IF NOT EXISTS payroll_review_batches (
+        actor_id INTEGER NOT NULL REFERENCES users(id), request_id TEXT NOT NULL,
+        request_hash TEXT NOT NULL, result TEXT NOT NULL,
+        PRIMARY KEY(actor_id,request_id)
+    );
     CREATE TABLE IF NOT EXISTS payroll_reviews (
         entry_id INTEGER PRIMARY KEY REFERENCES time_entries(id),
         state TEXT NOT NULL CHECK(state IN ('approved','rejected')),
@@ -148,6 +154,42 @@ class ReviewInput(BaseModel):
     reason: str = Field(default='', max_length=2000)
 
 
+class ReviewSelection(BaseModel):
+    entry_ids: list[int] = Field(min_length=1, max_length=10000)
+
+
+class BatchReviewInput(ReviewSelection):
+    snapshot: str = Field(min_length=64, max_length=64)
+    request_id: str = Field(min_length=8, max_length=100)
+
+
+def review_preview(conn, ids):
+    if len(ids) != len(set(ids)):
+        raise HTTPException(422, 'Записи не должны повторяться')
+    selected, excluded, snapshots = [], [], []
+    for eid in sorted(ids):
+        source = source_entry(conn, eid)
+        if source is None:
+            raise HTTPException(409, 'Запись удалена или недоступна. Обновите список')
+        row = dict(source)
+        review = conn.execute('SELECT * FROM payroll_reviews WHERE entry_id=?', (eid,)).fetchone()
+        act = conn.execute('SELECT act_id FROM payroll_act_items WHERE entry_id=?', (eid,)).fetchone()
+        rate = conn.execute('SELECT * FROM payroll_rates WHERE employee_id=? ORDER BY id DESC LIMIT 1', (row['author_id'],)).fetchone()
+        snapshots.append([row, dict(review) if review else None, dict(act) if act else None, dict(rate) if rate else None])
+        row['employee_name'] = conn.execute('SELECT name FROM users WHERE id=?', (row['author_id'],)).fetchone()[0]
+        row['rate_id'] = rate['id'] if rate else None
+        row['cents_per_hour'] = rate['cents_per_hour'] if rate else None
+        row['amount_cents'] = (row['minutes'] * rate['cents_per_hour'] + 30) // 60 if rate else None
+        reason = ('Уже включена в акт' if act else
+                  ('Отклонено: ' + review['reason'] if review['state'] == 'rejected' else 'Уже подтверждено') if review else
+                  'Не задана ставка исполнителя' if not rate else
+                  'Нулевые трудозатраты' if row['minutes'] <= 0 else '')
+        row['exclusion'] = reason
+        (excluded if reason else selected).append(row)
+    snapshot = hashlib.sha256(json.dumps(snapshots, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    return {'entries': selected, 'excluded': excluded, 'total_cents': sum(r['amount_cents'] for r in selected), 'snapshot': snapshot}
+
+
 class ActInput(BaseModel):
     employee_id: int
     period_start: date
@@ -174,6 +216,38 @@ def entries(conn, employee_id, start, end):
         WHERE (? IS NULL OR e.author_id=?) AND e.work_date>=? AND e.work_date<=?
         ORDER BY e.work_date DESC,e.id DESC
         ''', (employee_id, employee_id, start.isoformat(), end.isoformat()))]
+
+
+def source_link(conn, domain, user, row):
+    """Only offer navigation to a source the current viewer can still read."""
+    import team_management as team
+    if row['ticket_id']:
+        try:
+            domain.ticket_for(conn, row['ticket_id'], user, write=False)
+            return f"#ticket/{row['ticket_id']}"
+        except HTTPException:
+            return None
+    if row['source_kind'] == 'task':
+        task = conn.execute('SELECT t.* FROM task_time_entries e JOIN team_tasks t ON t.id=e.task_id WHERE e.id=?', (row['source_id'],)).fetchone()
+        if not task:
+            return None
+        involved = user['id'] in (task['owner_id'], task['reviewer_id']) or conn.execute('SELECT 1 FROM task_participants WHERE task_id=? AND user_id=?', (task['id'], user['id'])).fetchone()
+        profile = team.settings(conn, user['id'])
+        internal_access = task['customer_id'] is None and (task['created_by'] == user['id'] or profile['scope'] == 'all' or (profile['scope'] == 'department' and profile['department'] and team.settings(conn, task['owner_id'])['department'] == profile['department']))
+        if team.privileged(user) or involved or internal_access or team.client_visible(conn, user, task['customer_id']):
+            return f"#task/{task['id']}"
+    if row['source_kind'] == 'service':
+        customer = conn.execute('SELECT customer_id FROM service_entries WHERE id=?', (row['source_id'],)).fetchone()
+        if customer:
+            chats = conn.execute('''SELECT id FROM chats WHERE customer_id=? OR organization_id IN
+                (SELECT organization_id FROM organization_members WHERE user_id=?)''', (customer[0], customer[0])).fetchall()
+            for chat in chats:
+                try:
+                    actual = domain.chat_for(conn, chat['id'], user)
+                    return f"#chat/{actual['id']}"
+                except HTTPException:
+                    continue
+    return None
 
 
 def install_routes(app, domain):
@@ -208,6 +282,8 @@ def install_routes(app, domain):
                 (SELECT cents_per_hour FROM payroll_rates WHERE employee_id=u.id ORDER BY id DESC LIMIT 1) AS cents_per_hour
                 FROM users u WHERE u.role!='customer' AND (? OR u.id=?) ORDER BY u.name''', (user['role'] == 'admin', user['id']))]
             rows = entries(conn, employee_id, period_start, period_end)
+            for row in rows:
+                row['source_href'] = source_link(conn, domain, user, row)
             acts = [dict(r) for r in conn.execute('''SELECT * FROM payroll_acts
                 WHERE (? IS NULL OR employee_id=?) AND period_start<=? AND period_end>=? ORDER BY id DESC''',
                 (employee_id, employee_id, period_end.isoformat(), period_start.isoformat()))]
@@ -261,6 +337,38 @@ def install_routes(app, domain):
             conn.execute('INSERT INTO payroll_audit(entry_id,action,reason,actor_id,created_at) VALUES(?,?,?,?,?)',
                          (entry_id, data.action, data.reason.strip(), user['id'], domain.now()))
         return {'ok': True}
+
+    @app.post('/api/payroll/review-preview')
+    def preview_reviews(data: ReviewSelection, desk_session: str | None = Cookie(default=None)):
+        staff(desk_session, admin=True)
+        with domain.db() as conn:
+            conn.execute('BEGIN')
+            return review_preview(conn, data.entry_ids)
+
+    @app.post('/api/payroll/review-batch')
+    def batch_reviews(data: BatchReviewInput, desk_session: str | None = Cookie(default=None)):
+        user = staff(desk_session, admin=True)
+        fingerprint = hashlib.sha256(data.model_dump_json(exclude={'request_id'}).encode()).hexdigest()
+        with domain.db() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            prior = conn.execute('SELECT * FROM payroll_review_batches WHERE actor_id=? AND request_id=?', (user['id'], data.request_id)).fetchone()
+            if prior:
+                if prior['request_hash'] != fingerprint:
+                    raise HTTPException(409, 'Ключ запроса уже использован для другого подтверждения')
+                return json.loads(prior['result'])
+            preview = review_preview(conn, data.entry_ids)
+            if preview['snapshot'] != data.snapshot:
+                raise HTTPException(409, 'Состав, решения или ставки изменились. Повторите предварительную проверку')
+            if not preview['entries']:
+                raise HTTPException(409, 'Нет записей, доступных для подтверждения')
+            for row in preview['entries']:
+                conn.execute('INSERT OR IGNORE INTO payroll_sources(id,source_kind,source_id) VALUES(?,?,?)', (row['id'], row['source_kind'], row['source_id']))
+                conn.execute('''INSERT INTO payroll_reviews(entry_id,state,rate_id,amount_cents,reason,reviewed_by,reviewed_at)
+                    VALUES(?,'approved',?,?,'',?,?)''', (row['id'], row['rate_id'], row['amount_cents'], user['id'], domain.now()))
+                conn.execute("INSERT INTO payroll_audit(entry_id,action,reason,actor_id,created_at) VALUES(?,'approve','',?,?)", (row['id'], user['id'], domain.now()))
+            result = {'ok': True, 'approved': len(preview['entries']), 'excluded': len(preview['excluded']), 'total_cents': preview['total_cents']}
+            conn.execute('INSERT INTO payroll_review_batches VALUES(?,?,?,?)', (user['id'], data.request_id, fingerprint, json.dumps(result)))
+            return result
 
     @app.post('/api/payroll/acts', status_code=201)
     def create_act(data: ActInput, desk_session: str | None = Cookie(default=None)):

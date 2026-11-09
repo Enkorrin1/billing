@@ -17,7 +17,7 @@ class FlowImprovements(unittest.TestCase):
             self.assertEqual(client.patch(path,json={'status':'paid'}).status_code,403)
         for _ in range(2):
             self.assertEqual(self.admin.patch(path,json={'status':'paid'}).status_code,200)
-        self.assertEqual(self.customer.get('/api/billing/overview').json()['balance_minutes'],60)
+        self.assertEqual(self.customer.get('/api/billing/overview').json()['balance_rub'],3000)
         self.assertEqual(self.admin.patch(path,json={'status':'cancelled'}).status_code,409)
 
     def test_existing_account_connection_preserves_login(self):
@@ -47,14 +47,16 @@ class FlowImprovements(unittest.TestCase):
         self.admin.patch(f'/api/tickets/{ticket}/assignee',json={'assignee_id':self.staff['id']})
         path=f'/api/tickets/{ticket}'
         self.assertEqual(self.employee.patch(path+'/service-budget',json={'limit_minutes':60}).status_code,403)
-        self.assertEqual(self.customer.patch(path+'/service-budget',json={'limit_minutes':60}).status_code,200)
+        self.assertEqual(self.customer.patch(path+'/service-budget',json={'limit_minutes':60}).status_code,403)
+        self.assertEqual(self.admin.patch(path+'/service-budget',json={'limit_minutes':60}).status_code,200)
         payload={'customer_id':customer,'ticket_id':ticket,'kind':'call','minutes':45,'note':'Private staff note'}
         response=self.employee.post('/api/service-entries',json=payload)
         self.assertEqual(response.status_code,201,response.text)
         self.assertEqual(self.employee.post('/api/service-entries',json={**payload,'minutes':16}).status_code,409)
-        self.assertEqual(self.customer.patch(path+'/service-budget',json={'limit_minutes':44}).status_code,409)
+        self.assertEqual(self.admin.patch(path+'/service-budget',json={'limit_minutes':44}).status_code,409)
         detail=self.customer.get(path).json()
-        self.assertEqual(detail['ticket']['service_minutes'],45)
+        self.assertNotIn('service_minutes',detail['ticket'])
+        self.assertEqual(self.employee.get(path).json()['ticket']['service_minutes'],45)
         self.assertEqual(detail['ticket']['service_cost_rub'],2250)
         self.assertNotIn('Private staff note',str(detail))
 
@@ -77,11 +79,11 @@ class FlowImprovements(unittest.TestCase):
         response=self.admin.post('/api/billing/invoices',json={'doc_type':'act','client_type':'user','client_id':customer,'service_entry_ids':[entry]})
         self.assertEqual(response.status_code,201,response.text)
         path=f"/api/billing/invoices/{response.json()['id']}/status"
-        before=self.customer.get('/api/billing/overview').json()['balance_minutes']
+        before=self.customer.get('/api/billing/overview').json()['balance_rub']
         self.assertEqual(self.admin.patch(path,json={'status':'paid'}).status_code,422)
         for _ in range(2):
             self.assertEqual(self.admin.patch(path,json={'status':'signed'}).status_code,200)
-        self.assertEqual(self.customer.get('/api/billing/overview').json()['balance_minutes'],before)
+        self.assertEqual(self.customer.get('/api/billing/overview').json()['balance_rub'],before)
         with service.db() as conn:
             row=conn.execute('SELECT signed_at,paid_at FROM invoices WHERE id=?',(response.json()['id'],)).fetchone()
         self.assertTrue(row['signed_at'])

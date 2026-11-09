@@ -272,7 +272,30 @@ class Bots(unittest.TestCase):
         self.assertEqual(self.sql("SELECT state FROM estimates WHERE id=?", (estimate,))[0]["state"], "approved")
         self.assertEqual(len(self.sql("SELECT * FROM notifications WHERE kind='estimate_decision'")), 1)
 
-    def test_revision_with_hours_and_rejection(self):
+    def test_legacy_revision_hours_reprompts_without_converting_reply(self):
+        link = self.link()
+        ticket = self.ticket()
+        estimate = self.estimate(ticket)
+        with desk.db() as conn:
+            self.engine.set_state(conn, link, {"mode": "revision_hours", "ticket": ticket,
+                                              "estimate": estimate, "comment": "Меньший объём"})
+        self.send(text="2")
+        row = self.sql("SELECT * FROM estimates WHERE id=?", (estimate,))[0]
+        self.assertEqual(row["state"], "pending")
+        self.assertIsNone(row["proposed_amount_rub"])
+        self.assertIn("Предыдущий ответ не отправлен", self.last_payload()["text"])
+        self.assertIn("рублях", self.last_payload()["text"])
+        with desk.db() as conn:
+            state = self.engine.state(conn, link)
+        self.assertEqual(state["mode"], "revision_amount")
+        self.assertEqual(state["comment"], "Меньший объём")
+        self.send(text="7500")
+        row = self.sql("SELECT * FROM estimates WHERE id=?", (estimate,))[0]
+        self.assertEqual(row["state"], "revision_requested")
+        self.assertEqual(row["proposed_amount_rub"], 7500)
+        self.assertIsNone(row["proposed_effort_minutes"])
+
+    def test_revision_with_rubles_and_rejection(self):
         self.link()
         ticket = self.ticket()
         estimate = self.estimate(ticket)
@@ -281,10 +304,11 @@ class Bots(unittest.TestCase):
         self.send(text="Нужен меньший объём")
         self.send(text="NaN")
         self.assertIn("положительное", self.last_payload()["text"])
-        self.send(text="2,5")
+        self.send(text="7500")
         row = self.sql("SELECT * FROM estimates WHERE id=?", (estimate,))[0]
         self.assertEqual(row["state"], "revision_requested")
-        self.assertEqual(row["proposed_effort_minutes"], 150)
+        self.assertEqual(row["proposed_amount_rub"], 7500)
+        self.assertIsNone(row["proposed_effort_minutes"])
         new_id = self.estimate(ticket)
         self.show_ticket(ticket)
         self.click("Отклонить")

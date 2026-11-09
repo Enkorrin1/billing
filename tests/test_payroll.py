@@ -93,6 +93,53 @@ class PayrollTests(unittest.TestCase):
         service.init_db()
         self.assertEqual(self.admin.get(f'/api/payroll/acts/{act["id"]}').json()['total_cents'],3000)
 
+    def test_card_rate_flows_into_act_and_preserves_approved_amounts(self):
+        uid = self.ids['worker']
+        def save(cents):
+            person = next(p for p in self.admin.get('/api/team').json()['people'] if p['id'] == uid)
+            response = self.admin.put(f'/api/team/staff/{uid}', json={
+                'version': person['updated_at'], 'cents_per_hour': cents})
+            self.assertEqual(response.status_code, 200, response.text)
+        save(2575)
+        person = next(p for p in self.admin.get('/api/team').json()['people'] if p['id'] == uid)
+        self.assertEqual(person['cents_per_hour'], 2575)
+        first = self.entry(60)
+        self.assertEqual(self.review(first).status_code, 200)
+        save(3000)
+        save(3000)
+        with service.db() as conn:
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM payroll_rates WHERE employee_id=?', (uid,)).fetchone()[0], 2)
+        second = self.entry(30)
+        self.assertEqual(self.review(second).status_code, 200)
+        response = self.admin.post('/api/payroll/acts', json=self.payload([first, second], 4075))
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()['total_cents'], 4075)
+        self.assertEqual([i['cents_per_hour'] for i in response.json()['items']], [2575, 3000])
+        self.rate(4000)
+        person = next(p for p in self.admin.get('/api/team').json()['people'] if p['id'] == uid)
+        self.assertEqual(person['cents_per_hour'], 4000)
+
+    def test_card_rate_validation_permissions_and_atomicity(self):
+        uid = self.ids['worker']
+        person = next(p for p in self.admin.get('/api/team').json()['people'] if p['id'] == uid)
+        path = f'/api/team/staff/{uid}'
+        for invalid in (0, -1, 100000001, 1.5, True):
+            response = self.admin.put(path, json={'version': person['updated_at'], 'cents_per_hour': invalid})
+            self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(self.admin.put(path, json={'version': person['updated_at'], 'cents_per_hour': 2000, 'functions': ['invalid-function']}).status_code, 422)
+        with service.db() as conn:
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM payroll_rates').fetchone()[0], 0)
+            conn.execute('UPDATE users SET is_manager=1 WHERE id=?', (self.ids['other'],))
+        for key in ('worker', 'other', 'client'):
+            self.assertEqual(self.clients[key].put(path, json={'cents_per_hour': 2000}).status_code, 403)
+        self.rate(2000)
+        for key in ('worker', 'other'):
+            people = self.clients[key].get('/api/team').json()['people']
+            self.assertTrue(all('cents_per_hour' not in p for p in people))
+        self.assertEqual(self.admin.put(path, json={'version': person['updated_at']}).status_code, 200)
+        refreshed = next(p for p in self.admin.get('/api/team').json()['people'] if p['id'] == uid)
+        self.assertEqual(refreshed['cents_per_hour'], 2000)
+
     def test_pending_rejected_and_period_boundaries(self):
         self.rate(1001)
         pending = self.entry(1)

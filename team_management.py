@@ -160,6 +160,7 @@ class FunctionInput(Input):
 
 
 class StaffSettings(Input):
+    cents_per_hour: int | None = Field(default=None, ge=1, le=100000000, strict=True)
     functions: list[str] = Field(default_factory=list, max_length=30)
     job_title: str = Field(default="", max_length=100)
     department: str = Field(default="", max_length=100)
@@ -480,6 +481,9 @@ def install_routes(app, domain):
                 if record: events.append({**dict(event),'title':record['title'],'customer_name':record['customer_name']})
             for person in people:
                 uid = person['id']
+                if user['role'] == 'admin':
+                    rate = conn.execute('SELECT cents_per_hour FROM payroll_rates WHERE employee_id=? ORDER BY id DESC LIMIT 1', (uid,)).fetchone()
+                    person['cents_per_hour'] = rate['cents_per_hour'] if rate else None
                 active_tasks = [r for r in records['tasks'] if r['status'] not in ('done','cancelled') and (r['owner_id']==uid or uid in r['participants'])]
                 week_start = datetime.now(timezone.utc).replace(hour=0,minute=0,second=0,microsecond=0)
                 from datetime import timedelta
@@ -539,6 +543,11 @@ def install_routes(app, domain):
             conn.execute('DELETE FROM staff_functions WHERE user_id=?',(uid,))
             conn.executemany('INSERT INTO staff_functions VALUES(?,?)',[(uid,c) for c in sorted(codes)])
             stamp=domain.now()
+            if data.cents_per_hour is not None:
+                rate = conn.execute('SELECT cents_per_hour FROM payroll_rates WHERE employee_id=? ORDER BY id DESC LIMIT 1', (uid,)).fetchone()
+                if not rate or rate['cents_per_hour'] != data.cents_per_hour:
+                    conn.execute('INSERT INTO payroll_rates(employee_id,cents_per_hour,created_by,created_at) VALUES(?,?,?,?)',
+                                 (uid, data.cents_per_hour, user['id'], stamp))
             conn.execute("""INSERT INTO staff_settings(user_id,department,manager_id,capacity_minutes,availability,permissions,scope,responsibilities,updated_at)
                 VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET department=excluded.department,manager_id=excluded.manager_id,
                 capacity_minutes=excluded.capacity_minutes,availability=excluded.availability,permissions=excluded.permissions,
@@ -551,7 +560,7 @@ def install_routes(app, domain):
                 conn.execute('UPDATE users SET is_manager=? WHERE id=?',(int(data.access_level=='manager'),uid))
             conn.execute("""INSERT INTO staff_profiles(user_id,job_title,bio,updated_at) VALUES(?,?,'',?)
                 ON CONFLICT(user_id) DO UPDATE SET job_title=excluded.job_title,updated_at=excluded.updated_at""",(uid,data.job_title,stamp))
-            audit(conn,domain,user,'staff',uid,'update',data.model_dump(exclude={'version'}))
+            audit(conn,domain,user,'staff',uid,'update',data.model_dump(exclude={'version', 'cents_per_hour'}))
             return person_data(conn,conn.execute('SELECT * FROM users WHERE id=?',(uid,)).fetchone(),True)
 
     @router.patch('/me/availability')

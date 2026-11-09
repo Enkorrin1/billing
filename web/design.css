@@ -4276,7 +4276,7 @@ button.csat-star:hover, button.csat-star[aria-pressed="true"] { background: var(
 }
 
 /* Administration uses the existing workspace controls and native modal focus. */
-.admin-dialog { width: min(640px, calc(100vw - 32px)); max-height: 88vh; overflow: auto; border: 1px solid var(--line); border-radius: 16px; padding: 24px; color: var(--ink); background: var(--surface); }
+        .admin-dialog { width: min(640px, calc(100vw - 32px)); max-height: 88vh; overflow: auto; border: 1px solid var(--line); border-radius: 16px; padding: 24px; color: var(--ink); background: var(--card); }
 .admin-dialog::backdrop { background: rgba(15, 23, 42, .45); }
 .admin-dialog fieldset { border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: grid; gap: 12px; min-width: 0; }
 .admin-dialog fieldset[hidden] { display: none; }
@@ -4425,4 +4425,49 @@ button.csat-star:hover, button.csat-star[aria-pressed="true"] { background: var(
   .chat-thread-open #main > .top { display: none; }
   .chat-thread-open #main { padding-top: 8px; }
   .chat-thread-open .inbox-thread-head small { display: none; }
+}
+
+
+/* ---------- Продуктивность: решения, виды, журнал времени, депозит, расписания ---------- */
+.decisions-panel { display: grid; gap: 8px; }
+.decision-row.tone-late { border-color: var(--late-line); background: var(--late-soft); }
+.decision-row.tone-late .waiting-ico { color: var(--late); }
+.saved-views { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 14px; }
+.saved-view { display: inline-flex; align-items: center; }
+.saved-view .chip { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.saved-view-remove { height: 34px; padding: 0 10px; border: 1px solid var(--line-strong); border-left: 0; border-radius: 0 99px 99px 0; background: var(--card); color: var(--muted); font: inherit; cursor: pointer; }
+.saved-view-remove:hover { color: var(--late); }
+.saved-view.active .saved-view-remove { border-color: var(--accent); }
+.saved-view-form { display: flex; gap: 8px; align-items: center; }
+.saved-view-form[hidden] { display: none; }
+.balance-low { display: flex; align-items: center; gap: 14px; }
+.balance-low > div { display: grid; gap: 2px; flex: 1; }
+.balance-low span { font-weight: 500; color: var(--ink-secondary); }
+.client-eta { margin-bottom: 16px; }
+.client-eta span { display: inline-flex; align-items: center; gap: 6px; }
+.client-eta.late { border-color: var(--soon-line); background: var(--soon-bg); color: var(--soon); }
+.ts-week { align-items: center; gap: 12px; margin-bottom: 14px; }
+.table-scroll { overflow-x: auto; }
+.timesheet { width: 100%; border-collapse: collapse; font-size: 13px; }
+.timesheet th, .timesheet td { padding: 8px 6px; border-bottom: 1px solid var(--line-light); text-align: center; vertical-align: top; }
+.timesheet thead th { color: var(--muted); font-weight: 700; }
+.timesheet thead th small { display: block; font-weight: 500; }
+.timesheet thead th.today { color: var(--accent-ink); }
+.timesheet tbody th, .timesheet tfoot th { min-width: 220px; text-align: left; font-weight: 600; }
+.timesheet tbody th small { display: block; margin: 2px 0 6px; color: var(--muted); font-weight: 500; }
+.timesheet .ts-cell { width: 64px; text-align: center; }
+.timesheet .ts-logged { display: block; margin-bottom: 4px; color: var(--accent-ink); font-weight: 700; }
+.timesheet .ts-total { font-weight: 800; }
+.ts-actions { align-items: center; gap: 12px; margin-top: 14px; flex-wrap: wrap; }
+.link-button { padding: 0; border: 0; background: none; color: var(--accent-ink); font: inherit; font-weight: 700; text-align: left; cursor: pointer; }
+.link-button:hover { text-decoration: underline; }
+.recurring-item { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line-light); }
+.recurring-item:last-child { border-bottom: 0; }
+.recurring-item p { margin: 4px 0; }
+.recurring-item.paused strong { color: var(--muted); }
+@media (max-width: 600px) {
+  .balance-low { flex-direction: column; align-items: stretch; }
+  .recurring-item { flex-direction: column; }
+  .saved-view-form { width: 100%; }
+  .saved-view-form .field { flex: 1; min-width: 0; }
 }

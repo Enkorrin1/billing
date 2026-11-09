@@ -127,6 +127,7 @@ class AdminTicketUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     status: Optional[str] = None
+    reopen_reason: Optional[str] = None
     priority: Optional[str] = None
     service_type: Optional[str] = None
     channel: Optional[str] = None
@@ -875,6 +876,8 @@ def install_routes(app, domain):
         stamp = domain.now()
         with domain.db() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            if data.executor_id and data.reviewer_id and data.executor_id == data.reviewer_id:
+                raise HTTPException(422, "Укажите разных соисполнителя и проверяющего")
             validate_staff(conn, [data.assignee_id, data.executor_id, data.reviewer_id, *data.observer_ids])
             # Verify customer
             customer = conn.execute("SELECT id FROM users WHERE id=? AND role='customer' AND active=1", (data.customer_id,)).fetchone()
@@ -968,18 +971,25 @@ def install_routes(app, domain):
     def update_admin_ticket(ticket_id: int, data: AdminTicketUpdate, desk_session: str | None = Cookie(default=None)):
         admin = require_admin(desk_session)
         stamp = domain.now()
+        after_commit = []
         with domain.db() as conn:
             conn.execute("BEGIN IMMEDIATE")
             ticket = conn.execute("SELECT * FROM tickets WHERE id=?", (ticket_id,)).fetchone()
             if not ticket:
                 raise HTTPException(404, "Заявка не найдена")
 
+            if data.executor_id and data.reviewer_id and data.executor_id == data.reviewer_id:
+                raise HTTPException(422, "Укажите разных соисполнителя и проверяющего")
             validate_staff(conn, [data.assignee_id, data.executor_id, data.reviewer_id, *(data.observer_ids or [])])
-            if ticket['act_invoice_id'] and any(getattr(data, f) is not None for f in ('estimate','customer_id','organization_id','status')):
+            organization_id = None if data.organization_id is None or data.organization_id <= 0 else data.organization_id
+            status_changed = data.status is not None and data.status != ticket['status']
+            customer_changed = data.customer_id is not None and data.customer_id != ticket['customer_id']
+            organization_changed = data.organization_id is not None and organization_id != ticket['organization_id']
+            if ticket['act_invoice_id'] and (data.estimate is not None or status_changed or customer_changed or organization_changed):
                 raise HTTPException(409, "Сначала аннулируйте акт по заявке")
             if data.customer_id is not None and data.customer_id != ticket['customer_id']:
                 raise HTTPException(409, "Нельзя переносить историю заявки другому заказчику")
-            if data.organization_id is not None and (data.organization_id or None) != ticket['organization_id']:
+            if organization_changed:
                 raise HTTPException(409, "Нельзя переносить финансовую историю заявки в другую компанию")
             # Collect field updates
             updates = []
@@ -996,12 +1006,14 @@ def install_routes(app, domain):
             if data.status is not None:
                 if data.status not in domain.STATUSES:
                     raise HTTPException(422, f"Недопустимый статус заявки: {data.status}")
-                updates.append("status = ?")
-                params.append(data.status)
-                if ticket["status"] != data.status:
+                if ticket['status'] == "closed" and data.status != "closed":
+                    domain._reopen_ticket(conn, ticket_id, admin, data.reopen_reason, after_commit)
+                elif ticket["status"] != data.status:
+                    updates.append("status = ?")
+                    params.append(data.status)
                     conn.execute(
                         "INSERT INTO ticket_events(ticket_id, actor_id, kind, old_value, new_value, created_at) VALUES(?,?,?,?,?,?)",
-                        (ticket_id, admin["id"], "status", ticket["status"], data.status, stamp)
+                        (ticket_id, admin["id"], "admin_status_correction", ticket["status"], data.status, stamp)
                     )
 
             if data.priority is not None:
@@ -1009,6 +1021,12 @@ def install_routes(app, domain):
                     raise HTTPException(422, "Недопустимый приоритет")
                 updates.append("priority = ?")
                 params.append(data.priority)
+                old_priority = ticket["priority"] or "normal"
+                if old_priority != data.priority:
+                    conn.execute(
+                        "INSERT INTO ticket_events(ticket_id, actor_id, kind, old_value, new_value, created_at) VALUES(?,?,?,?,?,?)",
+                        (ticket_id, admin["id"], "priority", old_priority, data.priority, stamp)
+                    )
 
             if data.service_type is not None:
                 updates.append("service_type = ?")
@@ -1085,24 +1103,36 @@ def install_routes(app, domain):
             # ==========================
             # Participants editing (executor, reviewer, observers)
             # ==========================
+            old_participants = {row["user_id"]: row["participation"] for row in conn.execute(
+                "SELECT user_id, participation FROM ticket_participants WHERE ticket_id=?", (ticket_id,)
+            ).fetchall()}
+            new_participants = dict(old_participants)
             if data.executor_id is not None:
-                conn.execute("DELETE FROM ticket_participants WHERE ticket_id=? AND participation='executor'", (ticket_id,))
+                new_participants = {uid: role for uid, role in new_participants.items() if role != "executor"}
                 if data.executor_id > 0:
-                    conn.execute("INSERT OR REPLACE INTO ticket_participants(ticket_id, user_id, participation) VALUES(?,?,?)",
-                                 (ticket_id, data.executor_id, "executor"))
-
+                    new_participants.pop(data.executor_id, None)
+                    new_participants[data.executor_id] = "executor"
             if data.reviewer_id is not None:
-                conn.execute("DELETE FROM ticket_participants WHERE ticket_id=? AND participation='reviewer'", (ticket_id,))
+                new_participants = {uid: role for uid, role in new_participants.items() if role != "reviewer"}
                 if data.reviewer_id > 0:
-                    conn.execute("INSERT OR REPLACE INTO ticket_participants(ticket_id, user_id, participation) VALUES(?,?,?)",
-                                 (ticket_id, data.reviewer_id, "reviewer"))
-
+                    new_participants.pop(data.reviewer_id, None)
+                    new_participants[data.reviewer_id] = "reviewer"
             if data.observer_ids is not None:
-                conn.execute("DELETE FROM ticket_participants WHERE ticket_id=? AND participation='observer'", (ticket_id,))
-                for oid in set(data.observer_ids):
-                    if oid > 0:
-                        conn.execute("INSERT OR REPLACE INTO ticket_participants(ticket_id, user_id, participation) VALUES(?,?,?)",
-                                     (ticket_id, oid, "observer"))
+                new_participants = {uid: role for uid, role in new_participants.items() if role != "observer"}
+                for observer_id in set(data.observer_ids):
+                    if observer_id > 0 and observer_id not in new_participants:
+                        new_participants[observer_id] = "observer"
+            if new_participants != old_participants:
+                conn.execute("DELETE FROM ticket_participants WHERE ticket_id=?", (ticket_id,))
+                conn.executemany(
+                    "INSERT INTO ticket_participants(ticket_id, user_id, participation) VALUES(?,?,?)",
+                    [(ticket_id, uid, role) for uid, role in new_participants.items()]
+                )
+                conn.execute(
+                    "INSERT INTO ticket_events(ticket_id, actor_id, kind, old_value, new_value, created_at) VALUES(?,?,?,?,?,?)",
+                    (ticket_id, admin["id"], "participants", json.dumps(old_participants, sort_keys=True),
+                     json.dumps(new_participants, sort_keys=True), stamp)
+                )
 
             # ==========================
             # Estimate editing
@@ -1168,9 +1198,13 @@ def install_routes(app, domain):
                 recipients.add(data.assignee_id)
             if data.customer_id:
                 recipients.add(data.customer_id)
-            domain.realtime_bus.broadcast(recipients, {"type": "ticket_updated", "ticket_id": ticket_id})
+            after_commit.append(lambda recipients=recipients, ticket_id=ticket_id:
+                                domain.realtime_bus.broadcast(recipients, {"type": "ticket_updated", "ticket_id": ticket_id}))
 
-            return {"ok": True, "id": ticket_id}
+            result = {"ok": True, "id": ticket_id}
+        for callback in after_commit:
+            callback()
+        return result
 
     @router.delete("/tickets/{ticket_id}")
     def delete_ticket(ticket_id: int, desk_session: str | None = Cookie(default=None)):

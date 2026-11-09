@@ -148,7 +148,7 @@ class ClientCare(unittest.TestCase):
         self.admin.post(f"/api/tickets/{ticket_id}/estimates/{est['id']}/pm-review", json={"action": "send_to_customer"})
         waiting = self.customer.get("/api/waiting-on-me").json()
         self.assertEqual(waiting[0]["kind"], "estimate")
-        self.assertIn("1,5 ч", waiting[0]["detail"])
+        self.assertIn("4 500 ₽", waiting[0]["detail"])
         self.assertEqual(self.employee.get("/api/waiting-on-me").json(), [])
         self.assertEqual(service.run_reminders(), 0)
         with service.db() as conn:
@@ -290,10 +290,10 @@ Content-Type: text/plain; charset=utf-8
         ticket_id = self.staff_ticket(assignee_id=self.staff["id"], effort_minutes=90, estimate_note="Замена и проверка").json()["id"]
         detail = self.customer.get(f"/api/tickets/{ticket_id}").json()
         estimate = detail["estimates"][0]
-        self.assertEqual((estimate["state"], estimate["effort_minutes"], estimate["note"]), ("pending", 90, "Замена и проверка"))
+        self.assertEqual((estimate["state"], estimate["amount_rub"], estimate["note"]), ("pending", 4500, ""))
         self.assertTrue(detail["ticket"]["can_decline"])
         notes = self.customer.get("/api/notifications").json()
-        self.assertTrue(any(f"Согласуйте оценку: {service.fmt_hours(90)}" in n["text"] for n in notes))
+        self.assertTrue(any("Согласуйте стоимость" in n["text"] for n in notes))
         self.customer.post(f"/api/tickets/{ticket_id}/estimates/decision", json={"estimate_id": estimate["id"], "action": "approve"})
         self.assertEqual(self.employee.patch(f"/api/tickets/{ticket_id}/status", json={"status": "working"}).status_code, 200)
         self.assertEqual(self.customer.post(f"/api/tickets/{ticket_id}/decline", json={}).status_code, 409)
@@ -322,8 +322,8 @@ Content-Type: text/plain; charset=utf-8
         self.assertEqual(self.customer.get(f"/api/tickets/{ticket_id}").json()["ticket"]["status"], "closed")
 
     def test_auto_approve_within_customer_limit(self):
-        self.customer.patch("/api/customer-profile/me", json={"name": "Клиент", "auto_approve_minutes": 120})
-        self.assertEqual(self.customer.get("/api/customer-profile/me").json()["auto_approve_minutes"], 120)
+        self.customer.patch("/api/customer-profile/me", json={"name": "Клиент", "auto_approve_rub": 6000})
+        self.assertEqual(self.customer.get("/api/customer-profile/me").json()["auto_approve_rub"], 6000)
         small = self.staff_ticket(assignee_id=self.staff["id"], effort_minutes=90).json()["id"]
         self.assertEqual(self.customer.get(f"/api/tickets/{small}").json()["estimates"][0]["state"], "approved")
         self.assertEqual(self.employee.patch(f"/api/tickets/{small}/status", json={"status": "working"}).status_code, 200)
@@ -334,7 +334,7 @@ Content-Type: text/plain; charset=utf-8
         self.assertEqual(self.customer.get(f"/api/tickets/{big}").json()["estimates"][0]["state"], "pending")
         # Профиль без поля лимита не сбрасывает его.
         self.customer.patch("/api/customer-profile/me", json={"name": "Клиент"})
-        self.assertEqual(self.customer.get("/api/customer-profile/me").json()["auto_approve_minutes"], 120)
+        self.assertEqual(self.customer.get("/api/customer-profile/me").json()["auto_approve_rub"], 6000)
 
     def test_bulk_approve_and_estimate_sla(self):
         first, second = self.ticket(), self.ticket()
@@ -343,9 +343,9 @@ Content-Type: text/plain; charset=utf-8
         for t, eid in zip((first, second), ids):
             self.admin.post(f"/api/tickets/{t}/estimates/{eid}/pm-review", json={"action": "send_to_customer"})
         detail = self.customer.get(f"/api/tickets/{first}").json()["ticket"]
-        self.assertEqual((detail["estimate_state"], detail["effort_minutes"]), ("pending", 60))
+        self.assertEqual((detail["estimate_state"], detail["estimate_amount_rub"]), ("pending", 3000))
         waiting = [w for w in self.customer.get("/api/waiting-on-me").json() if w["kind"] == "estimate"]
-        self.assertEqual(sum(w["effort_minutes"] for w in waiting), 120)
+        self.assertEqual(sum(w["amount_rub"] for w in waiting), 6000)
         self.assertEqual(self.employee.post("/api/estimates/approve", json={"estimate_ids": ids}).status_code, 403)
         self.assertEqual(self.customer.post("/api/estimates/approve", json={"estimate_ids": ids}).json()["approved"], 2)
         self.assertEqual(self.customer.post("/api/estimates/approve", json={"estimate_ids": ids}).status_code, 409)

@@ -158,7 +158,7 @@ class BotEngine:
         if e and e.get("state") != "pending_pm":
             names = {"pending": "ожидает решения", "approved": "одобрена", "rejected": "отклонена", "revision_requested": "на корректировке"}
             amount_str = f"{e['amount_rub']:,} ₽".replace(",", " ") if e.get("amount_rub") else f"{e.get('amount_minor', 0)//100} ₽"
-            note_str = e.get("client_note") or e.get("note") or ""
+            note_str = e.get("client_note") or ""
             text += f"\n\nСтоимость работ, версия {e['version']}: {amount_str}. {names.get(e['state'], e['state'])}\n{note_str}"
             if e["state"] == "pending" and t["status"] != "closed":
                 buttons += [[self.button(conn, link, label, "decision", ticket=ticket_id, estimate=e["id"], decision=decision)]
@@ -367,23 +367,29 @@ class BotEngine:
             state["mode"] = "draft_description"
             self.set_state(conn, link, state)
             return self.queue(conn, link, "Опишите задачу (5–10000 символов).")
-        if mode in ("revision_comment", "revision_hours"):
+        if mode == "revision_hours":
+            # Persisted conversations may still have the old hours prompt. Never
+            # reinterpret its reply as rubles: ask explicitly in the new unit.
+            state["mode"] = "revision_amount"
+            self.set_state(conn, link, state)
+            return self.queue(conn, link, "Теперь предложение стоимости принимается в рублях. Предыдущий ответ не отправлен. Укажите сумму в рублях, например 7500, или «пропустить», чтобы оставить только комментарий.")
+        if mode in ("revision_comment", "revision_amount"):
             if mode == "revision_comment":
                 if len(text) > 3000:
                     raise HTTPException(422, "Комментарий должен быть не длиннее 3000 символов")
-                state.update(mode="revision_hours", comment=text)
+                state.update(mode="revision_amount", comment=text)
                 self.set_state(conn, link, state)
-                return self.queue(conn, link, "Предложите число часов, например 2,5. Напишите «пропустить», чтобы оставить только комментарий.")
-            minutes = None
+                return self.queue(conn, link, "Предложите стоимость в рублях, например 7500. Напишите «пропустить», чтобы оставить только комментарий.")
+            amount = None
             if text.lower() != "пропустить":
                 try:
-                    value = Decimal(text.replace(",", ".")) * 60
-                    if not value.is_finite() or value != value.to_integral_value() or not 1 <= value <= 100000:
+                    value = Decimal(text.replace(" ", "").replace(",", "."))
+                    if not value.is_finite() or value != value.to_integral_value() or not 1 <= value <= 100000000:
                         raise ValueError()
-                    minutes = int(value)
+                    amount = int(value)
                 except (InvalidOperation, ValueError):
-                    raise HTTPException(422, "Укажите положительное число часов с точностью до минуты или «пропустить»") from None
-            data = self.desk.EstimateDecision(estimate_id=state["estimate"], action="request_revision", comment=state["comment"], proposed_effort_minutes=minutes)
+                    raise HTTPException(422, "Укажите положительное целое число рублей или «пропустить»") from None
+            data = self.desk.EstimateDecision(estimate_id=state["estimate"], action="request_revision", comment=state["comment"], proposed_amount_rub=amount)
             self.desk.decide_estimate_service(conn, user, state["ticket"], data)
             self.set_state(conn, link, {})
             return self.ticket(conn, link, user, state["ticket"])
@@ -478,7 +484,7 @@ class BotEngine:
                 est = dict(e)
                 if user["role"] == "customer":
                     amt = est.get("amount_rub") or (est.get("amount_minor", 0) // 100)
-                    note = est.get("client_note") or est.get("note") or ""
+                    note = est.get("client_note") or ""
                     text += f"\nСтоимость: {amt:,} ₽ (версия {est['version']})\n{note}".replace(",", " ")
                 elif est.get("effort_minutes") is not None:
                     text += f"\nВерсия {est['version']} · {hours(est['effort_minutes'])}\n{est.get('note') or ''}"

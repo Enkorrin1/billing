@@ -45,7 +45,8 @@ class ContractorTime(unittest.TestCase):
         customer = self.customer.get(path).json()['ticket']
         self.assertNotIn('contractor_total_minutes', customer)
         self.assertNotIn('assessment_minutes', customer)
-        self.assertEqual(customer['approved_minutes'], 180)
+        self.assertNotIn('approved_minutes', customer)
+        self.assertEqual(self.employee.get(path).json()['ticket']['approved_minutes'], 180)
         self.assertEqual(customer['total_cost_rub'], 10500)
         self.employee.delete(f"/api/service-entries/{discussion.json()['id']}").raise_for_status()
         self.assertEqual(self.employee.get(path).json()['ticket']['contractor_total_minutes'], 150)

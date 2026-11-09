@@ -153,7 +153,7 @@ function openPalette() {
   const tickets = state.tickets.slice().sort((a, b) => b.updated_at.localeCompare(a.updated_at)).map(t => ({ group: 'Заявки', svg: icon('ticket'), label: `№${t.id} · ${t.title}`, hint: statusNames[t.status], run: () => openTicket(t.id), hay: [t.id, t.title, t.customer_name, t.customer_company].join(' ').toLocaleLowerCase('ru-RU') }));
   const tasks = staff ? (state.teamWorkspace?.tasks||[]).map(t=>({group:'Задачи',svg:icon('check'),label:`№${t.id} · ${t.title}`,hint:({new:'Новая',working:'В работе',review:'На проверке',done:'Выполнена',cancelled:'В архиве'})[t.status],run:()=>TasksUI.open(t.id),hay:[t.id,t.title,t.description].join(' ').toLocaleLowerCase('ru-RU')})):[];
   const chats = staff ? state.chats.map(c => ({ group: 'Чаты', svg: icon('chat'), label: c.customer_name, hint: c.last_message || '', run: () => openChat(c.id), hay: [c.customer_name, c.last_message].join(' ').toLocaleLowerCase('ru-RU') })) : [];
-  document.body.insertAdjacentHTML('beforeend', `<div class="palette-backdrop"><div class="palette" role="dialog" aria-modal="true" aria-label="Быстрый переход"><div class="palette-search">${icon('search', 18)}<input id="palette-input" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list" autocomplete="off" placeholder="Найти задачу, заявку или раздел…"><kbd>Esc</kbd></div><div class="palette-list" id="palette-list" role="listbox" aria-label="Результаты"></div><div class="palette-foot"><span><kbd>↑</kbd><kbd>↓</kbd> выбрать</span><span><kbd>Enter</kbd> открыть</span><span><kbd>Esc</kbd> закрыть</span></div></div></div>`);
+  document.body.insertAdjacentHTML('beforeend', `<div class="palette-backdrop"><div class="palette" role="dialog" aria-modal="true" aria-label="Быстрый переход"><div class="palette-search">${icon('search', 18)}<input id="palette-input" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list" autocomplete="off" aria-label="Поиск по кабинету" placeholder="${staff ? 'Найти задачу, заявку, чат или раздел…' : 'Найти заявку или раздел…'}"><kbd>Esc</kbd></div><div class="palette-list" id="palette-list" role="listbox" aria-label="Результаты"></div><div class="palette-foot"><span><kbd>↑</kbd><kbd>↓</kbd> выбрать</span><span><kbd>Enter</kbd> открыть</span><span><kbd>Esc</kbd> закрыть</span></div></div></div>`);
   const backdrop = document.querySelector('.palette-backdrop');
   const input = backdrop.querySelector('#palette-input');
   const list = backdrop.querySelector('#palette-list');
@@ -168,10 +168,9 @@ function openPalette() {
     list.querySelector('.palette-item.active')?.scrollIntoView({ block: 'nearest' });
   };
   const search = () => {
-    const q = input.value.trim().toLocaleLowerCase('ru-RU');
+    const q = input.value.trim().toLocaleLowerCase('ru-RU').replace(/^[#№]\s*(?=\d)/, '');
     const match = item => !q || item.hay.includes(q);
-    results = [...pages.filter(match).slice(0, q ? 6 : 8), ...tickets.filter(match).slice(0, q ? 6 : 5), ...chats.filter(match).slice(0, q ? 4 : 0)];
-    if (q) results.push({ group: 'Поиск', svg: icon('search'), label: `Искать «${input.value.trim()}» во всех заявках`, run: () => { state.search = input.value.trim(); state.filter = 'all'; state.owner = 'all'; setView('tickets'); } });
+    results = [...pages.filter(match).slice(0, q ? 6 : 8), ...tasks.filter(match).slice(0, q ? 8 : 4), ...tickets.filter(match).slice(0, q ? 6 : 5), ...chats.filter(match).slice(0, q ? 4 : 0)];
     active = 0;
     paint();
   };
@@ -216,8 +215,8 @@ function customerTourSteps() {
     { hero: true, title: 'Добро пожаловать в кабинет', text: 'За пару минут покажем, как создать заявку, согласовать оценку и следить за работой. Пройти обучение снова можно в любой момент — кнопкой «?» в верхней панели.', next: 'Начать', before: toTickets },
     { target: ['aside .nav', '.tabbar'], title: 'Разделы кабинета', text: 'Здесь все разделы: ваши заявки, общий чат с командой, компания, база знаний и счета.', before: toTickets },
     { target: '#top-new-ticket', title: 'Новая заявка', text: 'Нажмите, чтобы описать задачу. Выберите тип работы, расскажите, какой результат нужен, и при необходимости приложите файлы.', before: toTickets },
-    { target: '.waiting-panel', title: 'Ждём от вас', text: 'Здесь собрано всё, что ждёт вашего решения: оценки, дополнительные часы, приёмка работы и вопросы команды. Пока список не пуст, работа по этим заявкам стоит.', before: toTickets, skip: () => !(state.waiting?.length || state.tickets.some(t => t.status !== 'closed')) },
-    { target: '.overview-card', title: 'Сводка по заявкам', text: 'Сколько задач на каждом этапе, сколько часов уже согласовано и сколько оценок ждут вашего решения.', before: toTickets },
+    { target: '.waiting-panel', title: 'Ждём от вас', text: 'Здесь собрано всё, что ждёт вашего решения: предложения, доплаты, приёмка работы и вопросы команды. Пока список не пуст, работа по этим заявкам стоит.', before: toTickets, skip: () => !(state.waiting?.length || state.tickets.some(t => t.status !== 'closed')) },
+    { target: '.overview-card', title: 'Сводка по заявкам', text: 'Сколько задач на каждом этапе, какие работы уже согласованы и сколько оценок ждут вашего решения.', before: toTickets },
     { target: ['#ticket-list .trow', '#ticket-list'], title: 'Список заявок', text: 'Фильтруйте по статусу и ищите по номеру или теме. Нажмите на заявку, чтобы открыть её. Сейчас откроем одну для примера.', before: toTickets },
     { target: '.ticket-progress', title: 'Этапы заявки', text: 'Каждая заявка проходит пять шагов: создание, оценка, согласование, работа и приёмка. Когда работа готова, вы проверяете результат и принимаете его или возвращаете на доработку.', before: toDetail, skip: noTickets },
     { target: '.estimate-panel', title: 'Согласуйте стоимость', text: 'Проверьте сумму и состав работ. Нажмите «Согласовать стоимость», запросите корректировку или отклоните предложение.', before: toDetail, skip: noTickets },
@@ -657,6 +656,15 @@ function ticketSla(t) {
 function nearestSla(t) { return ticketSla(t).sort((a, b) => a.diff - b.diff)[0] || null; }
 function slaTag(s) { return s ? `<span class="sla ${s.tone}" title="Срок: ${date(s.due)}">${icon('clock', 13)}${esc(s.text)}</span>` : ''; }
 function ticketSlaBadges(t) { return ticketSla(t).map(slaTag).join(' '); }
+function clientEta(t) {
+  if (['closed', 'done'].includes(t.status) || t.declined) return '';
+  const next = nearestSla(t);
+  if (!next) return '';
+  const when = new Date(next.due).toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+  const labels = { 'Ответ': 'Ответим до', 'Оценка': 'Оценку стоимости подготовим до', 'Сдача': 'Плановый срок сдачи —' };
+  const text = next.tone === 'late' ? `Немного задерживаемся ${next.label === 'Ответ' ? 'с ответом' : next.label === 'Оценка' ? 'с оценкой' : 'со сдачей'}: планировали до ${when}. Ответственный уже уведомлён.` : `${labels[next.label] || 'Срок —'} ${when}`;
+  return `<div class="next-step client-eta ${next.tone === 'late' ? 'late' : ''}"><span>${icon('clock', 14)} Срок</span><strong>${esc(text)}</strong></div>`;
+}
 function slaCard(t) {
   if (t.declined) return '<p class="muted">Заказчик отказался от заявки — сроки больше не отслеживаются.</p>';
   const now = Date.now();
@@ -759,6 +767,11 @@ function initRealtime() {
           if (state.view === 'detail' && state.current && state.current.ticket.id === data.ticket_id) {
             await openTicket(data.ticket_id);
           }
+        } else if (data.type === 'balance_low') {
+          state.balance = await api('/balance-status').catch(() => state.balance);
+          if (state.view === 'tickets') renderTickets();
+        } else if (data.type === 'timesheet_reminder') {
+          toast('За эту неделю время не внесено — откройте «Журнал времени»');
         } else if (data.type === 'git_link_added') {
           if (state.view === 'detail' && state.current && state.current.ticket.id === data.ticket_id) {
             await loadGitLinks(data.ticket_id);
@@ -821,6 +834,7 @@ async function fetchNotifications() {
 async function loadNotifications() {
   if (!state.user) return;
   const incoming = await fetchNotifications();
+  if (state.user.role !== 'customer') api('/decisions').then(list => { state.decisions = list; const badge = document.querySelector('[data-nav="decisions"] .nav-count'); if (badge) badge.textContent = list.length || ''; }).catch(() => {});
   const changed = JSON.stringify(incoming) !== JSON.stringify(state.notifications);
   state.notifications = incoming;
   const unread = state.notifications.filter(n=>!n.read_at).length+(state.user.role!=='customer'?(state.teamWorkspace?.events||[]).filter(e=>e.entity==='tasks'&&!e.read_at).length:0);
@@ -834,8 +848,8 @@ async function loadNotifications() {
 }
 function resetAccountState() {
   TasksUI.reset();state.currentTaskId=null;TeamUI.reset();state.teamWorkspace=null;
-  for (const key of ['tickets','chats','queue','staff','customers','organizations','notifications','internalNotes','cannedResponses','kbCategories','kbArticles','gitLinks','webhooks','waiting']) state[key]=[];
-  for (const key of ['profile','current','currentChat','analytics','billing','bots','settings','kbReadingArticle','kbEditingArticle','replyTo']) state[key]=null;
+  for (const key of ['tickets','chats','queue','staff','customers','organizations','notifications','internalNotes','cannedResponses','kbCategories','kbArticles','gitLinks','webhooks','waiting','decisions','savedViews']) state[key]=[];
+  for (const key of ['profile','current','currentChat','analytics','billing','bots','settings','kbReadingArticle','kbEditingArticle','replyTo','balance','timesheetWeek']) state[key]=null;
   state.pairings={};state.pendingOps={};state.loadFailures=[];state.readSent={};
   state.inboxSection='general';state.chatSearch='';state.ticketChatSearch='';
   state.guideTopic='start';state.guideQuery='';state.guideFocus=false;
@@ -846,8 +860,9 @@ async function refresh() {
   if(state.user?.must_change_credentials)return renderCredentials();
   const staff=state.user.role!=='customer';
   const requests={tickets:()=>api('/tickets'),chats:()=>api('/chats'),organizations:()=>api('/organizations'),profile:()=>api(staff?'/profile/me':'/customer-profile/me'),notifications:fetchNotifications,settings:()=>api('/public/settings')};
-  if(staff)Object.assign(requests,{staff:()=>api('/staff'),customers:()=>api('/customers'),queue:()=>api('/work-queue'),teamWorkspace:()=>api('/team')});
-  else requests.waiting=()=>api('/waiting-on-me');
+  requests.savedViews=()=>api('/saved-views');
+  if(staff)Object.assign(requests,{staff:()=>api('/staff'),customers:()=>api('/customers'),queue:()=>api('/work-queue'),teamWorkspace:()=>api('/team'),decisions:()=>api('/decisions')});
+  else Object.assign(requests,{waiting:()=>api('/waiting-on-me'),balance:()=>api('/balance-status')});
   const keys=Object.keys(requests);const results=await Promise.allSettled(keys.map(key=>requests[key]()));
   if(!state.user||state.user.id!==accountId)return;
   if(results.some(result=>result.status==='rejected'&&result.reason?.status===401)){state.user=null;resetAccountState();initRealtime();state.error='Сессия закончилась. Войдите снова.';renderAuth();return;}
@@ -864,7 +879,7 @@ function renderAuth() {
   if (tokenKind || state.authMode === 'reset') { renderAccountAccess(tokenKind, params.get(tokenKind)); return; }
   const registration = state.authMode === 'register';
   const feature = (ic, title, text) => `<div class="auth-feature"><i>${icon(ic)}</i><div><strong>${title}</strong><span>${text}</span></div></div>`;
-  app.innerHTML = `<div class="auth"><section class="auth-brand"><div class="brand"><span class="brand-mark" aria-hidden="true">Л</span><span><span class="brand-name">Линия<span class="brand-dot">.</span></span><small>Кабинет заявок</small></span></div><div><h2>Заявки, переписка и часы — в одном кабинете</h2><div class="auth-features">${feature('ticket', 'Статус каждой задачи', 'От оценки до сдачи видно, на каком этапе работа и что будет дальше.')}${feature('clock', 'Часы согласуете вы', 'Работа начинается после того, как вы одобрите оценку трудозатрат.')}${feature('send', 'Уведомления в мессенджерах', 'Заявки и переписка доступны в Telegram и MAX.')}</div></div><a class="auth-foot" href="/landing">О сервисе →</a></section><main class="auth-main"><div class="auth-card"><div class="auth-mobile-brand"><span class="brand-mark" aria-hidden="true">Л</span>Линия</div><div class="top-text"><h1>${registration ? 'Создать кабинет' : 'Вход в кабинет'}</h1><p class="lead">${registration ? 'Уже есть кабинет?' : 'Нет кабинета?'} <button class="auth-switch" id="auth-switch" type="button">${registration ? 'Войти' : 'Зарегистрироваться'}</button></p></div>${notice()}<form class="form" id="auth-form">${registration ? '<label>Ваше имя<input class="field" name="name" required minlength="2" maxlength="100" autocomplete="name"></label>' : ''}<label>Email<input class="field" name="email" type="email" required autocomplete="email" placeholder="name@company.ru"></label><label>Пароль<input class="field" name="password" type="password" required minlength="8" autocomplete="${registration ? 'new-password' : 'current-password'}"></label><label class="row" style="display:flex;font-weight:600"><input type="checkbox" id="show-password" style="width:18px;height:18px;accent-color:var(--accent)">Показать пароль</label><button class="button primary">${registration ? 'Зарегистрироваться' : 'Войти'}</button></form></div></main></div>`;
+  app.innerHTML = `<div class="auth"><section class="auth-brand"><div class="brand"><span class="brand-mark" aria-hidden="true">Л</span><span><span class="brand-name">Линия<span class="brand-dot">.</span></span><small>Кабинет заявок</small></span></div><div><h2>Заявки, переписка и стоимость — в одном кабинете</h2><div class="auth-features">${feature('ticket', 'Статус каждой задачи', 'От оценки до сдачи видно, на каком этапе работа и что будет дальше.')}${feature('clock', 'Стоимость согласуете вы', 'Работа начинается после согласования состава работ и стоимости.')}${feature('send', 'Уведомления в мессенджерах', 'Заявки и переписка доступны в Telegram и MAX.')}</div></div><a class="auth-foot" href="/landing">О сервисе →</a></section><main class="auth-main"><div class="auth-card"><div class="auth-mobile-brand"><span class="brand-mark" aria-hidden="true">Л</span>Линия</div><div class="top-text"><h1>${registration ? 'Создать кабинет' : 'Вход в кабинет'}</h1><p class="lead">${registration ? 'Уже есть кабинет?' : 'Нет кабинета?'} <button class="auth-switch" id="auth-switch" type="button">${registration ? 'Войти' : 'Зарегистрироваться'}</button></p></div>${notice()}<form class="form" id="auth-form">${registration ? '<label>Ваше имя<input class="field" name="name" required minlength="2" maxlength="100" autocomplete="name"></label>' : ''}<label>Email<input class="field" name="email" type="email" required autocomplete="email" placeholder="name@company.ru"></label><label>Пароль<input class="field" name="password" type="password" required minlength="8" autocomplete="${registration ? 'new-password' : 'current-password'}"></label><label class="row" style="display:flex;font-weight:600"><input type="checkbox" id="show-password" style="width:18px;height:18px;accent-color:var(--accent)">Показать пароль</label><button class="button primary">${registration ? 'Зарегистрироваться' : 'Войти'}</button></form></div></main></div>`;
   document.querySelector('#auth-switch').onclick = () => { state.authMode = registration ? 'login' : 'register'; state.error = ''; renderAuth(); };
   document.querySelector('#show-password').onchange = e => { document.querySelector('#auth-form [name="password"]').type = e.target.checked ? 'text' : 'password'; };
   document.querySelector('#auth-form').insertAdjacentHTML('beforeend', '<button type="button" class="auth-switch" id="forgot-password">Забыли пароль?</button>');
@@ -934,6 +949,7 @@ function shell(title, action, body, opts = {}) {
 
   const groups = staff ? [
     ['Совместная работа', [
+      item('decisions', 'Мои решения', 'alert', v === 'decisions', (state.decisions || []).length, 'accent'),
       item('tasks', 'Задачи и Проекты', 'check', ['tasks','task'].includes(v), activeTasks, 'accent'),
       item('deals', 'CRM и Сделки', 'briefcase', v === 'deals', activeDeals),
       item('meetings', 'Календарь и Встречи', 'calendar', v === 'meetings', activeMeetings),
@@ -942,9 +958,11 @@ function shell(title, action, body, opts = {}) {
     ['Поддержка и Клиенты', [
       item('tickets', 'Заявки клиентов', 'ticket', ticketsActive || v === 'queue', activeTickets),
       item('organizations', 'Клиенты и Компании', 'building', v === 'organizations'),
+      item('recurring', 'Регулярные заявки', 'calendar', v === 'recurring'),
       item('kb', 'База знаний', 'book', v === 'kb'),
     ]],
     ['Компания и Учет', [
+      item('timesheet', 'Журнал времени', 'clock', v === 'timesheet'),
       item('team', 'Сотрудники и Структура', 'users', v === 'team'),
       item('payroll', admin ? 'Выплаты исполнителям' : 'Мои начисления', 'wallet', v === 'payroll'),
       billingOn() && item('billing', 'Биллинг и счета', 'wallet', v === 'billing'),
@@ -962,6 +980,7 @@ function shell(title, action, body, opts = {}) {
       item('tickets', 'Мои заявки', 'ticket', ticketsActive, activeTickets),
       item('specialists', 'Служба поддержки', 'users', v === 'specialists'),
       item('chats', 'Чат с поддержкой', 'chat', chatsActive, chatUnread, 'accent'),
+      item('recurring', 'Регулярные заявки', 'calendar', v === 'recurring'),
       state.organizations.length && item('organizations', 'Моя компания', 'building', v === 'organizations'),
       item('kb', 'База знаний', 'book', v === 'kb'),
       item('guide', 'Гайд по кабинету', 'help', v === 'guide'),
@@ -1043,7 +1062,7 @@ function shell(title, action, body, opts = {}) {
     <div class="workspace">
       <header class="topbar">
         <button class="icon-btn menu-btn" data-nav-toggle aria-controls="sidebar" aria-expanded="false" aria-label="Открыть меню">${icon('menu')}</button>
-        <button type="button" class="global-search" id="open-palette" aria-haspopup="dialog">${icon('search', 17)}<span class="global-search-text">Поиск задач, сделок, заявок, контактов...</span><kbd>Ctrl K</kbd></button>
+        <button type="button" class="global-search" id="open-palette" aria-haspopup="dialog">${icon('search', 17)}<span class="global-search-text">${staff ? 'Поиск задач, заявок и чатов' : 'Поиск заявок и разделов'}</span><kbd>Ctrl K</kbd></button>
         <span class="topbar-spacer"></span>
         ${workdayWidget}
         <span id="connection-state" class="muted connection-state" role="status"></span>
@@ -1092,6 +1111,9 @@ function shell(title, action, body, opts = {}) {
     billing: () => billingOn() ? openBilling() : setView('tickets'),
     admin: () => setView('admin'),
     payroll: () => setView('payroll'),
+    decisions: () => setView('decisions'),
+    timesheet: () => setView('timesheet'),
+    recurring: () => setView('recurring'),
     analytics: () => openAnalytics(),
     webhooks: () => openWebhooks(),
     messengers: () => openMessengers(),
@@ -1305,21 +1327,21 @@ function renderTickets() {
     <button class="" id="tab-t-queue">${icon('queue', 14)}Очередь обработки (SLA) <span class="accent">${state.queue.length}</span></button>
     <button class="${state.owner === 'mine' ? 'active' : ''}" id="tab-t-mine">${icon('check', 14)}Мои заявки <span>${state.tickets.filter(t => t.assignee_id === state.user.id && !['done', 'closed'].includes(t.status)).length}</span></button>
   </div>` : '';
-  const bulkBarHtml = staff && state.selectedTickets.size > 0 ? `
+    const bulkBarHtml = staff && state.selectedTickets.size > 0 ? `
     <div class="bulk-action-bar" id="bulk-action-bar">
       <div class="bulk-info">
         <span>Выбрано заявок: <strong>${state.selectedTickets.size}</strong></span>
       </div>
       <div class="bulk-actions">
-        <label class="bulk-assignee-label">
-          <span class="visually-hidden">Назначить исполнителя</span>
-          <select id="bulk-assignee-select" class="field small">
-            <option value="">Назначить исполнителя...</option>
-            ${state.staff.filter(s => s.role !== 'customer').map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}
-          </select>
-        </label>
-        <button type="button" class="button small primary" id="bulk-assignee-apply">Назначить</button>
-        <div class="bulk-divider"></div>
+          ${dispatcher ? `<label class="bulk-assignee-label">
+            <span class="visually-hidden">Назначить исполнителя</span>
+            <select id="bulk-assignee-select" class="field small">
+              <option value="">Назначить исполнителя...</option>
+              ${state.staff.filter(s => s.role !== 'customer').map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}
+            </select>
+          </label>
+          <button type="button" class="button small primary" id="bulk-assignee-apply">Назначить</button>
+          <div class="bulk-divider"></div>` : ''}
         <button type="button" class="button small" data-bulk-status="working">В работу</button>
         <button type="button" class="button small" data-bulk-status="waiting">Ожидает заказчика</button>
         <button type="button" class="button small" data-bulk-status="closed">Закрыть</button>
@@ -1328,7 +1350,7 @@ function renderTickets() {
       </div>
     </div>
   ` : '';
-  shell(staff ? 'Заявки клиентов' : 'Мои заявки', staff ? `<button class="button primary bitrix-btn-top" id="tickets-new-btn">${icon('plus', 15)}<span>Новая заявка</span></button>` : '', `${ticketTabs}${staff ? '' : waitingPanel()}<details class="ticket-overview" ${matchMedia('(max-width: 600px)').matches ? '' : 'open'}><summary>Сводка по заявкам · ${owned.length}</summary>${portfolioOverview(owned)}</details><section class="panel ${staff ? 'staff-ticket-list' : 'customer-ticket-list'}"><div class="toolbar"><div class="chips" role="group" aria-label="Фильтр по статусу">${chips}</div><div class="ticket-tools"><input class="field ticket-search" id="ticket-search" type="search" maxlength="100" aria-label="Поиск по заявкам" placeholder="Номер, тема, клиент" value="${esc(state.search)}">${prioritySelect}${ownerSelect}</div></div><div class="ticket-table-container">${head}<div id="ticket-list"></div></div><div class="toolbar" style="border-top:1px solid var(--line-light);border-bottom:0;min-height:52px"><span class="muted" id="ticket-count"></span><span class="kbd-hint"><kbd>J</kbd><kbd>K</kbd> по строкам · <kbd>Enter</kbd> открыть</span></div></section>${bulkBarHtml}`, { kicker: staff ? (dispatcher ? 'Все клиенты' : 'Назначенные мне и команде') : 'Личный кабинет' });
+  shell(staff ? 'Заявки клиентов' : 'Мои заявки', staff ? `<button class="button primary bitrix-btn-top" id="tickets-new-btn">${icon('plus', 15)}<span>Новая заявка</span></button>` : '', `${ticketTabs}${staff ? savedViewsBar() : balanceBanner() + waitingPanel()}<details class="ticket-overview" ${matchMedia('(max-width: 600px)').matches ? '' : 'open'}><summary>Сводка по заявкам · ${owned.length}</summary>${portfolioOverview(owned)}</details><section class="panel ${staff ? 'staff-ticket-list' : 'customer-ticket-list'}"><div class="toolbar"><div class="chips" role="group" aria-label="Фильтр по статусу">${chips}</div><div class="ticket-tools"><input class="field ticket-search" id="ticket-search" type="search" maxlength="100" aria-label="Поиск по заявкам" placeholder="Номер, тема, клиент" value="${esc(state.search)}">${prioritySelect}${ownerSelect}</div></div><div class="ticket-table-container">${head}<div id="ticket-list"></div></div><div class="toolbar" style="border-top:1px solid var(--line-light);border-bottom:0;min-height:52px"><span class="muted" id="ticket-count"></span><span class="kbd-hint"><kbd>J</kbd><kbd>K</kbd> по строкам · <kbd>Enter</kbd> открыть</span></div></section>${bulkBarHtml}`, { kicker: staff ? (dispatcher ? 'Все клиенты' : 'Назначенные мне и команде') : 'Личный кабинет' });
   let matchingTickets = visible;
   const updateList = () => {
     const query = state.search.trim().toLocaleLowerCase('ru-RU');
@@ -1375,6 +1397,8 @@ function renderTickets() {
   if (prioFilterEl) { prioFilterEl.value = state.priorityFilter || 'all'; prioFilterEl.onchange = e => { state.priorityFilter = e.target.value; updateList(); }; }
   document.querySelector('#ticket-search').oninput = e => { state.search = e.target.value; updateList(); };
   updateList();
+  bindSavedViews();
+  document.querySelector('#balance-top-up')?.addEventListener('click', () => openBilling());
   document.querySelector('#tickets-new-btn')?.addEventListener('click', () => setView('new'));
   document.querySelector('#tab-t-all')?.addEventListener('click', () => { state.owner = 'all'; renderTickets(); });
   document.querySelector('#tab-t-queue')?.addEventListener('click', () => setView('queue'));
@@ -1404,20 +1428,31 @@ function renderTickets() {
     state.selectedTickets.clear();
     renderTickets();
   });
-  document.querySelector('#bulk-assignee-apply')?.addEventListener('click', async () => {
+    const applyBulkResult = (res, requestedIds, actionLabel) => {
+      const updated = new Set(res.updated || []);
+      const requested = [...new Set(requestedIds)];
+      for (const id of updated) state.selectedTickets.delete(id);
+      const updatedCount = updated.size;
+      const skippedCount = Math.max(Number(res.skipped_count ?? requested.length - updatedCount), requested.length - updatedCount);
+      const message = skippedCount
+        ? `${actionLabel}: обновлено ${updatedCount} из ${requested.length}. Пропущено ${skippedCount}; они оставлены выбранными для проверки.`
+        : `${actionLabel}: обновлено ${updatedCount} из ${requested.length}.`;
+      toast(message, skippedCount ? 'info' : 'success');
+    };
+    document.querySelector('#bulk-assignee-apply')?.addEventListener('click', async () => {
     const uid = Number(document.querySelector('#bulk-assignee-select').value);
     if (!uid) return toast('Выберите исполнителя', 'error');
+      const requestedIds = [...state.selectedTickets];
     try {
       const res = await api('/tickets/bulk', {
         method: 'POST',
         body: JSON.stringify({
-          ticket_ids: [...state.selectedTickets],
+            ticket_ids: requestedIds,
           action: 'assignee',
           assignee_id: uid
         })
       });
-      toast(`Назначен исполнитель для ${res.updated.length} заявок`);
-      state.selectedTickets.clear();
+        applyBulkResult(res, requestedIds, 'Назначение исполнителя');
       await refresh();
     } catch (err) {
       toast(err.message, 'error');
@@ -1426,17 +1461,17 @@ function renderTickets() {
   document.querySelectorAll('[data-bulk-status]').forEach(btn => {
     btn.onclick = async () => {
       const status = btn.dataset.bulkStatus;
+        const requestedIds = [...state.selectedTickets];
       try {
         const res = await api('/tickets/bulk', {
           method: 'POST',
           body: JSON.stringify({
-            ticket_ids: [...state.selectedTickets],
+              ticket_ids: requestedIds,
             action: 'status',
             status
           })
         });
-        toast(`Статус обновлён для ${res.updated.length} заявок`);
-        state.selectedTickets.clear();
+          applyBulkResult(res, requestedIds, 'Смена статуса');
         await refresh();
       } catch (err) {
         toast(err.message, 'error');
@@ -1449,6 +1484,44 @@ function renderTickets() {
       claimTicket(Number(btn.dataset.claimTicket));
     };
   });
+}
+const SAVED_VIEW_FIELDS = ['filter', 'owner', 'priorityFilter', 'search'];
+function currentViewFilters() { return Object.fromEntries(SAVED_VIEW_FIELDS.map(key => [key, state[key] || (key === 'search' ? '' : 'all')])); }
+function savedViewsBar() {
+  const views = state.savedViews || [];
+  const current = JSON.stringify(currentViewFilters());
+  const chips = views.map(view => {
+    const active = JSON.stringify({ ...currentViewFilters(), ...view.filters }) === current;
+    return `<span class="saved-view ${active ? 'active' : ''}"><button type="button" class="chip ${active ? 'active' : ''}" data-saved-view="${view.id}" aria-pressed="${active}">${esc(view.name)}</button><button type="button" class="saved-view-remove" data-remove-view="${view.id}" aria-label="Удалить вид «${esc(view.name)}»">×</button></span>`;
+  }).join('');
+  return `<div class="saved-views" role="group" aria-label="Сохранённые виды">${chips}<form class="saved-view-form" id="saved-view-form" hidden><input class="field compact" name="name" required maxlength="60" placeholder="Название вида" aria-label="Название вида"><button class="button small primary">Сохранить</button><button type="button" class="button small" id="saved-view-cancel">Отмена</button></form><button type="button" class="button small" id="saved-view-add">${icon('plus', 13)}Сохранить текущий вид</button></div>`;
+}
+function bindSavedViews() {
+  const form = document.querySelector('#saved-view-form');
+  if (!form) return;
+  const add = document.querySelector('#saved-view-add');
+  add.onclick = () => { form.hidden = false; add.hidden = true; form.elements.name.focus(); };
+  document.querySelector('#saved-view-cancel').onclick = () => { form.hidden = true; add.hidden = false; };
+  form.onsubmit = async e => {
+    e.preventDefault();
+    try { const view = await api('/saved-views', { method: 'POST', body: JSON.stringify({ name: form.elements.name.value, filters: currentViewFilters() }) }); state.savedViews = [...(state.savedViews || []), view]; toast('Вид сохранён'); renderTickets(); }
+    catch (error) { showError(error); }
+  };
+  document.querySelectorAll('[data-saved-view]').forEach(button => button.onclick = () => {
+    const view = state.savedViews.find(v => v.id === Number(button.dataset.savedView));
+    Object.assign(state, { filter: 'all', owner: 'all', priorityFilter: 'all', search: '' }, view.filters);
+    renderTickets();
+    const search = document.querySelector('#ticket-search'); if (search) search.value = state.search;
+  });
+  document.querySelectorAll('[data-remove-view]').forEach(button => button.onclick = async () => {
+    try { await api(`/saved-views/${button.dataset.removeView}`, { method: 'DELETE' }); state.savedViews = state.savedViews.filter(v => v.id !== Number(button.dataset.removeView)); renderTickets(); }
+    catch (error) { showError(error); }
+  });
+}
+function balanceBanner() {
+  const b = state.balance;
+  if (!b?.visible || !b.low || !billingOn()) return '';
+  return `<section class="notice balance-low" role="status">${icon('wallet', 18)}<div><strong>${b.available_rub < 0 ? `Депозита не хватает на согласованные работы: нужно ещё ${(-b.available_rub).toLocaleString('ru-RU')} ₽` : `Депозит заканчивается: свободно ${b.available_rub.toLocaleString('ru-RU')} ₽`}</strong><span>На депозите ${b.deposit_rub.toLocaleString('ru-RU')} ₽, из них ${b.held_rub.toLocaleString('ru-RU')} ₽ зарезервировано под согласованные работы. Пополните, чтобы новые работы начинались без остановки.</span></div><button type="button" class="button primary" id="balance-top-up">Пополнить</button></section>`;
 }
 function renderQueue() {
   const dispatcher = isDispatcher();
@@ -1915,7 +1988,7 @@ function renderInternalNotes(ticketId) {
         `).join('') || '<div class="muted" style="font-size:12.5px;padding:4px 0">Заметок пока нет. Зафиксируйте технические детали, пароли или ход задачи.</div>'}
       </div>
       <form class="internal-note-form" id="internal-note-form">
-        <textarea id="internal-note-body" data-draft="note-${ticketId}" name="body" required placeholder="Добавить внутреннюю заметку..." maxlength="5000"></textarea>
+        <textarea id="internal-note-body" data-draft="note-${ticketId}" name="body" required placeholder="Добавить внутреннюю заметку… @Имя — уведомить коллегу" maxlength="5000"></textarea>
         <button class="button">Записать</button>
       </form>
     </section>
@@ -2032,7 +2105,7 @@ function renderDetail() {
   const assignee = dispatcher ? `<div class="assignee-wrap"><select id="assignee" aria-label="Ответственный"><option value="">Без ответственного</option>${state.staff.map(x => `<option value="${x.id}">${esc(staffLabel(x))}</option>`).join('')}</select>${claimBtn}</div>` : `<div class="assignee-wrap"><span class="meta-person">${t.assignee_id ? avatarOf(t.assignee_id, t.assignee_name) : ''}${esc(t.assignee_name || 'Не назначен')}</span>${claimBtn}</div>`;
   const canReply = !viewer && t.status !== 'closed';
   const chat = timeline(messages, state.current.meeting_summaries, m => messageHtml(m, { header: `${esc(m.author_name)} · ${date(m.created_at)}`, canReply }), state.current.attachments || []).map(x => x.html).join('') || `<div class="empty">${canReply ? 'Сообщений пока нет. Напишите первое сообщение.' : 'Сообщений пока нет. Здесь появится история переписки.'}</div>`;
-  const eventText = e => e.kind==='priority'?'приоритет изменён на «'+(priorityNames[e.new_value]||e.new_value)+'»':e.kind==='service_budget'?'лимит сопровождения изменён: '+(e.new_value==='unlimited'?'без ограничения':hours(Number(e.new_value))):e.kind==='owner_help'?'отправлен запрос менеджеру на восстановление владельца':e.kind === 'reopen' ? 'заявка возвращена в работу: ' + esc(e.new_value) : e.kind === 'status' ? 'статус изменён на «' + esc(statusNames[e.new_value] || e.new_value) + '»' : e.kind === 'acceptance' ? (e.new_value === 'accepted' ? 'работа принята' : 'работа возвращена на доработку') : e.kind === 'decline' ? 'заказчик отказался от заявки' : 'ответственный изменён';
+    const eventText = e => e.kind==='priority'?'приоритет изменён на «'+(priorityNames[e.new_value]||e.new_value)+'»':e.kind==='service_budget'?(state.user.role==='customer'?'условия сопровождения обновлены':'лимит сопровождения изменён: '+(e.new_value==='unlimited'?'без ограничения':hours(Number(e.new_value)))):e.kind==='owner_help'?'отправлен запрос менеджеру на восстановление владельца':e.kind === 'reopen' ? 'заявка возвращена в работу: ' + esc(e.new_value) : e.kind === 'admin_status_correction' ? 'статус исправлен администратором на «' + esc(statusNames[e.new_value] || e.new_value) + '»' : e.kind === 'participants' ? 'состав участников заявки изменён' : e.kind === 'status' ? 'статус изменён на «' + esc(statusNames[e.new_value] || e.new_value) + '»' : e.kind === 'acceptance' ? (e.new_value === 'accepted' ? 'работа принята' : 'работа возвращена на доработку') : e.kind === 'decline' ? 'заказчик отказался от заявки' : e.kind === 'merged' ? `заявка объединена с №${esc(e.new_value)}` : e.kind === 'merged_from' ? `присоединена заявка №${esc(e.new_value)}` : 'ответственный изменён';
   const history = events.map(e => `<li><div>${esc(e.actor_name)}: ${eventText(e)}<small>${date(e.created_at)}</small></div></li>`).join('');
   const person = state.current.assignee_profile;
   if (!staff && state.detailTab === 'notes') state.detailTab = 'messages';
@@ -2044,7 +2117,7 @@ function renderDetail() {
   const participantsList = participants.length ? `<div class="participants-list" style="margin-top:12px;border-top:1px solid var(--line-light);padding-top:10px;"><span class="eyebrow" style="margin-bottom:6px;display:block;">Участники команды (${participants.length})</span>${participants.map(p=>`<div class="team-person org-person" style="padding:4px 0;"><span class="org-member-identity">${avatar(p,'small')}<span><strong>${esc(p.name)}</strong><small>${esc([(p.functions||[teamRoleNames[p.team_role]]).filter(Boolean).join(', '), p.job_title].filter(Boolean).join(' · ') || 'Специалист')}</small></span></span></div>`).join('')}</div>` : '';
   const meta = `<dl class="meta"><dt>Заказчик</dt><dd>${esc(t.customer_name)}${staff && t.customer_company ? `<small>${esc(t.customer_company)}</small>` : ''}</dd><dt>Ответственный</dt><dd>${staff ? assignee : (t.assignee_name ? `<span class="meta-person">${avatarOf(t.assignee_id, t.assignee_name)}${esc(t.assignee_name)}</span>` : '<span class="muted">Назначается поддержкой</span>')}</dd><dt>Приоритет</dt><dd>${priorityControl}</dd><dt>Тип задачи</dt><dd>${esc(serviceLabel(t.service_type))}</dd>${t.organization_id ? `<dt>Видимость</dt><dd>${t.visibility === 'organization' ? 'Вся компания' : 'Личная заявка'}</dd>` : ''}<dt>Создана</dt><dd>${date(t.created_at)}</dd>${t.created_by_name ? `<dt>Создал</dt><dd>${esc(t.created_by_name)}</dd>` : ''}</dl>`;
   const personCard = person ? `<section class="panel content assigned-person"><div class="person-heading">${avatar(person)}<div><span class="eyebrow">${staff ? 'Ответственный' : 'Ваш специалист по заявке'}</span><h2>${esc(person.name)}</h2><p>${esc([(person.function_names||[teamRoleNames[person.team_role]]).filter(Boolean).join(", "),person.job_title].filter(Boolean).join(' · ') || 'Специалист команды')}</p></div></div>${person.bio ? `<p class="person-bio">${esc(person.bio)}</p>` : ''}${participantsList}</section>` : (participants.length ? `<section class="panel content assigned-person">${participantsList}</section>` : '');
-  const body = `${ticketProgress(t, estimates)}<div class="detail-grid"><div>${t.next_step ? `<div class="next-step"><span>Следующий шаг</span><strong>${esc(t.next_step)}</strong></div>` : ''}<section class="panel content"><h2>Описание задачи</h2><p class="description">${esc(t.description)}</p>${state.current.linked_chat ? `<button class="button linked-chat" id="linked-chat">${icon('chat', 16)}Обсуждение в общем чате</button>` : ''}</section><section class="panel conversation"><div class="tabs" role="tablist" aria-label="Обсуждение заявки">${tabButton('messages', 'Переписка', messages.length)}${staff ? tabButton('notes', 'Заметки команды', undefined, icon('lock', 14)) : ''}${tabButton('history', 'История', events.length)}</div><div class="tab-pane" data-pane="messages" ${tab !== 'messages' ? 'hidden' : ''}><div class="messages">${chat}</div>${composer}</div>${staff ? `<div class="tab-pane" data-pane="notes" ${tab !== 'notes' ? 'hidden' : ''}><div id="internal-notes-container"></div></div>` : ''}<div class="tab-pane" data-pane="history" ${tab !== 'history' ? 'hidden' : ''}>${history ? `<ol class="events">${history}</ol>` : '<div class="empty">В истории пока нет событий.</div>'}</div></section>${renderCsat(t, staff)}</div><div><section class="panel content"><h2>Детали</h2>${meta}</section>${personCard}</div></div>`;
+  const body = `${ticketProgress(t, estimates)}<div class="detail-grid"><div>${staff ? '' : clientEta(t)}${t.next_step ? `<div class="next-step"><span>Следующий шаг</span><strong>${esc(t.next_step)}</strong></div>` : ''}<section class="panel content"><h2>Описание задачи</h2><p class="description">${esc(t.description)}</p>${state.current.linked_chat ? `<button class="button linked-chat" id="linked-chat">${icon('chat', 16)}Обсуждение в общем чате</button>` : ''}</section><section class="panel conversation"><div class="tabs" role="tablist" aria-label="Обсуждение заявки">${tabButton('messages', 'Переписка', messages.length)}${staff ? tabButton('notes', 'Заметки команды', undefined, icon('lock', 14)) : ''}${tabButton('history', 'История', events.length)}</div><div class="tab-pane" data-pane="messages" ${tab !== 'messages' ? 'hidden' : ''}><div class="messages">${chat}</div>${composer}</div>${staff ? `<div class="tab-pane" data-pane="notes" ${tab !== 'notes' ? 'hidden' : ''}><div id="internal-notes-container"></div></div>` : ''}<div class="tab-pane" data-pane="history" ${tab !== 'history' ? 'hidden' : ''}>${history ? `<ol class="events">${history}</ol>` : '<div class="empty">В истории пока нет событий.</div>'}</div></section>${renderCsat(t, staff)}</div><div><section class="panel content"><h2>Детали</h2>${meta}</section>${personCard}</div></div>`;
   const topClaimAction = canClaim ? `<button type="button" class="button primary btn-claim-ticket" data-claim-ticket="${t.id}">${icon('user', 14)}<span>Взять себе</span></button>` : '';
   shell(t.title, topClaimAction, body, { crumbs: `<button class="crumb-link" id="back">Заявки</button><span aria-hidden="true">/</span><span>№${t.id}</span>`, badges, lead });
   document.querySelectorAll('[data-claim-ticket]').forEach(btn => {
@@ -2079,6 +2152,17 @@ function renderDetail() {
   if (dispatcher && t.status === 'closed') {
     document.querySelector('.detail-grid>div:last-child').insertAdjacentHTML('beforeend', `<section class="panel content"><h2>Вернуть заявку в работу</h2><p class="muted">Предыдущая приёмка останется в истории. Результат понадобится принять повторно.</p><form class="form" id="reopen-form"><label>Причина<textarea name="reason" required minlength="3" maxlength="2000"></textarea></label><button class="button">Вернуть в работу</button></form></section>`);
     document.querySelector('#reopen-form').onsubmit = async e => { e.preventDefault(); const button=e.target.querySelector('button');button.disabled=true;try{await api(`/tickets/${t.id}/reopen`,{method:'POST',body:JSON.stringify({reason:e.target.elements.reason.value})});toast('Заявка возвращена в работу');await refresh();await openTicket(t.id);}catch(error){toast(error.message,'error');button.disabled=false;} };
+  }
+  const duplicates = dispatcher && t.status !== 'closed' ? state.tickets.filter(x => x.id !== t.id && x.status !== 'closed' && (x.customer_id === t.customer_id || (t.organization_id && x.organization_id === t.organization_id))) : [];
+  if (duplicates.length) {
+    document.querySelector('.detail-grid>div:last-child').insertAdjacentHTML('beforeend', `<section class="panel content"><h2>Это дубль?</h2><p class="muted">Переписка, файлы и заметки перейдут в выбранную заявку, эта закроется. Клиент получит уведомление.</p><form class="form" id="merge-form"><label>Объединить с заявкой<select class="field" name="target" required><option value="">Выберите заявку</option>${duplicates.map(x => `<option value="${x.id}">№${x.id} · ${esc(x.title)}</option>`).join('')}</select></label><button class="button">Объединить</button></form></section>`);
+    document.querySelector('#merge-form').onsubmit = async e => {
+      e.preventDefault(); const button = e.target.querySelector('button'); const target = Number(e.target.elements.target.value);
+      if (button.dataset.confirm !== '1') { button.dataset.confirm = '1'; button.textContent = `Подтвердить: перенести в №${target}`; button.classList.add('primary'); return; }
+      button.disabled = true;
+      try { await api(`/tickets/${t.id}/merge`, { method: 'POST', body: JSON.stringify({ target_id: target }) }); toast(`Заявка №${t.id} объединена с №${target}`); await refresh(); await openTicket(target); }
+      catch (error) { showError(error); button.disabled = false; }
+    };
   }
   if(staff&&t.can_write!==false&&state.teamWorkspace?.my_permissions.includes('tasks')){document.querySelector('.detail-grid>div:last-child').insertAdjacentHTML('beforeend',`<section class="panel content"><h2>Работа по заявке</h2><button class="button" id="ticket-create-task">Создать связанную задачу</button></section>`);document.querySelector('#ticket-create-task').onclick=()=>TasksUI.quickCreate({title:t.title,description:t.description.slice(0,5000),customer_id:t.customer_id,customer_name:t.customer_name,ticket_id:t.id,owner_id:state.user.id});}
   document.querySelector('#linked-chat')?.addEventListener('click', () => openChat(state.current.linked_chat.chat_id));
@@ -2174,6 +2258,12 @@ function renderAcceptance(t, staff) {
   document.querySelector('#cancel-return').onclick = () => { document.querySelector('#return-form').hidden = true; };
   document.querySelector('#return-form').onsubmit = e => { e.preventDefault(); e.target.querySelector('button.primary').disabled = true; send({ action: 'return', comment: e.target.elements.comment.value }, 'Заявка возвращена на доработку'); };
 }
+function pmOfferAmounts(performerHours, pmHours, rate, custom) {
+  const calculated = Math.round((performerHours + pmHours) * rate);
+  const manual = custom !== '' && custom !== null && custom !== undefined;
+  const final = manual ? Number(custom) : calculated;
+  return {calculated, final, difference: final - calculated, manual};
+}
 function renderEstimate(ticket, estimates, staff) {
   const latest = estimates[0];
   const isPm = isDispatcher();
@@ -2228,8 +2318,10 @@ function renderEstimate(ticket, estimates, staff) {
         </div>
         <p class="muted" id="pm-calc-preview">Итого клиенту: <strong>${Math.round(perfHours * rateRub).toLocaleString('ru-RU')} ₽</strong> (${perfHours} ч × ${rateRub.toLocaleString('ru-RU')} ₽/ч)</p>
         <label>Пояснение для клиента (клиент не видит часы и ставку)
-          <textarea class="field" name="client_note" maxlength="3000" placeholder="Что входит в стоимость работы">${esc(latest?.client_note || latest?.note || '')}</textarea>
+            <textarea class="field" name="client_note" maxlength="3000" placeholder="Что входит в стоимость работы">${esc(latest?.client_note || '')}</textarea>
         </label>
+          ${latest?.note ? '<button type="button" class="button small" id="pm-copy-note">Скопировать внутреннюю заметку для редактирования</button><p class="muted">Проверьте текст перед отправкой: внутренняя заметка не публикуется автоматически.</p>' : ''}
+          <section class="notice" aria-label="Предпросмотр предложения клиенту"><strong>Клиент увидит</strong><p id="pm-client-price"></p><p id="pm-client-note" style="white-space:pre-wrap;overflow-wrap:anywhere"></p></section>
         <div class="row">
           <button class="button primary" id="pm-send-estimate">Выставить клиенту</button>
           <button type="button" class="button" id="pm-reject-estimate">Вернуть исполнителю</button>
@@ -2350,13 +2442,24 @@ function renderEstimate(ticket, estimates, staff) {
     const pmH = Number(document.querySelector('#pm-hours-input')?.value || 0);
     const customAmt = document.querySelector('#pm-custom-amount')?.value;
     const totalH = perfHours + pmH;
-    const calcAmt = Math.round(totalH * rateRub);
-    const finalAmt = (customAmt !== '' && customAmt !== null && customAmt !== undefined) ? Number(customAmt) : calcAmt;
+    const offer = pmOfferAmounts(perfHours, pmH, rateRub, customAmt);
     const prev = document.querySelector('#pm-calc-preview');
-    if (prev) prev.innerHTML = `Итого клиенту: <strong>${finalAmt.toLocaleString('ru-RU')} ₽</strong> (${totalH} ч × ${rateRub.toLocaleString('ru-RU')} ₽/ч)`;
+    const rub = n => n.toLocaleString('ru-RU') + ' ₽';
+    if (prev) prev.innerHTML = `Расчётная стоимость: ${rub(offer.calculated)} (${totalH} ч × ${rateRub.toLocaleString('ru-RU')} ₽/ч).<br>${offer.manual ? `Ручная цена: <strong>${rub(offer.final)}</strong>. Отклонение: ${offer.difference > 0 ? '+' : ''}${rub(offer.difference)}.` : `Итого клиенту: <strong>${rub(offer.final)}</strong>.`}`;
+    const price = document.querySelector('#pm-client-price');
+    const note = document.querySelector('#pm-client-note');
+    if (price) price.textContent = rub(offer.final);
+    if (note) note.textContent = document.querySelector('#pm-review-form [name="client_note"]')?.value || 'Пояснение пока не заполнено';
   };
   document.querySelector('#pm-hours-input')?.addEventListener('input', updatePmPreview);
   document.querySelector('#pm-custom-amount')?.addEventListener('input', updatePmPreview);
+  document.querySelector('#pm-review-form [name="client_note"]')?.addEventListener('input', updatePmPreview);
+  document.querySelector('#pm-copy-note')?.addEventListener('click', () => {
+    const field = document.querySelector('#pm-review-form [name="client_note"]');
+    if (field.value && !confirm('Заменить подготовленное пояснение внутренней заметкой?')) return;
+    field.value = latest.note; field.focus(); updatePmPreview();
+  });
+  updatePmPreview();
 
   document.querySelector('#pm-review-form')?.addEventListener('submit', e => {
     e.preventDefault();
@@ -2749,6 +2852,7 @@ function chatListPanel(activeId) {
   return `<div class="inbox-list"><div class="inbox-list-head"><div class="inbox-sections" role="group" aria-label="Разделы переписки">${sectionButton('general', 'Общие', state.chats.length)}${sectionButton('tickets', 'Чаты заявок', state.tickets.length)}</div><label class="inbox-search">${icon('search', 15)}<span class="visually-hidden">Поиск по диалогам</span><input type="search" id="chat-search" placeholder="${tickets ? 'Номер, тема или заказчик' : 'Компания, заказчик или сообщение'}" value="${esc(search || '')}"></label></div><div class="inbox-items">${items || `<div class="empty"><strong>${tickets ? 'Заявок пока нет' : 'Диалогов пока нет'}</strong>${tickets ? 'Здесь появятся переписки по доступным вам заявкам.' : 'Когда участник компании напишет в общий чат, диалог появится здесь.'}</div>`}</div><div class="empty chat-no-results" id="chat-no-results" role="status" hidden><strong>Диалог не найден</strong>Попробуйте другой поисковый запрос.</div></div>`;
 }
 function bindChatList() {
+
   document.querySelectorAll('[data-chat]').forEach(el => el.onclick = () => openChat(Number(el.dataset.chat)));
   document.querySelectorAll('[data-ticket-chat]').forEach(el => el.onclick = () => openTicketChat(Number(el.dataset.ticketChat)));
   document.querySelectorAll('[data-inbox-section]').forEach(el => el.onclick = () => { state.inboxSection = el.dataset.inboxSection; setView('chats'); });
@@ -2852,7 +2956,7 @@ function chatTimelineHtml({ messages, attachments = [], meeting_summaries = [] }
     const separator = day !== lastDay ? `<div class="day-separator">${day}</div>` : '';
     lastDay = day;
     return separator + entry.html;
-  }).join('') || '<div class="empty">Начните разговор. Сообщение увидит наша команда.</div>';
+  }).join('') || `<div class="empty">${state.user.role === 'customer' ? 'Начните разговор. Сообщение увидит наша команда.' : 'Начните разговор. Сообщение увидит заказчик.'}</div>`;
 }
 function bindChatMessageActions({ messages, linked_tickets = [] }) {
   if (state.user.role === 'customer') return;
@@ -2904,11 +3008,11 @@ function renderProfile(){
   const p=state.profile;
   if(!p)return;
   if(state.user.role==='customer'){
-    shell('Мой профиль','',`<div class="profile-layout"><section class="panel content profile-main"><div class="profile-heading customer-profile-heading">${avatar(p,'large')}<div><span class="eyebrow">КАБИНЕТ ЗАКАЗЧИКА</span><h2>${esc(p.name)}</h2><p>${esc(p.company_name||'Добавьте название компании')}</p><small>${esc(p.email)}</small></div></div><form class="form" id="customer-profile-form"><label>Ваше имя<input class="field" name="name" required minlength="2" maxlength="100" autocomplete="name" value="${esc(p.name)}"></label><label>Компания или команда<input class="field" name="company_name" maxlength="150" autocomplete="organization" placeholder="Например, Студия Север" value="${esc(p.company_name)}"></label><label>Контактный телефон<input class="field" name="phone" type="tel" maxlength="40" autocomplete="tel" placeholder="+7 999 123-45-67" value="${esc(p.phone)}"></label><label>Одобрять оценки автоматически — до, часов<input class="field" name="auto_approve_hours" type="number" min="0" max="1666" step="0.25" placeholder="0" value="${p.auto_approve_minutes?p.auto_approve_minutes/60:''}"><small>Небольшие задачи в пределах лимита уйдут в работу сразу, без вашего подтверждения. Пусто или 0 — всегда спрашивать.</small></label><p class="profile-hint">Email для входа: <strong>${esc(p.email)}</strong></p><div class="profile-actions"><button class="button primary">Сохранить изменения</button><span id="profile-saved" role="status"></span></div></form></section><div class="profile-note"><span class="eyebrow">НА СВЯЗИ С КОМАНДОЙ</span><h2>Ваши обращения в одном месте</h2><p>Имя и название компании помогут команде узнавать ваши задачи в заявках и общем чате. Контактный телефон доступен только вам в этом кабинете.</p><div class="profile-facts"><div><strong>${state.tickets.length}</strong><span>заявок</span></div><div><strong>${state.chats.length}</strong><span>общих чатов</span></div></div></div></div>`);
+    shell('Мой профиль','',`<div class="profile-layout"><section class="panel content profile-main"><div class="profile-heading customer-profile-heading">${avatar(p,'large')}<div><span class="eyebrow">КАБИНЕТ ЗАКАЗЧИКА</span><h2>${esc(p.name)}</h2><p>${esc(p.company_name||'Добавьте название компании')}</p><small>${esc(p.email)}</small></div></div><form class="form" id="customer-profile-form"><label>Ваше имя<input class="field" name="name" required minlength="2" maxlength="100" autocomplete="name" value="${esc(p.name)}"></label><label>Компания или команда<input class="field" name="company_name" maxlength="150" autocomplete="organization" placeholder="Например, Студия Север" value="${esc(p.company_name)}"></label><label>Контактный телефон<input class="field" name="phone" type="tel" maxlength="40" autocomplete="tel" placeholder="+7 999 123-45-67" value="${esc(p.phone)}"></label><label>Одобрять стоимость автоматически — до, ₽<input class="field" name="auto_approve_rub" type="number" min="0" max="10000000" step="1" placeholder="0" value="${p.auto_approve_rub || ''}"><small>Небольшие задачи в пределах лимита уйдут в работу сразу, без вашего подтверждения. Пусто или 0 — всегда спрашивать.</small></label><p class="profile-hint">Email для входа: <strong>${esc(p.email)}</strong></p><div class="profile-actions"><button class="button primary">Сохранить изменения</button><span id="profile-saved" role="status"></span></div></form></section><div class="profile-note"><span class="eyebrow">НА СВЯЗИ С КОМАНДОЙ</span><h2>Ваши обращения в одном месте</h2><p>Имя и название компании помогут команде узнавать ваши задачи в заявках и общем чате. Контактный телефон доступен только вам в этом кабинете.</p><div class="profile-facts"><div><strong>${state.tickets.length}</strong><span>заявок</span></div><div><strong>${state.chats.length}</strong><span>общих чатов</span></div></div></div></div>`);
     if(state.organizations[0]){document.querySelector('.customer-profile-heading p').textContent=state.organizations[0].name;document.querySelector('#customer-profile-form [name="company_name"]').parentElement.innerHTML=`Компания <strong>${esc(state.organizations[0].name)}</strong><input type="hidden" name="company_name" value="${esc(p.company_name)}"><small>Состав компании управляется в разделе «Моя компания».</small>`;}
     bindProfileDraft(document.querySelector('#customer-profile-form'));
     mountPushCard();
-    document.querySelector('#customer-profile-form').onsubmit=async e=>{e.preventDefault();const button=e.target.querySelector('button');button.disabled=true;try{const data=Object.fromEntries(new FormData(e.target));data.auto_approve_minutes=Math.round(Number(data.auto_approve_hours||0)*60);delete data.auto_approve_hours;state.profile=await api('/customer-profile/me',{method:'PATCH',body:JSON.stringify(data)});state.user.name=state.profile.name;state.error='';clearProfileDraft();renderProfile();document.querySelector('#profile-saved').textContent='✓ Изменения сохранены';}catch(error){showError(error);}};
+    document.querySelector('#customer-profile-form').onsubmit=async e=>{e.preventDefault();const button=e.target.querySelector('button');button.disabled=true;try{const data=Object.fromEntries(new FormData(e.target));data.auto_approve_rub=Number(data.auto_approve_rub||0);state.profile=await api('/customer-profile/me',{method:'PATCH',body:JSON.stringify(data)});state.user.name=state.profile.name;state.error='';clearProfileDraft();renderProfile();document.querySelector('#profile-saved').textContent='✓ Изменения сохранены';}catch(error){showError(error);}};
     return;
   }
   shell('Мой профиль','',`<div class="profile-layout"><section class="panel content profile-main"><div class="profile-heading"><div>${avatar(p,'large')}<label class="avatar-upload" for="avatar-file">Загрузить фото</label><input id="avatar-file" class="visually-hidden" type="file" aria-label="Загрузить фото профиля" accept="image/png,image/jpeg,image/webp">${p.avatar_url?'<button class="avatar-remove" id="avatar-remove">Удалить фото</button>':''}</div><div><span class="eyebrow">ПРОФИЛЬ СОТРУДНИКА</span><h2>${esc(p.name)}</h2><p>${esc([(p.functions||[p.team_role]).filter(Boolean).map(c=>state.teamWorkspace?.functions.find(f=>f.code===c)?.name||teamRoleNames[c]||c).join(', '),p.job_title].filter(Boolean).join(' · ')||'Укажите должность')}</p><small>${esc(p.email)}</small></div></div><form class="form" id="profile-form"><label>ФИО<input class="field" name="name" required minlength="2" maxlength="100" autocomplete="name" value="${esc(p.name)}"></label><label>Должность<input class="field" name="job_title" maxlength="100" placeholder="Например, ведущий разработчик" value="${esc(p.job_title)}"></label><label>О себе<textarea name="bio" maxlength="1000" placeholder="Чем вы помогаете заказчикам, ваш опыт и специализация">${esc(p.bio)}</textarea></label><div class="profile-actions"><button class="button primary">Сохранить изменения</button><span id="profile-saved" role="status"></span></div></form></section><aside class="profile-note"><span class="eyebrow">КАК ЭТО РАБОТАЕТ</span><h2>Ваш профиль для команды</h2><p>Имя, должность, описание и фотография доступны вашим коллегам. Заказчики общаются с единым контактом «Служба поддержки».</p><p>Подойдёт PNG, JPEG или WebP до 2 МБ. Изображение автоматически подстроится под кабинет.</p></aside></div>`);
@@ -2983,40 +3087,49 @@ function renderSpecialists() {
   document.querySelector('#contact-support').onclick = () => setView('chats');
 }
 
-async function openAnalytics(){
+let analyticsGeneration = 0;
+async function openAnalytics(filters = state.analyticsFilters || {}) {
+  const token = ++analyticsGeneration;
+  state.analytics = null;
   setView('analytics');
-  try{
-    state.analytics=await api('/analytics/summary');
+  try {
+    const query = new URLSearchParams(Object.entries(filters).filter(([,v])=>v));
+    const data = await api('/analytics/summary?' + query);
+    if (token !== analyticsGeneration || state.view !== 'analytics') return;
+    state.analytics = data;
+    state.analyticsFilters = {date_from:data.filters.date_from,date_to:data.filters.date_to,customer_id:data.filters.customer_id || ''};
     renderAnalytics();
-  }catch(err){
-    showError(err);
-  }
+  } catch(err) {if(token===analyticsGeneration && state.view==='analytics') {
+    shell('Аналитика и SLA','',`<section class="panel content"><p role="alert">${esc(err.message)}</p><button class="button" id="analytics-retry">Повторить</button></section>`);
+    document.querySelector('#analytics-retry').onclick=()=>openAnalytics(filters);
+  }}
 }
 function renderAnalytics() {
-  if (!state.analytics) {
-    shell('Аналитика и SLA', '', skeleton('analytics'), { kicker: 'Сроки, качество и нагрузка' });
-    return;
-  }
-  const a = state.analytics;
-  const target = 90;
-  const pct = value => Math.round(Number(value) || 0);
-  const frt = a.avg_response_minutes < 60 ? `${a.avg_response_minutes} мин` : `${(a.avg_response_minutes / 60).toLocaleString('ru-RU', { maximumFractionDigits: 1 })} ч`;
-  const stat = (label, value, hint, cls = '') => `<div class="stat ${cls}"><span class="stat-label">${label}</span><strong>${value}</strong><small>${hint}</small></div>`;
-  const goal = value => pct(value) >= target ? `<span class="trend-up">цель ${target}% достигнута</span>` : `<span class="trend-down">ниже цели ${target}%</span>`;
-  const stats = `<div class="stats five">${stat('Всего заявок', a.total_tickets, `${a.open_tickets} в работе · ${a.done_tickets} закрыто`)}${stat('Первый ответ', frt, `в срок ${pct(a.sla_response_met_pct)}%`)}${stat('Оценка в срок', `${pct(a.sla_estimate_met_pct)}%`, goal(a.sla_estimate_met_pct))}${stat('Сдача в срок', `${pct(a.sla_delivery_met_pct)}%`, goal(a.sla_delivery_met_pct))}${stat('Оценка клиентов', a.avg_csat ? `${String(a.avg_csat).replace('.', ',')} из 5` : '—', `${a.total_ratings} ${plural(a.total_ratings, ['отзыв', 'отзыва', 'отзывов'])}`)}</div>`;
-  const meter = (label, value, hint) => `<div class="sla-meter"><div class="sla-meter-head"><span>${label}</span><strong>${pct(value)}%</strong></div><div class="sla-meter-track" role="img" aria-label="${label}: ${pct(value)}% при цели ${target}%"><span class="${pct(value) < target ? 'below' : ''}" style="width:${Math.min(100, pct(value))}%"></span><i style="left:${target}%"></i></div><small>${hint}</small></div>`;
-  const staffRows = (a.staff_stats || []).map(s => `<tr><td><div class="person-cell">${avatar(personById(s.id) || { name: s.name }, 'small')}<div><strong>${esc(s.name)}</strong><small>${esc(s.job_title || '')}</small></div></div></td><td class="num"><strong>${s.active_tickets}</strong></td><td class="num">${s.closed_tickets}</td><td class="num"><strong>${hours(s.logged_minutes)}</strong></td><td class="num">${s.avg_rating ? `<span class="rating">★ ${s.avg_rating}</span>` : '<span class="muted">—</span>'}</td></tr>`).join('');
-  const csatTotal = a.total_ratings || 1;
-  const csatBars = [5, 4, 3, 2, 1].map(stars => { const count = a.csat_distribution?.[stars] || 0; return `<div class="csat-bar-row"><span>${stars} ★</span><div class="meter"><span class="${stars <= 2 ? 'soon' : ''}" style="width:${Math.round(count / csatTotal * 100)}%"></span></div><span>${count}</span></div>`; }).join('');
-  const colors = ['#137b69', '#3a7fc4', '#d99a2b', '#8a6bc4', '#a9bdb7'];
-  const services = Object.entries(a.service_breakdown || {});
-  const servicesTotal = services.reduce((sum, [, count]) => sum + count, 0) || 1;
-  const serviceBar = services.map(([, count], index) => `<span style="width:${count / servicesTotal * 100}%;background:${colors[index % colors.length]}"></span>`).join('');
-  const serviceRows = services.map(([key, count], index) => `<span><b style="background:${colors[index % colors.length]}"></b>${esc(serviceLabel(key))}</span><strong>${count}</strong>`).join('');
-  const feedback = (a.recent_feedback || []).map(f => `<div class="activity-item"><span class="activity-dot fresh"></span><div><div class="row" style="justify-content:space-between"><strong>№${f.ticket_id} · ${esc(f.customer_name)}</strong><span class="rating">★ ${f.rating}</span></div>${f.comment ? `<p>«${esc(f.comment)}»</p>` : ''}<small>${date(f.rated_at)}</small></div></div>`).join('');
-  const body = `${stats}<div class="split"><div class="context-stack"><section class="panel content"><div class="card-head"><h2>Соблюдение SLA</h2><span class="legend"><span><b style="background:var(--accent)"></b>цель достигнута</span><span><b style="background:#d99a2b"></b>ниже цели</span></span></div><div class="sla-meters">${meter('Первый ответ', a.sla_response_met_pct, `Среднее время первого ответа — ${frt}`)}${meter('Подготовка оценки', a.sla_estimate_met_pct, 'Оценка трудозатрат отправлена до срока')}${meter('Сдача работы', a.sla_delivery_met_pct, 'Заявка завершена до дедлайна')}</div></section><section class="panel"><div class="toolbar"><strong>Нагрузка и результаты команды</strong></div><div class="table-scroll"><table class="data-table"><thead><tr><th>Сотрудник</th><th class="num">В работе</th><th class="num">Закрыто</th><th class="num">Списано</th><th class="num">Отзывы</th></tr></thead><tbody>${staffRows || '<tr><td colspan="5" class="muted">Нет данных</td></tr>'}</tbody></table></div></section></div><div class="context-stack"><section class="panel content"><div class="card-head"><h2>Оценки клиентов</h2><span class="muted">${a.total_ratings} ${plural(a.total_ratings, ['отзыв', 'отзыва', 'отзывов'])}</span></div><div class="csat-bars">${csatBars}</div></section><section class="panel content"><h2>Заявки по типам</h2>${services.length ? `<div class="stack-bar">${serviceBar}</div><div class="service-list">${serviceRows}</div>` : '<p class="muted">Пока нет данных</p>'}</section>${feedback ? `<section class="activity-panel"><div class="activity-heading"><h2>Последние отзывы</h2><span>${(a.recent_feedback || []).length}</span></div>${feedback}</section>` : ''}</div></div>`;
-  shell('Аналитика и SLA', `<a class="button" href="/api/analytics/export.csv" download>${icon('download', 16)}Отчёт CSV</a>`, body, { kicker: 'Сроки, качество и нагрузка', lead: 'Сводка по соблюдению SLA, оценкам клиентов и работе команды' });
+  if (!state.analytics) {shell('Аналитика и SLA','',skeleton('analytics'));return;}
+  const a=state.analytics, f=state.analyticsFilters || {}, previous=a.previous_period || {};
+  const fmt = value => value == null ? 'Нет данных' : Number(value).toLocaleString('ru-RU',{maximumFractionDigits:1});
+  const delta = (current, prior) => current == null || prior == null ? 'Нет данных для сравнения' : `${current-prior>0?'+':''}${fmt(current-prior)} п.п. к предыдущему периоду`;
+  const labels={response:'Первый ответ',estimate:'Подготовка оценки',delivery:'Сдача работы'};
+  const metricKeys={response:'sla_response_met_pct',estimate:'sla_estimate_met_pct',delivery:'sla_delivery_met_pct'};
+  const slaCards=Object.entries(labels).map(([key,label])=>{
+    const d=a.sla_details[key], value=a[metricKeys[key]], prior=previous[metricKeys[key]];
+    const goal=a.sla_target_pct==null?'Цель SLA не настроена':`Цель ${fmt(a.sla_target_pct)}%${value==null?'':value>=a.sla_target_pct?' · достигнута':' · ниже цели'}`;
+    return `<section class="panel content"><h2>${label}</h2><strong class="big">${value==null?'Нет данных':fmt(value)+'%'}</strong><p>${d.met} из ${d.total} в срок · ${d.pending} ещё ожидают срока</p><p>${esc(goal)}</p><p class="muted">${delta(value,prior)}</p><button class="button" data-sla-detail="${key}" ${d.violations.length?'':'disabled'}>Нарушения: ${d.violations.length}</button></section>`;
+  }).join('');
+  const selected=state.analyticsDetail || 'response', violations=a.sla_details[selected]?.violations || [];
+  const details=`<section class="panel content" id="analytics-details"><h2>${labels[selected]}: нарушения</h2>${violations.length?violations.map(t=>`<article class="row" style="flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)"><a href="#ticket/${t.id}">№${t.id} · ${esc(t.title)}</a><span>${esc(t.customer_name)}</span><span>${esc(statusNames[t.status]||t.status)}</span><span>Срок: ${date(t.due_at)}</span></article>`).join(''):'<p>В выбранном периоде и клиентском срезе нарушений нет.</p>'}</section>`;
+  const query=new URLSearchParams(Object.entries(f).filter(([,v])=>v));
+  const staffRows=(a.staff_stats||[]).map(s=>`<tr><td>${esc(s.name)}</td><td>${s.active_tickets}</td><td>${s.closed_tickets}</td><td>${hours(s.logged_minutes)}</td><td>${s.avg_rating?fmt(s.avg_rating):'Нет данных'}</td></tr>`).join('');
+  const breakdown=`<section class="panel content"><h2>Заявки по типам</h2>${Object.entries(a.service_breakdown||{}).map(([kind,count])=>`<p>${esc(serviceLabel(kind))}: <strong>${count}</strong></p>`).join('')||'<p>Нет данных</p>'}</section><section class="panel content"><h2>Распределение оценок клиентов</h2>${[5,4,3,2,1].map(stars=>`<p>${stars} ★: ${a.csat_distribution?.[stars]||0}</p>`).join('')}</section>`;
+  const feedback=(a.recent_feedback||[]).map(r=>`<p><a href="#ticket/${r.ticket_id}">№${r.ticket_id}</a> · ${r.rating}/5 · ${esc(r.comment||'Без комментария')}</p>`).join('');
+  shell('Аналитика и SLA',`<a class="button" href="/api/analytics/export.csv?${esc(query.toString())}" download>Отчёт CSV</a>`, `
+    <section class="panel content"><form id="analytics-filter" class="row" style="flex-wrap:wrap;align-items:end"><label>С даты<input class="field" type="date" name="date_from" value="${esc(f.date_from)}" required></label><label>По дату включительно<input class="field" type="date" name="date_to" value="${esc(f.date_to)}" required></label><label>Заказчик<select class="field" name="customer_id"><option value="">Все заказчики</option>${(a.customers||[]).map(c=>`<option value="${c.id}" ${String(f.customer_id)===String(c.id)?'selected':''}>${esc(c.name)}</option>`).join('')}</select></label><button class="button primary">Применить</button></form><p class="muted">Выборка по дате создания заявки, UTC+3. Сравнение с ${esc(previous.date_from||'—')} по ${esc(previous.date_to||'—')}. Будущие обязательства без результата не считаются нарушениями.</p><p id="analytics-filter-error" role="alert"></p></section>
+    <div class="stats"><div class="stat"><span>Заявки, созданные за период</span><strong>${a.total_tickets}</strong><small>Предыдущий период: ${previous.total_tickets??'—'}</small></div><div class="stat"><span>Первый ответ в среднем</span><strong>${a.avg_response_minutes==null?'Нет данных':fmt(a.avg_response_minutes)+' мин'}</strong></div><div class="stat"><span>Оценка клиентов</span><strong>${a.total_ratings?fmt(a.avg_csat)+' / 5':'Нет данных'}</strong><small>${a.total_ratings} отзывов</small></div></div>
+    <div class="stats">${slaCards}</div>${details}<section class="panel content"><h2>Нагрузка и результаты команды</h2><div class="table-scroll"><table class="data-table"><thead><tr><th>Сотрудник</th><th>В работе</th><th>Закрыто</th><th>Учтено времени</th><th>Отзывы</th></tr></thead><tbody>${staffRows||'<tr><td colspan="5">Нет данных</td></tr>'}</tbody></table></div></section><section class="panel content"><h2>Отзывы</h2>${feedback||'<p>За период отзывов нет.</p>'}</section>${breakdown}`,{lead:'Сроки, причины нарушений и сравнение периодов'});
+  document.querySelector('#analytics-filter').onsubmit=e=>{e.preventDefault();const values=Object.fromEntries(new FormData(e.target));if(values.date_from>values.date_to){document.querySelector('#analytics-filter-error').textContent='Начало периода должно быть не позже окончания';return;}openAnalytics(values);};
+  document.querySelectorAll('[data-sla-detail]').forEach(button=>button.onclick=()=>{state.analyticsDetail=button.dataset.slaDetail;renderAnalytics();document.querySelector('#analytics-details').scrollIntoView({block:'start'});});
 }
+
 function renderGitLinksPanel(ticketId, staff) {
   const links = state.gitLinks || [];
   return `
@@ -3630,12 +3743,8 @@ function renderBilling() {
     const debtRub = clients.reduce((acc,c)=>acc+Math.min(0,c.deposit_balance_rub||0),0);
     kpis = `<div class="billing-kpi-grid">${kpi('Оплаченные счета', rub(totalPaid), 'Оплаченные счета клиентов', 'positive')}${kpi('Готово к актированию', hours(totalUnbilled), 'Задачи и сопровождение без акта')}${kpi('Ожидают оплаты', rub(issuedDocs.reduce((acc, d) => acc + (d.total_rub || 0), 0)), `${issuedDocs.length} ${plural(issuedDocs.length, ['счёт', 'счёта', 'счетов'])} · ${totalClients} ${plural(totalClients, ['клиент', 'клиента', 'клиентов'])}, ${withDeposit} с депозитом`)}${kpi('Баланс в минусе', `${withDebt} ${plural(withDebt, ['клиент', 'клиента', 'клиентов'])}`, withDebt ? `Суммарно −${rub(Math.abs(debtRub))}` : 'Все балансы в норме', withDebt ? 'danger' : '')}</div>`;
   } else {
-    const balMins = b.balance_minutes || 0;
-    const balHours = b.balance_hours ?? (balMins / 60.0);
-    const balRub = b.balance_rub ?? b.balance_rub_equiv ?? Math.round(balHours * (b.hourly_rate_rub || 3000));
-    const activeMins = b.in_progress_minutes ?? b.active_billable_minutes ?? 0;
-    const unbilledMins = b.unbilled_minutes ?? b.unbilled_done_minutes ?? 0;
-    kpis = `<div class="billing-kpi-grid">${kpi('Баланс депозита', rub(balRub), `Доступно: ${rub(b.available_rub)} · резерв: ${rub(b.held_rub)}`, balMins > 0 ? 'positive' : balMins < 0 ? 'danger' : '')}${kpi('Тарифная ставка', `${(b.hourly_rate_rub || 3000).toLocaleString('ru-RU')} ₽/ч`, 'Фиксированная ставка по договору')}${kpi('Часы в работе', hours(activeMins), 'Согласованные активные заявки')}${kpi('Готово к актированию', hours(unbilledMins), 'Задачи и сопровождение без акта')}</div>`;
+    const balance = b.balance_rub ?? b.deposit_balance_rub ?? 0;
+    kpis = `<div class="billing-kpi-grid">${kpi('Баланс депозита', rub(balance), 'Деньги на вашем счёте', balance < 0 ? 'danger' : 'positive')}${kpi('Доступно', rub(b.available_rub), 'Баланс за вычетом резерва')}${kpi('Зарезервировано', rub(b.held_rub), 'Под согласованную стоимость работ')}${kpi('Ожидают оплаты', rub(issuedDocs.reduce((sum,d)=>sum+d.total_rub,0)), 'Выставленные счета')}</div><p class="muted">При согласовании стоимость резервируется. При формировании акта сумма списывается с депозита, а резерв снимается.</p>`;
   }
 
   const actions = !canManage && staff ? '' : staff
@@ -3670,9 +3779,9 @@ function renderBilling() {
       let actionButtons = `<a href="/api/billing/invoices/${d.id}/print" target="_blank" rel="noopener" class="button small" aria-label="Печатная форма ${esc(d.number)}" title="Печатная форма / PDF">${icon('print', 15)}</a>`;
       if (canManage && d.status === 'issued') actionButtons = `${d.doc_type==='act'?(d.signed_at?'':`<button class="button small" data-mark-signed="${d.id}">Подтвердить подписание</button>`):`<button class="button small" data-mark-paid="${d.id}">Подтвердить оплату</button>`}${actionButtons}<button class="button small danger" data-mark-cancel="${d.id}" aria-label="Аннулировать ${esc(d.number)}" title="Аннулировать документ">✕</button>`;
       if (!staff && d.status === 'issued' && d.doc_type === 'invoice') actionButtons = `<span class="muted">Оплатите по реквизитам счёта. Менеджер подтвердит поступление.</span>${actionButtons}`;
-      return `<tr><td><div class="doc-cell">${typeBadge}<div><strong>№ ${esc(d.number)}</strong><small>${period ? 'за ' + period : 'от ' + formatRuDate(d.created_at)}</small></div></div></td>${staff ? `<td><strong>${esc(clientName)}</strong></td>` : ''}<td class="num">${hours(d.total_minutes)}</td><td class="num"><strong>${rub(d.total_rub)}</strong></td><td>${statusPill(d)}</td><td><div class="billing-actions">${actionButtons}</div></td></tr>`;
+      return `<tr><td><div class="doc-cell">${typeBadge}<div><strong>№ ${esc(d.number)}</strong><small>${period ? 'за ' + period : 'от ' + formatRuDate(d.created_at)}</small></div></div></td>${staff ? `<td><strong>${esc(clientName)}</strong></td>` : ''}${staff ? `<td class="num">${hours(d.total_minutes)}</td>` : ''}<td class="num"><strong>${rub(d.total_rub)}</strong></td><td>${statusPill(d)}</td><td><div class="billing-actions">${actionButtons}</div></td></tr>`;
     }).join('');
-    content = `${filterBar}${docs.length ? `<div class="table-scroll"><table class="billing-table"><thead><tr><th>Документ</th>${staff ? '<th>Клиент</th>' : ''}<th class="num">Объём</th><th class="num">Сумма</th><th>Статус</th><th><span class="visually-hidden">Действия</span></th></tr></thead><tbody>${docRows}</tbody></table></div>` : '<div class="empty"><strong>Документов нет</strong>По выбранному фильтру ничего не найдено.</div>'}`;
+    content = `${filterBar}${docs.length ? `<div class="table-scroll"><table class="billing-table"><thead><tr><th>Документ</th>${staff ? '<th>Клиент</th>' : ''}${staff ? '<th class="num">Объём</th>' : ''}<th class="num">Сумма</th><th>Статус</th><th><span class="visually-hidden">Действия</span></th></tr></thead><tbody>${docRows}</tbody></table></div>` : '<div class="empty"><strong>Документов нет</strong>По выбранному фильтру ничего не найдено.</div>'}`;
   } else if (activeTab === 'clients' && staff) {
     const clientRows = clients.map(c => {
       const balance = c.balance_minutes || 0;
@@ -3688,9 +3797,9 @@ function renderBilling() {
     const txRows = txs.map(t => {
       const kind = t.tx_type === 'charge' ? ['charge', 'Списание'] : t.tx_type === 'refund' ? ['refund', 'Возврат'] : ['deposit', 'Пополнение'];
       const clientName = t.organization_name || t.customer_name || t.client_name || 'Клиент';
-      return `<tr><td>${date(t.created_at)}</td>${staff ? `<td><strong>${esc(clientName)}</strong></td>` : ''}<td><span class="billing-tx-badge ${kind[0]}">${kind[1]}</span></td><td class="num"><strong style="color:${t.minutes > 0 ? 'var(--accent-ink)' : t.minutes < 0 ? 'var(--late)' : 'inherit'}">${t.minutes > 0 ? '+' : ''}${hours(t.minutes)}</strong></td><td class="num"><strong>${rub(t.amount_rub)}</strong></td><td>${esc(t.description || '—')}</td><td><small class="muted">${esc(t.created_by_name || 'Система')}</small></td></tr>`;
+      return `<tr><td>${date(t.created_at)}</td>${staff ? `<td><strong>${esc(clientName)}</strong></td>` : ''}<td><span class="billing-tx-badge ${kind[0]}">${kind[1]}</span></td>${staff ? `<td class="num"><strong style="color:${t.minutes > 0 ? 'var(--accent-ink)' : t.minutes < 0 ? 'var(--late)' : 'inherit'}">${t.minutes > 0 ? '+' : ''}${hours(t.minutes)}</strong></td>` : ''}<td class="num"><strong>${rub(t.amount_rub)}</strong></td><td>${esc(t.description || '—')}</td><td><small class="muted">${esc(t.created_by_name || 'Система')}</small></td></tr>`;
     }).join('');
-    content = txs.length ? `<div class="table-scroll"><table class="billing-table"><thead><tr><th>Дата</th>${staff ? '<th>Клиент</th>' : ''}<th>Операция</th><th class="num">Объём</th><th class="num">Сумма</th><th>Основание</th><th>Автор</th></tr></thead><tbody>${txRows}</tbody></table></div>` : '<div class="empty"><strong>Операций пока нет</strong>Пополнения и списания денег появятся здесь.</div>';
+    content = txs.length ? `<div class="table-scroll"><table class="billing-table"><thead><tr><th>Дата</th>${staff ? '<th>Клиент</th>' : ''}<th>Операция</th>${staff ? '<th class="num">Объём</th>' : ''}<th class="num">Сумма</th><th>Основание</th><th>Автор</th></tr></thead><tbody>${txRows}</tbody></table></div>` : '<div class="empty"><strong>Операций пока нет</strong>Пополнения и списания денег появятся здесь.</div>';
   }
 
   let side = '';
@@ -4245,66 +4354,18 @@ function openCustomerInvoiceModal() {
   const slot = document.querySelector('#billing-modal-slot');
   if (!slot) return;
   const b = state.billing || {};
-  const rate = b.hourly_rate_rub || 3000;
-
-  slot.innerHTML = `
-    <div class="billing-modal-backdrop" id="billing-modal">
-      <div class="billing-modal-card">
-        <div class="billing-modal-head">
-          <h2>Пополнение денежного депозита</h2>
-          <button class="billing-modal-close" id="modal-close">&times;</button>
-        </div>
-        <form id="cust-invoice-form" class="form">
-          <p class="muted" style="margin-bottom:12px">
-            Выберите сумму по эквиваленту часов. После подтверждения оплаты на депозит поступят рубли. Эквивалент часов рассчитывается по текущему тарифу и меняется при смене тарифа.
-          </p>
-          <label>Сумма пополнения по текущему тарифу
-            <select class="field" name="deposit_hours" id="cust-hours-select">
-              <option value="5">5 часов (${(5 * rate).toLocaleString('ru-RU')} ₽)</option>
-              <option value="10" selected>10 часов (${(10 * rate).toLocaleString('ru-RU')} ₽)</option>
-              <option value="20">20 часов (${(20 * rate).toLocaleString('ru-RU')} ₽)</option>
-              <option value="50">50 часов (${(50 * rate).toLocaleString('ru-RU')} ₽)</option>
-            </select>
-          </label>
-          <div id="cust-inv-preview" style="padding:10px 14px; background:var(--accent-soft); border-radius:var(--radius-sm); font-size:14px; margin: 8px 0">
-            На депозит: <strong>${(10 * rate).toLocaleString('ru-RU')} ₽</strong> — эквивалент 10 часов по текущему тарифу ${rate.toLocaleString('ru-RU')} ₽/ч
-          </div>
-          <button class="button primary">Сформировать счёт</button>
-        </form>
-      </div>
-    </div>
-  `;
-
+  slot.innerHTML = `<div class="billing-modal-backdrop" id="billing-modal"><div class="billing-modal-card"><div class="billing-modal-head"><h2>Пополнение денежного депозита</h2><button class="billing-modal-close" id="modal-close" aria-label="Закрыть">&times;</button></div><form id="cust-invoice-form" class="form"><p>После подтверждения оплаты на депозит поступит указанная сумма в рублях. Создание счёта само по себе не пополняет баланс.</p><label>Сумма пополнения, ₽<input class="field" name="amount_rub" id="cust-amount" type="number" min="1" max="10000000" step="1" value="30000" required></label><p id="cust-inv-preview" role="status"></p><button class="button primary">Сформировать счёт</button></form></div></div>`;
   bindBillingDialog(slot);
-
-  const select = slot.querySelector('#cust-hours-select');
+  const input = slot.querySelector('#cust-amount');
   const preview = slot.querySelector('#cust-inv-preview');
-
-  select.onchange = () => {
-    const h = Number(select.value);
-    preview.innerHTML = `На депозит: <strong>${(h * rate).toLocaleString('ru-RU')} ₽</strong> — эквивалент ${h} ${plural(h, ['часа', 'часов', 'часов'])} по текущему тарифу ${rate.toLocaleString('ru-RU')} ₽/ч`;
-  };
-
-  slot.querySelector('#cust-invoice-form').onsubmit = async (e) => {
-    e.preventDefault();
-    const h = Number(select.value);
+  const update = () => { preview.textContent = input.validity.valid ? `На депозит после оплаты: ${Number(input.value).toLocaleString('ru-RU')} ₽` : 'Укажите целую сумму от 1 до 10 000 000 ₽'; };
+  input.addEventListener('input', update); update();
+  slot.querySelector('#cust-invoice-form').onsubmit = async e => {
+    e.preventDefault(); const button = e.target.querySelector('button'); button.disabled = true;
     try {
-      const doc = await api('/billing/invoices', {
-        method: 'POST',
-        body: JSON.stringify({
-          doc_type: 'invoice',
-          client_type: b.client_type,
-          client_id: b.client_id,
-          hours: h,
-          notes: `Пополнение денежного депозита: эквивалент ${h} ч по тарифу ${rate} ₽/ч`
-        })
-      });
-      slot.innerHTML = '';
-      await openBilling();
-      window.open(`/api/billing/invoices/${doc.id}/print`, '_blank');
-    } catch(err) {
-      showError(err);
-    }
+      const doc = await api('/billing/invoices', {method:'POST', body:JSON.stringify({doc_type:'invoice',client_type:b.client_type,client_id:b.client_id,amount_rub:Number(input.value),notes:'Пополнение денежного депозита'})});
+      slot.innerHTML=''; await openBilling(); toast(`Счёт ${doc.number} создан. Откройте его печатную форму в списке документов.`);
+    } catch(error) {showError(error); button.disabled=false;}
   };
 }
 
@@ -4325,8 +4386,8 @@ async function openHash(){
     if(route==='webhooks'&&state.user.role!=='admin')return setView('tickets');
     if(route==='analytics'&&!isDispatcher())return setView('tickets');
     if(loaders[route])return await loaders[route]();
-    const views=['tasks','deals','meetings','tickets','queue','organizations','team','profile','new','notifications','chats','specialists'];
-    if(views.includes(route)&&!(['team','tasks'].includes(route)&&state.user.role==='customer')&&!(route==='queue'&&state.user.role==='customer'))setView(route);
+    const views=['tasks','deals','meetings','tickets','queue','organizations','team','profile','new','notifications','chats','specialists','decisions','timesheet','recurring'];
+    if(views.includes(route)&&!(['team','tasks','decisions','timesheet'].includes(route)&&state.user.role==='customer')&&!(route==='queue'&&state.user.role==='customer'))setView(route);
     else setView(state.user.role==='customer'?'tickets':'tasks');
   }catch(error){showError(error);}finally{state.restoringRoute=false;}
 }
@@ -4334,13 +4395,19 @@ async function openHash(){
 async function renderPayroll(){
   try{const module=await import('/payroll.js');if(state.view==='payroll')module.render({state,api,shell,esc,hours,toast,showError});}catch(error){showError(error);}
 }
+async function renderProductivity(){
+  const view=state.view;
+  if(view!=='recurring'&&state.user.role==='customer')return setView('tickets');
+  try{const module=await import('/productivity.js');if(state.view!==view)return;const ctx={state,api,shell,esc,icon,hours,date,plural,toast,showError,openTicket,setView,refresh};
+    await (view==='decisions'?module.renderDecisions(ctx):view==='timesheet'?module.renderTimesheet(ctx):module.renderRecurring(ctx));}catch(error){showError(error);}
+}
 async function renderGuide(){
   if(state.user.role!=='customer')return setView('tickets');
   const accountId=state.user.id;
   try{const module=await import('/guide.js');if(state.view==='guide'&&state.user?.id===accountId)module.render({state,shell,esc,icon,startTour,billingOn,openSupport:async()=>{try{const chat=await api('/chats',{method:'POST'});await refresh();await openChat(chat.id);}catch(error){showError(error);}}});}catch(error){showError(error);}
 }
 async function renderAdmin(){if(state.user.role!=='admin')return;try{const module=await import('/admin-ui.js');if(state.view==='admin')await module.render({state,api,shell,esc,toast,showError,openTicket,refresh});}catch(error){showError(error);}}
-function render() {syncRoute();if(!state.user)return renderAuth();if(state.user.must_change_credentials)return renderCredentials();if(state.view==='guide')return renderGuide();if(state.view==='organizations')return renderOrganizations();if(state.view==='profile')return renderProfile();if(state.view==='messengers')return renderMessengers();if(state.view==='queue')return renderQueue();if(state.view==='new')return renderNew();if(state.view==='detail'&&state.current)return renderDetail();if(state.view==='ticket-chat'&&state.current)return renderTicketChat();if(state.view==='tasks')return TasksUI.render();if(state.view==='task')return TasksUI.renderDetail();if(state.view==='team')return renderTeam();if(state.view==='deals')return TeamUI.renderDeals();if(state.view==='meetings')return TeamUI.renderMeetings();if(state.view==='notifications')return renderNotifications();if(state.view==='chats')return renderChats();if(state.view==='chat'&&state.currentChat)return renderChatDetail();if(state.view==='analytics')return renderAnalytics();if(state.view==='kb')return renderKb();if(state.view==='webhooks')return renderWebhooks();if(state.view==='admin')return renderAdmin();if(state.view==='payroll')return renderPayroll();if(state.view==='billing')return renderBilling();if(state.view==='specialists')return renderSpecialists();renderTickets();}
+function render() {syncRoute();if(!state.user)return renderAuth();if(state.user.must_change_credentials)return renderCredentials();if(state.view==='guide')return renderGuide();if(state.view==='organizations')return renderOrganizations();if(state.view==='profile')return renderProfile();if(state.view==='messengers')return renderMessengers();if(state.view==='queue')return renderQueue();if(state.view==='new')return renderNew();if(state.view==='detail'&&state.current)return renderDetail();if(state.view==='ticket-chat'&&state.current)return renderTicketChat();if(state.view==='tasks')return TasksUI.render();if(state.view==='task')return TasksUI.renderDetail();if(state.view==='team')return renderTeam();if(state.view==='deals')return TeamUI.renderDeals();if(state.view==='meetings')return TeamUI.renderMeetings();if(state.view==='notifications')return renderNotifications();if(state.view==='chats')return renderChats();if(state.view==='chat'&&state.currentChat)return renderChatDetail();if(state.view==='analytics')return renderAnalytics();if(state.view==='kb')return renderKb();if(state.view==='webhooks')return renderWebhooks();if(state.view==='admin')return renderAdmin();if(state.view==='payroll')return renderPayroll();if(['decisions','timesheet','recurring'].includes(state.view))return renderProductivity();if(state.view==='billing')return renderBilling();if(state.view==='specialists')return renderSpecialists();renderTickets();}
 async function start(){
   const params=new URLSearchParams(location.search);
   if(params.has('invite')||params.has('reset')){renderAuth();return;}

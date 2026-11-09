@@ -184,7 +184,7 @@ class Flows(unittest.TestCase):
         self.assertEqual(self.other.post(f"/api/tickets/{ticket_id}/estimates/decision", json={"estimate_id":quote_id,"action":"approve"}).status_code, 404)
         self.assertEqual(self.customer.post(f"/api/tickets/{ticket_id}/estimates/decision", json={"estimate_id":quote_id,"action":"approve"}).status_code, 200)
         overview_ticket = self.customer.get("/api/tickets").json()[0]
-        self.assertEqual((overview_ticket["estimate_state"], overview_ticket["effort_minutes"]), ("approved", 150))
+        self.assertEqual((overview_ticket["estimate_state"], overview_ticket["estimate_amount_rub"]), ("approved", 7500))
         self.assertEqual(self.employee.patch(f"/api/tickets/{ticket_id}/status", json={"status":"working"}).status_code, 200)
         message = {"body":"Здравствуйте","request_id":"customer-1"}
         self.assertEqual(self.customer.post(f"/api/tickets/{ticket_id}/messages", json=message).status_code, 201)
@@ -213,7 +213,7 @@ class Flows(unittest.TestCase):
         first = self.employee.post(f"/api/tickets/{ticket_id}/estimates", json={"effort_minutes":240,"assessment_minutes":15,"note":"Первый вариант"}).json()
         self.assertEqual(self.employee.post(f"/api/tickets/{ticket_id}/estimates", json={"effort_minutes":180,"assessment_minutes":15}).status_code, 409)
         self.assertEqual(self.admin.post(f"/api/tickets/{ticket_id}/estimates/{first['id']}/pm-review", json={"action": "send_to_customer"}).status_code, 200)
-        revised = self.customer.post(f"/api/tickets/{ticket_id}/estimates/decision", json={"estimate_id":first["id"],"action":"request_revision","comment":"Сократите объём","proposed_effort_minutes":180})
+        revised = self.customer.post(f"/api/tickets/{ticket_id}/estimates/decision", json={"estimate_id":first["id"],"action":"request_revision","comment":"Сократите объём","proposed_amount_rub":9000})
         self.assertEqual(revised.status_code, 200)
         second = self.employee.post(f"/api/tickets/{ticket_id}/estimates", json={"effort_minutes":195,"assessment_minutes":10,"note":"Сокращённый объём"}).json()
         self.assertEqual(second["version"], 2)
@@ -376,8 +376,11 @@ class Flows(unittest.TestCase):
         self.assertEqual(self.customer.post(f"/api/tickets/{ticket_id}/hour-requests/{request.json()['id']}/decision", json={"action":"approve"}).status_code, 409)
         self.assertEqual(self.employee.post(f"/api/tickets/{ticket_id}/time-entries", json={"minutes":30,"note":"Второй этап"}).status_code, 201)
         detail = self.customer.get(f"/api/tickets/{ticket_id}").json()
-        self.assertEqual((detail["ticket"]["approved_minutes"], detail["ticket"]["actual_minutes"]), (120,75))
-        self.assertEqual(len(detail["time_entries"]), 2)
+        self.assertNotIn("approved_minutes", detail["ticket"])
+        self.assertNotIn("actual_minutes", detail["ticket"])
+        self.assertEqual(detail["time_entries"], [])
+        staff_detail = self.employee.get(f"/api/tickets/{ticket_id}").json()
+        self.assertEqual((staff_detail["ticket"]["approved_minutes"], staff_detail["ticket"]["actual_minutes"]), (120,75))
 
     def test_company_visibility_and_owner_approval(self):
         owner_id = self.customer.get("/api/me").json()["id"]
@@ -466,8 +469,8 @@ class Flows(unittest.TestCase):
     def test_billing_and_invoicing_flow(self):
         # 1. Customer views overview
         overview = self.customer.get("/api/billing/overview").json()
-        self.assertEqual(overview["balance_minutes"], 0)
-        self.assertEqual(overview["hourly_rate_rub"], 3000)
+        self.assertEqual(overview["balance_rub"], 0)
+        self.assertNotIn("hourly_rate_rub", overview)
 
         # 2. Admin sets customer rate and INN
         cust_id = self.customer.get("/api/me").json()["id"]
@@ -502,7 +505,7 @@ class Flows(unittest.TestCase):
 
         # Check ticket billing info in get_ticket
         t_detail = self.customer.get(f"/api/tickets/{ticket_id}").json()["ticket"]
-        self.assertEqual(t_detail["hourly_rate_rub"], 3500)
+        self.assertNotIn("hourly_rate_rub", t_detail)
         self.assertEqual(t_detail["cost_rub"], 7000)
 
         # 5. Check unbilled tickets
@@ -525,7 +528,7 @@ class Flows(unittest.TestCase):
 
         # Balance after Act: 600 - 120 = 480
         post_act_overview = self.customer.get("/api/billing/overview").json()
-        self.assertEqual(post_act_overview["balance_minutes"], 480)
+        self.assertEqual(post_act_overview["balance_rub"], 28000)
 
         # 7. Print route returns HTML with Russian rubles in words
         print_html = self.customer.get(f"/api/billing/invoices/{act_data['id']}/print")
@@ -551,7 +554,7 @@ class Flows(unittest.TestCase):
 
         # Balance credited: 480 + 600 = 1080
         final_overview = self.customer.get("/api/billing/overview").json()
-        self.assertEqual(final_overview["balance_minutes"], 1080)
+        self.assertEqual(final_overview["balance_rub"], 63000)
 
     def test_service_hours_go_to_act(self):
         cust_id = self.customer.get("/api/me").json()["id"]
@@ -574,7 +577,7 @@ class Flows(unittest.TestCase):
         self.assertEqual(self.customer.get("/api/service-entries").status_code, 403)
         overview = self.customer.get("/api/billing/overview").json()
         self.assertNotIn("service_entries", overview)
-        self.assertEqual(overview["unbilled_minutes"], 75)
+        self.assertEqual(overview["unbilled_rub"], 3750)
         self.assertEqual(len(self.admin.get("/api/billing/overview").json()["service_entries"]), 2)
 
         act = self.admin.post("/api/billing/invoices", json={"doc_type": "act", "client_type": "user", "client_id": cust_id,
@@ -587,7 +590,7 @@ class Flows(unittest.TestCase):
         self.assertNotIn("Созвон по срокам релиза", printed)
         self.assertNotIn("Созвон по срокам релиза", str(self.customer.get(f"/api/billing/invoices/{act.json()['id']}").json()))
         self.assertEqual(self.employee.delete(f"/api/service-entries/{call.json()['id']}").status_code, 409)
-        self.assertEqual(self.customer.get("/api/billing/overview").json()["balance_minutes"], -45)
+        self.assertEqual(self.customer.get("/api/billing/overview").json()["balance_rub"], -2250)
 
         self.assertEqual(self.admin.patch(f"/api/billing/invoices/{act.json()['id']}/status", json={"status": "cancelled"}).status_code, 200)
         unbilled = self.admin.get(f"/api/service-entries?client_type=user&client_id={cust_id}&unbilled=true").json()
@@ -602,7 +605,7 @@ class Flows(unittest.TestCase):
         self.assertEqual([e["kind"] for e in detail["service_entries"]], ["meeting"])
         customer_detail = self.customer.get(f"/api/tickets/{foreign}").json()
         self.assertEqual(customer_detail["service_entries"], [])
-        self.assertEqual(customer_detail["ticket"]["service_minutes"], 60)
+        self.assertNotIn("service_minutes", customer_detail["ticket"])
         self.assertEqual(customer_detail["ticket"]["service_cost_rub"], 3000)
 
     def test_company_chat_shared_history_notifications_and_revocation(self):
