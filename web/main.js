@@ -2842,6 +2842,7 @@ function chatListPanel(activeId) {
   const records = tickets ? inboxTickets() : state.chats;
   const search = tickets ? state.ticketChatSearch : state.chatSearch;
   const sectionButton = (id, label, count) => `<button type="button" class="${state.inboxSection === id ? 'active' : ''}" data-inbox-section="${id}" aria-pressed="${state.inboxSection === id}">${label}<span>${count}</span></button>`;
+  const startChat = !tickets && isDispatcher() ? `<details class="start-company-chat"><summary class="button">${icon('chat', 16)} Начать общий чат</summary><form id="start-company-chat" class="form"><label>Компания<select class="field" name="organization_id" required><option value="">Выберите компанию</option>${(state.organizations || []).map(org => `<option value="${org.id}">${esc(org.name)}</option>`).join('')}</select></label><small class="muted">Если диалог уже есть, откроется существующая переписка.</small><p role="alert" id="start-chat-error" hidden></p><button class="button primary" ${(state.organizations || []).length ? '' : 'disabled'}>Открыть чат</button>${(state.organizations || []).length ? '' : '<small class="muted">Сначала добавьте компанию в разделе «Компании».</small>'}</form></details>` : '';
   const items = records.map(c => {
     const unread = tickets ? state.notifications.filter(n => n.target === 'ticket' && !n.read_at && n.ticket_id === c.id).length : chatUnreadCount(c.id);
     const title = tickets ? `№${c.id} · ${c.title}` : c.customer_name;
@@ -2849,9 +2850,27 @@ function chatListPanel(activeId) {
     const active = c.id === activeId;
     return `<button class="chat-item ${active ? 'active' : ''}" ${tickets ? 'data-ticket-chat' : 'data-chat'}="${c.id}" ${active ? 'aria-current="true"' : ''}><span class="chat-logo" aria-hidden="true">${tickets ? icon('ticket', 18) : initials(c.customer_name)}</span><span class="chat-item-text"><strong>${esc(title)}</strong><small>${esc(preview)}</small></span><span class="chat-item-meta">${date(c.updated_at)}${unread ? `<span class="unread-count" aria-label="${unread} непрочитанных">${unread}</span>` : ''}</span></button>`;
   }).join('');
-  return `<div class="inbox-list"><div class="inbox-list-head"><div class="inbox-sections" role="group" aria-label="Разделы переписки">${sectionButton('general', 'Общие', state.chats.length)}${sectionButton('tickets', 'Чаты заявок', state.tickets.length)}</div><label class="inbox-search">${icon('search', 15)}<span class="visually-hidden">Поиск по диалогам</span><input type="search" id="chat-search" placeholder="${tickets ? 'Номер, тема или заказчик' : 'Компания, заказчик или сообщение'}" value="${esc(search || '')}"></label></div><div class="inbox-items">${items || `<div class="empty"><strong>${tickets ? 'Заявок пока нет' : 'Диалогов пока нет'}</strong>${tickets ? 'Здесь появятся переписки по доступным вам заявкам.' : 'Когда участник компании напишет в общий чат, диалог появится здесь.'}</div>`}</div><div class="empty chat-no-results" id="chat-no-results" role="status" hidden><strong>Диалог не найден</strong>Попробуйте другой поисковый запрос.</div></div>`;
+  return `<div class="inbox-list"><div class="inbox-list-head"><div class="inbox-sections" role="group" aria-label="Разделы переписки">${sectionButton('general', 'Общие', state.chats.length)}${sectionButton('tickets', 'Чаты заявок', state.tickets.length)}</div><label class="inbox-search">${icon('search', 15)}<span class="visually-hidden">Поиск по диалогам</span><input type="search" id="chat-search" placeholder="${tickets ? 'Номер, тема или заказчик' : 'Компания, заказчик или сообщение'}" value="${esc(search || '')}"></label>${startChat}</div><div class="inbox-items">${items || `<div class="empty"><strong>${tickets ? 'Заявок пока нет' : 'Диалогов пока нет'}</strong>${tickets ? 'Здесь появятся переписки по доступным вам заявкам.' : isDispatcher() ? 'Выберите компанию, чтобы начать общий чат.' : 'Когда участник компании напишет в общий чат, диалог появится здесь.'}</div>`}</div><div class="empty chat-no-results" id="chat-no-results" role="status" hidden><strong>Диалог не найден</strong>Попробуйте другой поисковый запрос.</div></div>`;
 }
 function bindChatList() {
+  const startForm = document.querySelector('#start-company-chat');
+  if (startForm) startForm.onsubmit = async event => {
+    event.preventDefault();
+    const button = startForm.querySelector('button');
+    const errorBox = startForm.querySelector('#start-chat-error');
+    const navigation = beginNavigation();
+    button.disabled = true;
+    errorBox.hidden = true;
+    try {
+      const chat = await api('/chats', {method: 'POST', body: JSON.stringify({organization_id: Number(startForm.elements.organization_id.value)})});
+      if (!isNavigationCurrent(navigation)) return;
+      state.chatSearch = '';
+      await refresh();
+      if (isNavigationCurrent(navigation)) await openChat(chat.id);
+    } catch (error) {
+      if (isNavigationCurrent(navigation)) { errorBox.textContent = error.message; errorBox.hidden = false; }
+    } finally { button.disabled = false; }
+  };
 
   document.querySelectorAll('[data-chat]').forEach(el => el.onclick = () => openChat(Number(el.dataset.chat)));
   document.querySelectorAll('[data-ticket-chat]').forEach(el => el.onclick = () => openTicketChat(Number(el.dataset.ticketChat)));

@@ -1486,6 +1486,9 @@ class EstimateDecision(BaseModel):
     proposed_amount_rub: int | None = Field(default=None, ge=0, le=100_000_000)
 
 
+class ChatCreate(BaseModel):
+    organization_id: int = Field(gt=0)
+
 
 class ChatTicketCreate(BaseModel):
     title: str = Field(min_length=3, max_length=140)
@@ -2234,26 +2237,42 @@ def chats(desk_session: str | None = Cookie(default=None)):
 
 
 @app.post("/api/chats", status_code=201)
-def create_chat(desk_session: str | None = Cookie(default=None)):
+def create_chat(data: ChatCreate | None = None, desk_session: str | None = Cookie(default=None)):
     user = current_user(desk_session)
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        return customer_record(conn, create_chat_service(conn, user), user)
+        return customer_record(conn, create_chat_service(conn, user, data.organization_id if data else None), user)
 
 
-def create_chat_service(conn, user):
-    if user["role"] != "customer":
-        raise HTTPException(403, "Общий чат создаёт заказчик")
-    org = customer_organization(conn, user["id"])
+def create_chat_service(conn, user, organization_id=None):
+    customer_id = user["id"]
+    if user["role"] == "customer":
+        org = customer_organization(conn, user["id"])
+        if organization_id is not None and (not org or org["id"] != organization_id):
+            raise HTTPException(403, "Можно открыть чат только своей компании")
+    else:
+        require_dispatcher(user)
+        if organization_id is None:
+            raise HTTPException(422, "Выберите компанию для общего чата")
+        org = conn.execute("SELECT * FROM organizations WHERE id=?", (organization_id,)).fetchone()
+        if not org:
+            raise HTTPException(404, "Компания не найдена")
     existing_id = company_chat.sync_organization(conn, org["id"]) if org else None
     if not org:
         existing = conn.execute("SELECT id FROM chats WHERE customer_id=? AND organization_id IS NULL", (user["id"],)).fetchone()
         existing_id = existing["id"] if existing else None
     if existing_id:
         return dict(chat_for(conn, existing_id, user))
+    if user["role"] != "customer":
+        member = conn.execute("""SELECT u.id FROM organization_members m JOIN users u ON u.id=m.user_id
+            WHERE m.organization_id=? AND u.role='customer' AND u.active=1
+            ORDER BY m.role='owner' DESC,u.id LIMIT 1""", (org["id"],)).fetchone()
+        if not member:
+            raise HTTPException(409, "Добавьте в компанию активного заказчика, чтобы начать общий чат")
+        customer_id = member["id"]
     stamp = now()
     cursor = conn.execute("INSERT INTO chats(customer_id,organization_id,created_at,updated_at) VALUES(?,?,?,?)",
-                          (user["id"], org["id"] if org else None, stamp, stamp))
+                          (customer_id, org["id"] if org else None, stamp, stamp))
     for dispatcher in dispatcher_ids(conn):
         notify_chat(conn, dispatcher, cursor.lastrowid, "new_chat", f"Новый общий чат с {org['name'] if org else user['name']}")
     return dict(chat_for(conn, cursor.lastrowid, user))

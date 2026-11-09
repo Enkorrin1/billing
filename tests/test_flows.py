@@ -608,6 +608,36 @@ class Flows(unittest.TestCase):
         self.assertNotIn("service_minutes", customer_detail["ticket"])
         self.assertEqual(customer_detail["ticket"]["service_cost_rub"], 3000)
 
+    def test_staff_starts_company_chat(self):
+        owner_id = self.customer.get("/api/me").json()["id"]
+        org = self.admin.post("/api/organizations", json={"name": "Ресурс-Групп", "owner_id": owner_id}).json()
+        payload = {"organization_id": org["id"]}
+        self.assertEqual(self.admin.get("/api/chats").json(), [])
+        self.assertEqual(self.employee.post("/api/chats", json=payload).status_code, 403)
+        self.assertEqual(self.other.post("/api/chats", json=payload).status_code, 403)
+        self.assertEqual(TestClient(service.app).post("/api/chats", json=payload).status_code, 401)
+        self.assertEqual(self.admin.post("/api/chats").status_code, 422)
+        self.assertEqual(self.admin.post("/api/chats", json={"organization_id": 999999}).status_code, 404)
+        self.assertEqual(self.admin.post("/api/chats", json={"organization_id": 0}).status_code, 422)
+        with service.db() as conn:
+            conn.execute("UPDATE users SET is_manager=1 WHERE id=?", (self.staff["id"],))
+        response = self.employee.post("/api/chats", json=payload)
+        self.assertEqual(response.status_code, 201)
+        chat = response.json()
+        self.assertEqual(chat["customer_id"], owner_id)
+        self.assertEqual(chat["organization_id"], org["id"])
+        self.assertEqual(self.admin.post("/api/chats", json=payload).json()["id"], chat["id"])
+        self.assertEqual(self.customer.post("/api/chats").json()["id"], chat["id"])
+        self.assertEqual(len(self.admin.get("/api/chats").json()), 1)
+        sent = self.employee.post(f"/api/chats/{chat['id']}/messages", json={"body": "Здравствуйте!", "request_id": "staff-first-message"})
+        self.assertEqual(sent.status_code, 201)
+        self.assertEqual(self.customer.get(f"/api/chats/{chat['id']}").json()["messages"][0]["body"], "Здравствуйте!")
+        self.assertTrue(any(n["kind"] == "message" for n in self.customer.get("/api/chat-notifications").json()))
+        self.assertEqual(self.other.get(f"/api/chats/{chat['id']}").status_code, 404)
+        with service.db() as conn:
+            empty_id = conn.execute("INSERT INTO organizations(name,created_at) VALUES(?,?)", ("Без участников", service.now())).lastrowid
+        self.assertEqual(self.admin.post("/api/chats", json={"organization_id": empty_id}).status_code, 409)
+
     def test_company_chat_shared_history_notifications_and_revocation(self):
         from unittest.mock import patch
         owner_id = self.customer.get("/api/me").json()["id"]
